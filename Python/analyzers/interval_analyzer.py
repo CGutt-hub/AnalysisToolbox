@@ -4,21 +4,23 @@ def analyze_intervals(ip: str, event_col: str | None = None, y_lim: float | None
                       y_label: str = 'Value (ms)', suffix: str = 'interval',
                       metrics_mode: str = 'auto') -> str:
     """
-    Analyze inter-event intervals (SDNN, RMSSD) per condition from epoched point process data.
+    Analyze inter-event intervals (SDNN, RMSSD) per condition: epoch-level or aggregated output.
     Generic interval analyzer - works on any point process (R-peaks, blinks, keystrokes, etc.)
     
     Args:
         ip: Input parquet with epoched event data [condition, epoch_id, event_col, sfreq]
         event_col: Column containing event samples/times (auto-detected if None)
-        y_lim: Optional Y-axis maximum limit
+        y_lim: Optional Y-axis maximum (None = output epoch-level data for bootstrap)
         y_label: Label for y-axis (e.g., 'Value (ms)', 'IBI (ms)')
         suffix: Output file suffix (default 'interval', use 'hrv' for HRV compatibility)
         metrics_mode: 'auto' (both SDNN+RMSSD), 'SDNN', or 'RMSSD' for single metric
     
     Returns:
         Path to signal file
+    
+    Note: If y_lim is None, outputs epoch-level data for bootstrap; else outputs mean ± SEM
     """
-    print(f"[interval] Interval analysis: {ip}")
+    print(f"[interval] Interval analysis: {ip}, mode={'epoch-level' if y_lim is None else 'aggregated'}")
     df = pl.read_parquet(ip)
     
     if 'condition' not in df.columns or 'epoch_id' not in df.columns:
@@ -43,11 +45,11 @@ def analyze_intervals(ip: str, event_col: str | None = None, y_lim: float | None
     conditions = sorted(df['condition'].unique().to_list())
     print(f"[interval] Processing {len(conditions)} conditions (sfreq={sfreq} Hz)")
     
-    for idx, cond in enumerate(conditions):
+    # Compute epoch-level metrics
+    all_epoch_data = []
+    for cond in conditions:
         cond_df = df.filter(pl.col('condition') == cond)
         epoch_ids = cond_df['epoch_id'].unique().to_list()
-        
-        sdnn_per_epoch, rmssd_per_epoch = [], []
         
         for eid in epoch_ids:
             epoch_df = cond_df.filter(pl.col('epoch_id') == eid)
@@ -63,43 +65,79 @@ def analyze_intervals(ip: str, event_col: str | None = None, y_lim: float | None
                 continue
             
             # SDNN: Standard deviation of intervals
-            sdnn_per_epoch.append(float(np.std(intervals, ddof=1)))
+            sdnn_val = float(np.std(intervals, ddof=1))
             
             # RMSSD: Root mean square of successive differences
-            rmssd_per_epoch.append(float(np.sqrt(np.mean(np.diff(intervals) ** 2))))
-        
-        if not sdnn_per_epoch:
-            print(f"[interval] Warning: {cond} has no valid epochs, skipping")
-            continue
-        
-        # Calculate mean and SEM across epochs
-        sdnn_mean = float(np.mean(sdnn_per_epoch))
-        sdnn_sem = float(np.std(sdnn_per_epoch, ddof=1) / np.sqrt(len(sdnn_per_epoch))) if len(sdnn_per_epoch) > 1 else 0.0
-        rmssd_mean = float(np.mean(rmssd_per_epoch))
-        rmssd_sem = float(np.std(rmssd_per_epoch, ddof=1) / np.sqrt(len(rmssd_per_epoch))) if len(rmssd_per_epoch) > 1 else 0.0
-        
-        # Build output based on metrics_mode
-        if metrics_mode.upper() == 'SDNN':
-            x_data, y_data, y_var = ['SDNN'], [sdnn_mean], [sdnn_sem]
-        elif metrics_mode.upper() == 'RMSSD':
-            x_data, y_data, y_var = ['RMSSD'], [rmssd_mean], [rmssd_sem]
-        else:  # auto - both metrics
-            x_data, y_data, y_var = ['SDNN', 'RMSSD'], [sdnn_mean, rmssd_mean], [sdnn_sem, rmssd_sem]
-        
-        output = pl.DataFrame({
-            'condition': [str(cond)],
-            'x_data': [x_data],
-            'y_data': [y_data],
-            'y_var': [y_var],
-            'plot_type': ['bar'],
-            'x_label': ['Interval Metric'],
-            'y_label': [y_label],
-            'y_ticks': [y_lim] if y_lim is not None else [None]
-        })
-        
-        out_path = os.path.join(out_folder, f"{base}_{suffix}{idx+1}.parquet")
-        output.write_parquet(out_path)
-        print(f"[interval]   {cond}: SDNN={sdnn_mean:.2f}±{sdnn_sem:.2f}, RMSSD={rmssd_mean:.2f}±{rmssd_sem:.2f} ({len(sdnn_per_epoch)} epochs)")
+            rmssd_val = float(np.sqrt(np.mean(np.diff(intervals) ** 2)))
+            
+            all_epoch_data.append({'condition': cond, 'epoch_id': eid, 'SDNN': sdnn_val, 'RMSSD': rmssd_val})
+    
+    epoch_df = pl.DataFrame(all_epoch_data)
+    
+    # Output mode: epoch-level (for bootstrap) or aggregated (mean ± SEM)
+    if y_lim is None:
+        # Epoch-level output for bootstrap (long format with metric column for SDNN/RMSSD)
+        for idx, cond in enumerate(conditions):
+            cond_epoch_df = epoch_df.filter(pl.col('condition') == cond)
+            if len(cond_epoch_df) == 0:
+                print(f"[interval] Warning: {cond} has no valid epochs, skipping")
+                continue
+            
+            # Determine which metrics to output based on metrics_mode
+            if metrics_mode.upper() == 'SDNN':
+                # Keep only SDNN column (renamed to 'value' for bootstrap)
+                output_df = cond_epoch_df.select(['condition', 'epoch_id', pl.col('SDNN').alias('value')])
+            elif metrics_mode.upper() == 'RMSSD':
+                # Keep only RMSSD column (renamed to 'value' for bootstrap)
+                output_df = cond_epoch_df.select(['condition', 'epoch_id', pl.col('RMSSD').alias('value')])
+            else:
+                # Both metrics - output in long format with 'metric' column
+                # Bootstrap will need to handle this by grouping on both condition and metric
+                sdnn_df = cond_epoch_df.select(['condition', 'epoch_id', pl.col('SDNN').alias('value')]).with_columns(pl.lit('SDNN').alias('metric'))
+                rmssd_df = cond_epoch_df.select(['condition', 'epoch_id', pl.col('RMSSD').alias('value')]).with_columns(pl.lit('RMSSD').alias('metric'))
+                output_df = pl.concat([sdnn_df, rmssd_df])
+            
+            output_df.write_parquet(os.path.join(out_folder, f"{base}_{suffix}{idx+1}.parquet"))
+            n_epochs = len(cond_epoch_df)
+            print(f"[interval]   {cond}: {n_epochs} epochs, {len(output_df)} rows (epoch-level data)")
+    else:
+        # Aggregated output (mean ± SEM) for direct plotting
+        for idx, cond in enumerate(conditions):
+            cond_epoch_df = epoch_df.filter(pl.col('condition') == cond)
+            if len(cond_epoch_df) == 0:
+                print(f"[interval] Warning: {cond} has no valid epochs, skipping")
+                continue
+            
+            sdnn_vals = cond_epoch_df['SDNN'].to_numpy()
+            rmssd_vals = cond_epoch_df['RMSSD'].to_numpy()
+            
+            sdnn_mean = float(np.mean(sdnn_vals))
+            sdnn_sem = float(np.std(sdnn_vals, ddof=1) / np.sqrt(len(sdnn_vals))) if len(sdnn_vals) > 1 else 0.0
+            rmssd_mean = float(np.mean(rmssd_vals))
+            rmssd_sem = float(np.std(rmssd_vals, ddof=1) / np.sqrt(len(rmssd_vals))) if len(rmssd_vals) > 1 else 0.0
+            
+            # Build output based on metrics_mode
+            if metrics_mode.upper() == 'SDNN':
+                x_data, y_data, y_var = ['SDNN'], [sdnn_mean], [sdnn_sem]
+            elif metrics_mode.upper() == 'RMSSD':
+                x_data, y_data, y_var = ['RMSSD'], [rmssd_mean], [rmssd_sem]
+            else:  # auto - both metrics
+                x_data, y_data, y_var = ['SDNN', 'RMSSD'], [sdnn_mean, rmssd_mean], [sdnn_sem, rmssd_sem]
+            
+            output = pl.DataFrame({
+                'condition': [str(cond)],
+                'x_data': [x_data],
+                'y_data': [y_data],
+                'y_var': [y_var],
+                'plot_type': ['bar'],
+                'x_label': ['Interval Metric'],
+                'y_label': [y_label],
+                'y_ticks': [y_lim]
+            })
+            
+            out_path = os.path.join(out_folder, f"{base}_{suffix}{idx+1}.parquet")
+            output.write_parquet(out_path)
+            print(f"[interval]   {cond}: SDNN={sdnn_mean:.2f}±{sdnn_sem:.2f}, RMSSD={rmssd_mean:.2f}±{rmssd_sem:.2f} ({len(sdnn_vals)} epochs)")
     
     signal_path = os.path.join(os.getcwd(), f"{base}_{suffix}.parquet")
     pl.DataFrame({
