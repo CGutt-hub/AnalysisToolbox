@@ -2,6 +2,11 @@
 import polars as pl, numpy as np, sys, os
 from scipy import stats
 
+# Logging helpers
+def log_info(msg): print(f"[bootstrap] INFO: {msg}")
+def log_warning(msg): print(f"[bootstrap] WARNING: {msg}")
+def log_error(msg): print(f"[bootstrap] ERROR: {msg}")
+
 def bootstrap_analyze(ip: str, group_col: str = 'condition', sample_col: str | None = None,
                      value_col: str | None = None, n_boot: int = 10000, 
                      ci_method: str = 'percentile', alpha: float = 0.05,
@@ -41,7 +46,14 @@ def bootstrap_analyze(ip: str, group_col: str = 'condition', sample_col: str | N
         import glob
         data_files = sorted(glob.glob(os.path.join(folder_path, "*.parquet")))
         if not data_files:
-            print(f"[bootstrap] ERROR: No data files found in {folder_path}"); sys.exit(1)
+            log_warning(f"No data files found in {folder_path} — upstream produced no data, skipping bootstrap")
+            base = os.path.splitext(os.path.basename(ip))[0]
+            out_folder = os.path.join(os.getcwd(), f"{base}_{suffix}")
+            os.makedirs(out_folder, exist_ok=True)
+            signal_path = os.path.join(os.getcwd(), f"{base}_{suffix}.parquet")
+            pl.DataFrame({'signal': [1], 'source': [os.path.basename(ip)], 'conditions': [0], 'folder_path': [os.path.abspath(out_folder)]}).write_parquet(signal_path)
+            print(f"[bootstrap] Empty output (no upstream data): {signal_path}")
+            return signal_path
         
         dfs = [pl.read_parquet(f) for f in data_files]
         df = pl.concat(dfs)
@@ -49,7 +61,18 @@ def bootstrap_analyze(ip: str, group_col: str = 'condition', sample_col: str | N
     
     # Validate group column
     if group_col not in df.columns:
-        print(f"[bootstrap] ERROR: Group column '{group_col}' not found"); sys.exit(1)
+        available = list(df.columns)
+        # Empty/passthrough signal file from upstream graceful error handling
+        if 'signal' in df.columns and len(available) <= 3:
+            log_warning(f"Input is a passthrough signal file (columns: {available}), no data to bootstrap")
+            base = os.path.splitext(os.path.basename(ip))[0]
+            out_folder = os.path.join(os.getcwd(), f"{base}_{suffix}")
+            os.makedirs(out_folder, exist_ok=True)
+            signal_path = os.path.join(os.getcwd(), f"{base}_{suffix}.parquet")
+            pl.DataFrame({'signal': [1], 'source': [os.path.basename(ip)], 'conditions': [0], 'folder_path': [os.path.abspath(out_folder)]}).write_parquet(signal_path)
+            print(f"[bootstrap] Empty output (no data): {signal_path}")
+            return signal_path
+        log_error(f"Group column '{group_col}' not found in columns {available}"); sys.exit(1)
     
     # Auto-detect sample column (resample unit)
     if sample_col is None:
@@ -87,8 +110,10 @@ def bootstrap_analyze(ip: str, group_col: str = 'condition', sample_col: str | N
         n_samples = len(sample_vals)
         
         if n_samples < 2:
-            print(f"[bootstrap] Warning: {grp} has <2 samples, skipping")
+            log_warning(f"{grp} has <2 samples, skipping")
             continue
+        elif n_samples < 5:
+            log_info(f"{grp} has only {n_samples} samples, bootstrap CI may be unreliable (recommended minimum: 10)")
         
         # Bootstrap: resample samples with replacement, compute mean
         rng = np.random.default_rng(seed=42)
@@ -112,7 +137,7 @@ def bootstrap_analyze(ip: str, group_col: str = 'condition', sample_col: str | N
             z_crit, boot_se = stats.norm.ppf(1 - alpha/2), float(np.std(boot_means, ddof=1))
             ci_lower, ci_upper = observed_mean - z_crit * boot_se, observed_mean + z_crit * boot_se
         else:
-            print(f"[bootstrap] ERROR: Unknown method '{ci_method}'"); sys.exit(1)
+            log_error(f"Unknown method '{ci_method}'"); sys.exit(1)
         
         error = max(abs(ci_upper - observed_mean), abs(observed_mean - ci_lower))
         
@@ -129,6 +154,18 @@ def bootstrap_analyze(ip: str, group_col: str = 'condition', sample_col: str | N
             'y_ticks': [y_lim] if y_lim is not None else [None]
         }).write_parquet(os.path.join(out_folder, f"{base}_{suffix}{idx+1}.parquet"))
         print(f"[bootstrap]   {grp}: {observed_mean:.3f} CI=[{ci_lower:.3f}, {ci_upper:.3f}] (n={n_samples})")
+    
+    # Create procedure visualization file
+    plot_files = [os.path.join(out_folder, f"{base}_{suffix}{idx+1}.parquet") for idx in range(len(groups))]
+    if all(os.path.exists(f) for f in plot_files):
+        try:
+            all_plots = [pl.read_parquet(f) for f in plot_files]
+            combined = pl.concat(all_plots)
+            vis_path = os.path.join(os.getcwd(), f"{base}_{suffix}_vis.parquet")
+            combined.write_parquet(vis_path)
+            print(f"[bootstrap] Created procedure visualization: {vis_path}")
+        except Exception as e:
+            print(f"[bootstrap] WARNING: Could not create procedure visualization: {e}")
     
     signal_path = os.path.join(os.getcwd(), f"{base}_{suffix}.parquet")
     pl.DataFrame({

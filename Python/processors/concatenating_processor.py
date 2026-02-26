@@ -1,62 +1,179 @@
 import polars as pl, sys, os, re
 
+# Logging helpers
+def log_info(msg): print(f"[concatenating] INFO: {msg}")
+def log_warning(msg): print(f"[concatenating] WARNING: {msg}")
+def log_error(msg): print(f"[concatenating] ERROR: {msg}")
+
 def extract_pid(filepath: str) -> str:
     """Extract participant ID from filepath (pattern like EV_002 or P001)."""
     basename = os.path.basename(filepath)
     match = re.match(r'^([A-Za-z]+_\d+)', basename)
     return match.group(1) if match else ''
 
+def _is_signal_file(df: pl.DataFrame) -> bool:
+    """True when the file is a Nextflow signal pointer, not actual data."""
+    return 'signal' in df.columns and 'folder_path' in df.columns and 'x_data' not in df.columns and 'y_data' not in df.columns
+
+
+def _resolve_signal(df: pl.DataFrame, original_path: str) -> pl.DataFrame:
+    """Load actual data from the folder_path recorded in a signal file.
+    
+    Picks the single parquet file in that folder whose name most closely
+    matches the signal file's own basename (same stem prefix).
+    Falls back to the first parquet found.
+    """
+    folder = str(df['folder_path'][0])
+    if not os.path.isdir(folder):
+        log_warning(f"Signal folder not found: {folder}, falling back to signal file itself")
+        return df
+    candidates = sorted([
+        os.path.join(folder, fn)
+        for fn in os.listdir(folder)
+        if fn.endswith('.parquet') and not fn.endswith('_vis.parquet')
+    ])
+    if not candidates:
+        log_warning(f"No parquet files in signal folder: {folder}")
+        return df
+    # Prefer the file whose name shares the longest prefix with the original filename
+    base = os.path.splitext(os.path.basename(original_path))[0]
+    best = max(candidates, key=lambda p: len(os.path.commonprefix([base, os.path.basename(p)])))
+    log_info(f"Signal resolved: {os.path.basename(original_path)} -> {best}")
+    return pl.read_parquet(best)
+
+
 def concat_generic(files: list[str], conds: list[str]) -> pl.DataFrame:
     """
-    Generic concatenation: Collects all incoming datasets with the same structure.
-    
-    List fields (y_data, y_var, counts_per_x, etc.) are collected into lists of lists.
-    For 'grid' or 'bar' plot types, x_data is treated as shared categories (metadata).
-    Metadata fields (plot_type, x_axis, y_label, x_label, y_ticks, etc.) are taken from first dataset.
-    Adds 'labels' field containing the list of dataset labels.
-    Labels are extracted from 'condition' field in each file if available, otherwise use provided conds.
+    Generic concatenation — two modes depending on input shape:
+
+    MODE A – plot-ready inputs (have x_data + y_data):
+        Per-condition single-row dataframes are merged into one multi-condition row.
+        List fields (y_data, y_var, …) become lists-of-lists; metadata is taken from
+        the first file; a 'labels' column is added.  Output is a single-row parquet
+        ready for the plotter.
+
+    MODE B – raw / long-format inputs (everything else):
+        Files are row-bound via pl.concat.  Long-format (region/channel + value) is
+        auto-converted to bar-plot-ready before stacking.
+        Signal pointer files (folder_path column) are resolved to their actual data
+        before processing.
     """
     print(f"[concatenating] Concatenating {len(files)} files")
-    all_dfs = [pl.read_parquet(f).to_dicts()[0] for f in files]
-    first_row = all_dfs[0]
-    
-    # Extract labels from 'condition' field if available, otherwise use provided conds
-    labels = [row.get('condition', conds[i] if i < len(conds) else f'cond{i+1}') for i, row in enumerate(all_dfs)]
+
+    # ── helpers ────────────────────────────────────────────────────────────────
+
+    def load_df(f: str, fallback_cond: str) -> pl.DataFrame:
+        """Load one input; resolve signal pointers; auto-convert long-format."""
+        df = pl.read_parquet(f)
+
+        # Resolve signal pointer files
+        if _is_signal_file(df):
+            df = _resolve_signal(df, f)
+
+        # Auto-convert long-format (region/channel + value/sem) → bar plot-ready
+        region_col = next((c for c in ('region', 'channel') if c in df.columns), None)
+        if region_col and 'value' in df.columns and 'x_data' not in df.columns:
+            agg = df.group_by(region_col).agg([
+                pl.col('value').mean().alias('value'),
+                *([] if 'sem' not in df.columns else [pl.col('sem').mean().alias('sem')])
+            ]).sort(region_col)
+            cond_name = str(df['condition'][0]) if 'condition' in df.columns else fallback_cond
+            log_info(f"Long-format auto-converted: {cond_name}, {agg.height} regions")
+            return pl.DataFrame([{
+                'condition': cond_name,
+                'x_data':   agg[region_col].to_list(),
+                'y_data':   agg['value'].to_list(),
+                'y_var':    agg['sem'].to_list() if 'sem' in agg.columns else [0.0] * agg.height,
+                'plot_type': 'bar',
+                'x_label':  region_col.capitalize(),
+                'y_label':  str(df['y_label'][0]) if 'y_label' in df.columns else 'Amplitude',
+            }])
+        return df
+
+    loaded = [load_df(f, conds[i] if i < len(conds) else f"cond{i+1}") for i, f in enumerate(files)]
+
+    # ── guard: all inputs are unresolvable signal pointers (upstream had no data) ──
+    all_unresolved = all(_is_signal_file(df) for df in loaded)
+    if all_unresolved:
+        log_warning("All inputs are unresolved signal pointers — no upstream data, writing empty placeholder")
+        return pl.DataFrame({
+            'condition': ['no_data'],
+            'x_data': [[]],
+            'y_data': [[]],
+            'y_var': [[]],
+            'plot_type': ['bar'],
+            'x_label': ['Condition'],
+            'y_label': ['Value'],
+        })
+
+    # ── decide mode ─────────────────────────────────────────────────────────────
+    is_plot_ready = all('x_data' in df.columns and 'y_data' in df.columns for df in loaded)
+
+    # ── MODE B: raw row-bind ────────────────────────────────────────────────────
+    if not is_plot_ready:
+        log_info("Raw/mixed inputs detected — performing row-bind concatenation")
+        result_df = pl.concat(loaded, how='diagonal')
+        print(f"[concatenating] Row-bound {len(loaded)} files -> {result_df.height} rows, cols: {result_df.columns}")
+        return result_df
+
+    # ── MODE A: plot-ready single-row merge ─────────────────────────────────────
+    all_rows = [df.to_dicts()[0] for df in loaded]
+    first_row = all_rows[0]
+
+    labels = [row.get('condition', conds[i] if i < len(conds) else f'cond{i+1}') for i, row in enumerate(all_rows)]
     print(f"[concatenating] Labels extracted: {labels}")
-    
-    list_fields = [k for k, v in first_row.items() if isinstance(v, (list, tuple))]
-    # These list fields are actually metadata (same across all files), not data to aggregate
-    metadata_list_fields = ['y_labels']  # Endpoint labels like ['gar nicht', 'extrem']
-    
-    # For grid/bar plots, x_data represents shared categories (ROI names, question names, etc.)
-    # and should NOT be nested - it stays as a flat list
+
+    # List fields to aggregate across conditions (exclude shared metadata lists)
+    metadata_list_fields = {'y_labels'}
     plot_type = first_row.get('plot_type', '')
     if plot_type in ('grid', 'bar'):
-        metadata_list_fields.append('x_data')
-    
-    list_fields = [k for k in list_fields if k not in metadata_list_fields]
-    # Exclude 'condition' from metadata since it varies per file
-    metadata_fields = {k: v for k, v in first_row.items() if not isinstance(v, (list, tuple)) and k != 'condition'}
-    # Add metadata list fields
+        metadata_list_fields.add('x_data')
+
+    list_fields = [
+        k for k, v in first_row.items()
+        if isinstance(v, (list, tuple)) and k not in metadata_list_fields
+    ]
+    metadata_fields = {k: v for k, v in first_row.items()
+                       if k not in list_fields and k != 'condition'}
     for k in metadata_list_fields:
         if k in first_row:
             metadata_fields[k] = first_row[k]
-    
+
     print(f"[concatenating] List fields (to aggregate): {list_fields}")
     print(f"[concatenating] Metadata fields: {list(metadata_fields.keys())}")
-    
-    aggregated = {field: [row[field] for row in all_dfs] for field in list_fields}
+
+    aggregated = {field: [row.get(field) for row in all_rows] for field in list_fields}
     aggregated['labels'] = labels
-    
+
+    # Unwrap over-nested single-element lists so plotter gets consistent depth
+    def normalize_nested(data):
+        if not data or not isinstance(data, list):
+            return data
+        result = []
+        for item in data:
+            while isinstance(item, list) and len(item) == 1 and isinstance(item[0], list):
+                item = item[0]
+            result.append(item)
+        return result
+
+    for field in ('y_data', 'y_var'):
+        if field in aggregated:
+            aggregated[field] = normalize_nested(aggregated[field])
+
     return pl.DataFrame([{**metadata_fields, **aggregated}])
 
 if __name__ == '__main__': (lambda a:
     (lambda items, out_base: (
         (lambda files, labels: (
             (lambda pid, out_path: (
-                concat_generic(files, labels).write_parquet(out_path),
-                print(f"[concatenating] Concatenated {len(files)} files -> {out_path}"),
-                print(out_path)
+                (lambda result: (
+                    result.write_parquet(out_path),
+                    # Only create _vis.parquet if data is plot-ready (has x_data, y_data)
+                    result.write_parquet(out_path.replace('.parquet', '_vis.parquet')) if 'x_data' in result.columns and 'y_data' in result.columns else None,
+                    print(f"[concatenating] Concatenated {len(files)} files -> {out_path}"),
+                    print(f"[concatenating] {'Created _vis.parquet (plot-ready data)' if 'x_data' in result.columns and 'y_data' in result.columns else 'Skipped _vis.parquet (raw data, not plot-ready)'}"),
+                    print(out_path)
+                ))(concat_generic(files, labels))
             ))(extract_pid(files[0]) if files else '', 
                os.path.join(os.getcwd(), f"{extract_pid(files[0]) + '_' if files and extract_pid(files[0]) else ''}{out_base}.parquet"))
         ))([p.split(':',1)[1] for p in items] if ':' in items[0] else items, 

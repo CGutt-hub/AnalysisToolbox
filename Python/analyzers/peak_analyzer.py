@@ -1,5 +1,10 @@
 import polars as pl, numpy as np, sys, os
 
+# Logging helpers
+def log_info(msg): print(f"[peak] INFO: {msg}")
+def log_warning(msg): print(f"[peak] WARNING: {msg}")
+def log_error(msg): print(f"[peak] ERROR: {msg}")
+
 def analyze_peaks(ip: str, method: str = 'max_abs', time_window: str | None = None, 
                   y_lim: float | None = None, y_label: str = 'Amplitude', suffix: str = 'peak') -> str:
     """
@@ -87,6 +92,10 @@ def analyze_peaks(ip: str, method: str = 'max_abs', time_window: str | None = No
                 'condition': str(cond)
             })
         
+        # Quality check: no peaks found
+        if len(peak_results) == 0:
+            log_warning(f"{cond}: No peaks found in time window {time_window or 'all'}")
+        
         # Output in plotter format
         output = pl.DataFrame({
             'condition': [str(cond)],
@@ -106,6 +115,18 @@ def analyze_peaks(ip: str, method: str = 'max_abs', time_window: str | None = No
         # Also save detailed per-channel results
         detail_path = os.path.join(out_folder, f"{base}_{suffix}{idx+1}_detail.parquet")
         pl.DataFrame(peak_results).write_parquet(detail_path)
+    
+    # Create procedure visualization file
+    plot_files = [os.path.join(out_folder, f"{base}_{suffix}{idx+1}.parquet") for idx in range(len(conditions))]
+    if all(os.path.exists(f) for f in plot_files):
+        try:
+            all_plots = [pl.read_parquet(f) for f in plot_files]
+            combined = pl.concat(all_plots)
+            vis_path = os.path.join(os.getcwd(), f"{base}_{suffix}_vis.parquet")
+            combined.write_parquet(vis_path)
+            print(f"[peak] Created procedure visualization: {vis_path}")
+        except Exception as e:
+            print(f"[peak] WARNING: Could not create procedure visualization: {e}")
     
     signal_path = os.path.join(os.getcwd(), f"{base}_{suffix}.parquet")
     pl.DataFrame({

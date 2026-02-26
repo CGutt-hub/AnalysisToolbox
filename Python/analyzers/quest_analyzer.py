@@ -170,6 +170,18 @@ def analyze(ip, param_str, out_prefix):
             print(f"[quest]   Output: {path} | {sum(counts)} values, {len(x_data)} categories | {cond}")
             count += 1
         
+        # Create procedure visualization file
+        plot_files = [os.path.join(folder, f"{base}_{out_prefix}{idx}.parquet") for idx in range(1, count+1)]
+        if all(os.path.exists(f) for f in plot_files):
+            try:
+                all_plots = [pl.read_parquet(f) for f in plot_files]
+                combined = pl.concat(all_plots)
+                vis_path = os.path.join(os.getcwd(), f"{base}_{out_prefix}_vis.parquet")
+                combined.write_parquet(vis_path)
+                print(f"[quest] Created procedure visualization: {vis_path}")
+            except Exception as e:
+                print(f"[quest] WARNING: Could not create procedure visualization: {e}")
+        
         signal = os.path.join(os.getcwd(), f"{base}_{out_prefix}.parquet")
         pl.DataFrame([{'signal': 1, 'source': os.path.basename(ip), 'conditions': count, 'folder_path': os.path.abspath(folder)}]).write_parquet(signal)
         print(f"[quest] Signal: {signal} | {count} conditions"); print(signal)
@@ -206,7 +218,11 @@ def analyze(ip, param_str, out_prefix):
         
         out = {'x_data': x_data, 'y_data': y_data, 'y_var': y_var, 'y_ticks': make_y_ticks(y_labels, y_max), 'y_labels': y_labels if isinstance(y_labels, list) else None, 'plot_type': 'bar', 'counts_per_x': counts, 'count': sum(counts)}
         path = os.path.join(os.getcwd(), f"{base}_{out_prefix}.parquet")
-        pl.DataFrame([out]).write_parquet(path)
+        plot_df = pl.DataFrame([out])
+        plot_df.write_parquet(path)
+        # Create procedure visualization
+        vis_path = path.replace('.parquet', '_vis.parquet')
+        plot_df.write_parquet(vis_path)
         print(f"[quest] Output: {path} | {sum(counts)} values, {len(x_data)} categories"); print(path)
         return path
 

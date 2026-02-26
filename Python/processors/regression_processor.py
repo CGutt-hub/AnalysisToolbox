@@ -1,4 +1,5 @@
 import polars as pl, numpy as np, sys, mne, re, os, warnings
+from typing import cast
 
 # Suppress MNE naming convention warnings
 warnings.filterwarnings('ignore', message='.*does not conform to MNE naming conventions.*')
@@ -48,6 +49,26 @@ def apply_regression(ip: str, regr_type: str = 'short_channel', out: str | None 
             raw_corrected = short_channel_regression(raw)
             out_file = out or f"{base}_{suffix}.fif"
             raw_corrected.save(out_file, overwrite=True, verbose=False)
+            # Generate inline visualization
+            time_data: list[float] = raw_corrected.times.tolist()
+            ch_data = cast(np.ndarray, raw_corrected.get_data())
+            y_data: list[list[float]] = []
+            for i in range(len(raw_corrected.ch_names)):
+                channel_data: list[float] = ch_data[i, :].tolist()
+                y_data.append(channel_data)
+            if len(time_data) > 10000:
+                step: int = len(time_data) // 10000
+                time_data = time_data[::step]
+                y_data = [yd[::step] for yd in y_data]
+            vis_df = pl.DataFrame({
+                'x_data': [[[time_data] for _ in range(len(raw_corrected.ch_names))]],
+                'y_data': [y_data],
+                'plot_type': ['line'],
+                'labels': [raw_corrected.ch_names],
+                'x_label': ['Time (s)'],
+                'y_label': ['Optical Density (OD)']
+            })
+            vis_df.write_parquet(out_file.replace('.fif', '_vis.parquet'))
             print(f"[regression] Output (MNE Raw): {out_file}")
             return out_file
         

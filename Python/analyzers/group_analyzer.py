@@ -1,5 +1,10 @@
 import polars as pl, numpy as np, sys, os, json, fnmatch, re
 
+# Logging helpers
+def log_info(msg): print(f"[group] INFO: {msg}")
+def log_warning(msg): print(f"[group] WARNING: {msg}")
+def log_error(msg): print(f"[group] ERROR: {msg}")
+
 def analyze_groups(ip: str, groups_config: str, y_lim: float | None = None, 
                    x_label: str = 'Group', y_label: str = 'Mean', suffix: str = 'grp',
                    baseline_sec: float = 2.0) -> str:
@@ -69,11 +74,14 @@ def analyze_groups(ip: str, groups_config: str, y_lim: float | None = None,
     os.makedirs(out_folder, exist_ok=True)
     
     # Determine sampling frequency for baseline
-    sfreq = float(df['sfreq'][0]) if 'sfreq' in df.columns else None
+    sfreq: float | None = None
+    if 'sfreq' in df.columns:
+        sfreq_val = df['sfreq'].head(1).item()
+        sfreq = float(sfreq_val) if sfreq_val is not None else None
     if sfreq is None and 'time' in df.columns:
         times = df['time'].unique().sort().to_list()
         if len(times) > 1:
-            sfreq = 1.0 / (times[1] - times[0])
+            sfreq = 1.0 / (float(times[1]) - float(times[0]))
     baseline_samples = int(baseline_sec * sfreq) if sfreq else 0
     
     print(f"[group] Groups: {group_names}, Conditions: {conditions}")
@@ -83,6 +91,9 @@ def analyze_groups(ip: str, groups_config: str, y_lim: float | None = None,
     for idx, cond in enumerate(conditions):
         cond_df = df.filter(pl.col('condition') == cond)
         epochs = cond_df['epoch_id'].unique().to_list()
+        
+        # Collect epoch-level values for bootstrap
+        epoch_data = []
         
         group_means, group_sems = [], []
         for group_name in group_names:
@@ -101,26 +112,56 @@ def analyze_groups(ip: str, groups_config: str, y_lim: float | None = None,
                     baseline_mean = group_data[:baseline_samples, :].mean(axis=0, keepdims=True)
                     group_data = group_data - baseline_mean
                     post_baseline = group_data[baseline_samples:, :]
-                    epoch_values.append(float(np.mean(post_baseline)))
+                    epoch_val: float = float(np.mean(post_baseline))
                 else:
-                    epoch_values.append(float(np.mean(group_data)))
+                    epoch_val: float = float(np.mean(group_data))
+                
+                epoch_values.append(epoch_val)
+                # Store for epoch-level output
+                epoch_data.append({'condition': cond, 'epoch_id': eid, 'group': group_name, 'value': epoch_val})
             
-            group_means.append(float(np.mean(epoch_values)))
-            group_sems.append(float(np.std(epoch_values, ddof=1) / np.sqrt(len(epoch_values))) if len(epoch_values) > 1 else 0.0)
-        
-        # Output one file per condition
-        pl.DataFrame({
-            'condition': [cond],
-            'x_data': [group_names],
-            'y_data': [group_means],
-            'y_var': [group_sems],
-            'plot_type': ['bar'],
-            'x_label': [x_label],
-            'y_label': [y_label],
-            'y_ticks': [y_lim] if y_lim is not None else [None]
-        }).write_parquet(os.path.join(out_folder, f"{base}_{suffix}{idx+1}.parquet"))
+        # Epoch-level output for bootstrap (pivot groups to columns)
+        if epoch_data:
+            epoch_df = pl.DataFrame(epoch_data)
+            epoch_pivot = epoch_df.pivot(values='value', index=['condition', 'epoch_id'], on='group')
+            epoch_pivot.write_parquet(os.path.join(out_folder, f"{base}_{suffix}{idx+1}.parquet"))
+            
+            # Averaged plot-ready output: mean ± SEM across epochs per group
+            group_means: list[float] = []
+            group_sems: list[float] = []
+            for g in group_names:
+                mean_val = epoch_pivot[g].mean()
+                std_val = epoch_pivot[g].std()
+                group_means.append(float(mean_val) if mean_val is not None else 0.0)  # type: ignore[arg-type]
+                if std_val is not None:
+                    sem_calc = float(std_val) / (len(epoch_pivot) ** 0.5)  # type: ignore[arg-type]
+                    group_sems.append(sem_calc)
+                else:
+                    group_sems.append(0.0)
+            pl.DataFrame({
+                'condition': [cond],
+                'x_data': [group_names],
+                'y_data': [group_means],
+                'y_var': [group_sems],
+                'plot_type': ['bar'],
+                'x_label': [x_label],
+                'y_label': [y_label],
+                'y_ticks': [y_lim] if y_lim is not None else [None]
+            }).write_parquet(os.path.join(out_folder, f"{base}_{suffix}{idx+1}_plot.parquet"))
         
         print(f"[group]   {cond}: {len(epochs)} epochs, {len(group_names)} groups")
+    
+    # Create procedure visualization file (aggregate all conditions for interactive plot)
+    plot_files = [os.path.join(out_folder, f"{base}_{suffix}{idx+1}_plot.parquet") for idx in range(len(conditions))]
+    if all(os.path.exists(f) for f in plot_files):
+        try:
+            all_plots = [pl.read_parquet(f) for f in plot_files]
+            combined = pl.concat(all_plots)
+            vis_path = os.path.join(os.getcwd(), f"{base}_{suffix}_vis.parquet")
+            combined.write_parquet(vis_path)
+            print(f"[group] Created procedure visualization: {vis_path}")
+        except Exception as e:
+            print(f"[group] WARNING: Could not create procedure visualization: {e}")
     
     signal_path = os.path.join(os.getcwd(), f"{base}_{suffix}.parquet")
     pl.DataFrame({

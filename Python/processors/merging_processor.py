@@ -1,7 +1,7 @@
 """Merging Processor - Merge data files by columns or combine plot-ready data.
 Column merge: SQL-style join on shared keys
 Plot merge: Combine x_data/y_data arrays from multiple sources per condition"""
-import polars as pl, numpy as np, sys, os, functools, re
+import polars as pl, sys, os, functools, re
 
 def merge_columns(ip: list[str], keys: list[str], output_suffix: str = 'merged') -> str:
     """Merge files by joining on shared key columns (SQL-style join)."""

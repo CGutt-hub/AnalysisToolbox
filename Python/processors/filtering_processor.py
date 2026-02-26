@@ -2,9 +2,15 @@ import polars as pl, numpy as np, sys, scipy.signal, os, warnings
 from typing import cast
 from numpy.typing import NDArray
 import mne
+import sys; sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 # Suppress MNE naming convention warnings
 warnings.filterwarnings('ignore', message='.*does not conform to MNE naming conventions.*')
+
+# Logging helpers
+def log_info(msg): print(f"[filtering] INFO: {msg}")
+def log_warning(msg): print(f"[filtering] WARNING: {msg}")
+def log_error(msg): print(f"[filtering] ERROR: {msg}")
 
 def bandpass(sig: NDArray[np.float64], lf: float, hf: float, fs: float, order: int = 2) -> NDArray[np.float64]:
     if not (0 < lf < hf < fs/2): return sig
@@ -44,10 +50,32 @@ def filter_signal(ip: str, col: str | None, lf: str, hf: str, fs: float = 1000.0
     sig: NDArray[np.float64] = df[target].to_numpy()
     print(f"[filtering] {ftype} filter on {target}: {len(sig)} samples")
     filtered = bandpass(sig, float(lf), float(hf), float(fs)) if ftype == 'bandpass' else lowpass(sig, float(hf), float(fs)) if ftype == 'lowpass' else highpass(sig, float(lf), float(fs))
+    
+    # Output filtered data
     result = pl.DataFrame({'time': df['time'] if 'time' in df.columns else np.arange(len(filtered))/float(fs), target.lower(): filtered, 'sfreq': [float(fs)]*len(filtered)})
     base = os.path.splitext(os.path.basename(ip))[0]
     out_file = f"{base}_filt.parquet"
-    result.write_parquet(out_file); print(f"[filtering] Output: {out_file}"); return out_file
+    result.write_parquet(out_file)
+    print(f"[filtering] Output: {out_file}")
+    
+    # Generate inline visualization
+    time_data: list[float] = result['time'].to_list()
+    signal_data: list[float] = result[target.lower()].to_list()
+    if len(time_data) > 10000:
+        step: int = len(time_data) // 10000
+        time_data = time_data[::step]
+        signal_data = signal_data[::step]
+    vis_df = pl.DataFrame({
+        'x_data': [[time_data]],
+        'y_data': [[signal_data]],
+        'plot_type': ['line'],
+        'labels': [[target.lower()]],
+        'x_label': ['Time (s)'],
+        'y_label': ['Amplitude']
+    })
+    vis_df.write_parquet(out_file.replace('.parquet', '_vis.parquet'))
+    
+    return out_file
 
 if __name__ == '__main__': 
     args = sys.argv

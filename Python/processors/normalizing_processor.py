@@ -1,4 +1,4 @@
-import polars as pl, numpy as np, sys, os
+import polars as pl, sys, os
 
 def normalize(ip: str, norm_type: str, cols: str) -> str:
     if not os.path.exists(ip): print(f"[normalizing] Error: File not found: {ip}"); sys.exit(1)
@@ -16,6 +16,25 @@ def normalize(ip: str, norm_type: str, cols: str) -> str:
         ).alias(f"{col}_norm"))
     out = f"{os.path.splitext(os.path.basename(ip))[0]}_norm.parquet"
     df.write_parquet(out)
+    
+    # Generate inline visualization - before/after comparison
+    norm_cols = [f"{c}_norm" for c in col_list]
+    if all(nc in df.columns for nc in norm_cols):
+        # Create index for x-axis
+        df_sample = df.head(min(1000, len(df)))
+        x_data: list[int] = list(range(len(df_sample)))
+        y_data: list[list[float]] = [df_sample[c].to_list() for c in col_list + norm_cols]
+        labels: list[str] = [f"{c} (original)" for c in col_list] + [f"{c} ({norm_type})" for c in col_list]
+        vis_df = pl.DataFrame({
+            'x_data': [[[x_data] for _ in range(len(y_data))]],
+            'y_data': [y_data],
+            'plot_type': ['line'],
+            'labels': [labels],
+            'x_label': ['Sample'],
+            'y_label': ['Value']
+        })
+        vis_df.write_parquet(out.replace('.parquet', '_vis.parquet'))
+    
     print(f"[normalizing] Output: {out}")
     return out
 

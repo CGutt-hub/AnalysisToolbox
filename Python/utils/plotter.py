@@ -3,208 +3,236 @@ import numpy as np
 from matplotlib.backends.backend_pdf import PdfPages
 
 sanitize = lambda v: re.sub(r"[^A-Za-z0-9._-]", "_", str(v))
-to_lst = lambda x: x.to_list() if isinstance(x, pl.Series) else (x if isinstance(x, list) else [])
 truncate = lambda s, max_len=40: (s if len(s) <= max_len else s[:max_len-3] + '...') if isinstance(s, str) else s
-# Convert None values to NaN for matplotlib compatibility
 safe_yerr = lambda yerr: [np.nan if x is None else x for x in yerr] if yerr else None
 attach = lambda t, o, i: ((lambda r, w: ([w.add_page(p) for p in r.pages], w.add_metadata({"/Producer": "EmotiView", "/Conformance": "/PDF/A-1b"}), w.add_attachment(os.path.basename(i), open(i, 'rb').read()), (lambda f: (w.write(f), f.close()))(open(o, 'wb')), os.remove(t), o))(__import__('pypdf').PdfReader(t), __import__('pypdf').PdfWriter()) if __import__('importlib').util.find_spec('pypdf') else (shutil.move(t, o), o)[-1])
+
+def to_lst(x):
+    """Flatten single-element nested lists, convert polars Series, ensure list output."""
+    if isinstance(x, pl.Series):
+        return x.to_list()
+    if isinstance(x, list):
+        while isinstance(x, list) and len(x) == 1 and isinstance(x[0], (list, np.ndarray)):
+            x = x[0]
+        return x if isinstance(x, list) else list(x) if hasattr(x, '__iter__') and not isinstance(x, str) else [x]
+    return []
+
+def apply_y_limits(ax, row, global_lim=None, plot_type='bar'):
+    """Apply Y-axis limits based on y_ticks/y_labels configuration."""
+    yt, yl = row.get('y_ticks'), row.get('y_labels')
+    if yl and isinstance(yl, (list, tuple)) and len(yl) > 2:
+        # Full labels list (PANAS, BISBAS)
+        ax.set_ylim(0.5, len(yl) + 0.5)
+        if plot_type == 'grid':
+            ax.set_yticks(list(range(1, len(yl) + 1)))
+            ax.set_yticklabels(yl, fontsize=9)
+    elif yt and isinstance(yt, (int, float)):
+        if yl and isinstance(yl, (list, tuple)) and len(yl) == 2:
+            # Endpoint labels
+            ax.set_ylim(0.5, yt + 0.5)
+            if plot_type == 'grid':
+                ax.set_yticks(list(range(1, int(yt) + 1)))
+                ytick_labels = [''] * int(yt)
+                ytick_labels[0], ytick_labels[-1] = str(yl[0]), str(yl[1])
+                ax.set_yticklabels(ytick_labels, fontsize=9)
+        elif yl and isinstance(yl, (list, tuple)) and len(yl) == 3:
+            # 3 labels: bottom, middle, top
+            if plot_type == 'grid':
+                ax.set_yticks(list(range(1, int(yt) + 1)))
+                ytick_labels = [''] * int(yt)
+                ytick_labels[0] = str(yl[0])
+                ytick_labels[(int(yt) - 1) // 2] = str(yl[1])
+                ytick_labels[-1] = str(yl[2])
+                ax.set_yticklabels(ytick_labels, fontsize=9)
+        else:
+            # Numeric symmetric limit
+            ax.set_ylim(-abs(yt), abs(yt)) if plot_type == 'grid' else ax.set_ylim(0, yt)
+    elif global_lim:
+        ax.set_ylim(global_lim)
+
+def style_axis(ax, xlabel='', ylabel='', show_grid=True):
+    """Apply consistent styling to axis."""
+    ax.set_xlabel(xlabel, fontsize=12)
+    ax.set_ylabel(ylabel, fontsize=12)
+    if show_grid:
+        ax.grid(True, alpha=0.25, linestyle='--', linewidth=0.8)
+    [ax.spines[s].set_visible(False) for s in ['top', 'right']]
+    [ax.spines[s].set_linewidth(1.2) for s in ['left', 'bottom']]
+
+def plot_single_panel(ax, x_data, y_data, y_var, plot_type, row, label=None, global_lim=None, global_x_lim=None):
+    """Plot a single panel (for grid layout or single plot)."""
+    xd, yd = to_lst(x_data), to_lst(y_data)
+    yv = to_lst(y_var) if y_var else None
+    
+    if plot_type == 'grid':
+        # Bar chart
+        ax.bar(range(len(yd)), yd, yerr=safe_yerr(yv) if yv else None, color='dimgray', alpha=0.85, capsize=4, error_kw={'linewidth': 1.5})
+        ax.set_xticks(range(len(xd)))
+        ax.set_xticklabels([truncate(str(x)) for x in xd], rotation=45, ha='right', fontsize=9)
+        ax.xaxis.set_ticks_position('bottom')
+        ax.tick_params(axis='x', which='both', bottom=True, labelbottom=True)
+        ax.spines['bottom'].set_position(('axes', 0))
+    elif plot_type == 'line_grid':
+        # Line chart
+        ax.plot(xd, yd, linewidth=2.5, alpha=0.85, color='dimgray')
+        if yv and all(v is not None for v in yv):
+            ax.fill_between(xd, [y - e for y, e in zip(yd, yv)], [y + e for y, e in zip(yd, yv)], alpha=0.3, color='dimgray')
+        if global_x_lim:
+            ax.set_xlim(global_x_lim)
+    
+    apply_y_limits(ax, row, global_lim, plot_type)
+    if label:
+        ax.set_title(label, fontsize=14, fontweight='bold')
+    style_axis(ax, row.get('x_label', ''), row.get('y_label', ''))
 
 def plot(df, pdf_path):
     """Generic plotter: handles concatenated data from concatenating_processor."""
     print(f"[plotter] Plotting started: {pdf_path}")
     pdf = PdfPages(pdf_path)
     row = df.to_dicts()[0]
+    
+    if 'x_data' not in row or 'y_data' not in row:
+        print(f"[plotter] ERROR: Missing required fields (x_data/y_data), available: {list(row.keys())}")
+        print(f"[plotter] Cannot plot - closing PDF and exiting")
+        pdf.close()
+        return
+    
     x_data, y_data, y_var, labels = to_lst(row['x_data']), to_lst(row['y_data']), to_lst(row.get('y_var', [])), to_lst(row.get('labels', []))
-    # Extract plot_type - handle nested lists from concatenation
-    raw_plot_type = row['plot_type']
-    if isinstance(raw_plot_type, list):
-        plot_type = raw_plot_type[0] if raw_plot_type else 'bar'
-        if isinstance(plot_type, list):
-            plot_type = plot_type[0] if plot_type else 'bar'
-    else:
-        plot_type = raw_plot_type
-    # For grid/bar plots, x_data may be flat (shared categories) while y_data is nested
-    # For line plots, both x_data and y_data are nested
+    raw_plot_type = row.get('plot_type', 'bar')
+    if not raw_plot_type:
+        raw_plot_type = 'bar'
+    plot_type = raw_plot_type[0] if isinstance(raw_plot_type, list) else raw_plot_type
+    plot_type = plot_type[0] if isinstance(plot_type, list) else plot_type
+    
     is_concat_y = y_data and isinstance(y_data[0], (list, tuple))
     is_concat_x = x_data and isinstance(x_data[0], (list, tuple))
     is_concat = is_concat_y or is_concat_x
-    colors = ['dimgray', 'darkgray', 'gray', 'lightgray', 'silver']
     lbl = lambda i: labels[i] if i < len(labels) else f'Dataset {i+1}'
     
     print(f"[plotter] Plot type: {plot_type}, Concatenated: {is_concat} (x={is_concat_x}, y={is_concat_y}), Labels: {labels if labels else 'none'}")
     
-    # Grid layout for line_grid or grid: separate subplot per condition
-    if (plot_type == 'line_grid' or plot_type == 'grid') and is_concat:
-        # For grid/bar plots with flat x_data, n_plots is determined by y_data
+    if (plot_type in ('line_grid', 'grid')) and is_concat:
+        # Grid layout
         n_plots = len(y_data) if is_concat_y else len(x_data)
-        n_cols = min(3, n_plots)
-        n_rows = (n_plots + n_cols - 1) // n_cols
+        n_cols, n_rows = min(3, n_plots), (n_plots + 2) // 3
         print(f"[plotter] Creating grid: {n_rows}x{n_cols} for {n_plots} conditions")
-        # Add extra space at top for suptitle
         fig, axes = plt.subplots(n_rows, n_cols, figsize=(6*n_cols, 4*n_rows + 0.5))
         axes = axes.flatten() if n_plots > 1 else [axes]
         
-        # Calculate global axis limits for consistent scaling across all subplots
-        all_x_data, all_y_data = [], []
-        
-        # Handle flat x_data (grid/bar with shared categories) vs nested x_data (line_grid)
-        if is_concat_x:
-            for xd, yd in zip(x_data, y_data):
-                xd_list, yd_list = to_lst(xd), to_lst(yd)
-                all_x_data.extend(xd_list)
-                all_y_data.extend(yd_list)
-        else:
-            # x_data is flat (shared categories), y_data is nested
-            all_x_data = to_lst(x_data)
-            for yd in y_data:
-                all_y_data.extend(to_lst(yd))
-        
-        # Calculate global limits for both x and y axes
-        y_min, y_max = min(all_y_data), max(all_y_data)
-        y_range = y_max - y_min
-        y_margin = y_range * 0.1  # 10% margin
-        global_y_lim = (y_min - y_margin, y_max + y_margin)
-        
-        if plot_type == 'line_grid':
-            # For line plots, also calculate x-axis limits
-            x_min, x_max = min(all_x_data), max(all_x_data)
-            x_range = x_max - x_min
-            x_margin = x_range * 0.05  # 5% margin
-            global_x_lim = (x_min - x_margin, x_max + x_margin)
-        else:
-            # For bar plots, x-axis is categorical (no global x limit needed)
-            global_x_lim = None
-        
-        # Iterate over conditions - handle flat x_data (shared) vs nested x_data
+        # Calculate global limits for consistent scaling
+        all_x, all_y = [], []
         for i in range(n_plots):
-            ax = axes[i]
-            # For grid/bar with flat x_data, use shared x_data for all subplots
             xd = x_data[i] if is_concat_x else x_data
             yd = y_data[i]
-            yv = y_var[i] if y_var and i < len(y_var) else None
-            xd_list, yd_list = to_lst(xd), to_lst(yd)
-            
-            # For 'grid' type (bar plots), create bar chart
-            if plot_type == 'grid':
-                yerr_safe = safe_yerr(to_lst(yv)) if yv else None
-                ax.bar(range(len(yd_list)), yd_list, yerr=yerr_safe, color='dimgray', alpha=0.85, capsize=4, error_kw={'linewidth': 1.5})
-                ax.set_xticks(range(len(xd_list)))
-                ax.set_xticklabels([truncate(x) for x in xd_list], rotation=45, ha='right', fontsize=9)
-                # Move x-axis labels to bottom (important for plots with negative values like fnirs_rel)
-                ax.xaxis.set_ticks_position('bottom')
-                ax.tick_params(axis='x', which='both', bottom=True, labelbottom=True)
-                ax.spines['bottom'].set_position(('axes', 0))  # Keep spine at bottom
-                # Check if y_ticks or y_labels override is set (for fixed Y-axis limits)
-                yt = row.get('y_ticks')
-                yl = row.get('y_labels')
-                if yl and isinstance(yl, (list, tuple)) and len(yl) > 2:
-                    # Questionnaire scale with endpoint labels: y-axis is 1 to N
-                    ax.set_ylim(0.5, len(yl) + 0.5)
-                elif yt and isinstance(yt, (int, float)):
-                    if yl and isinstance(yl, (list, tuple)) and len(yl) == 2:
-                        # Questionnaire scale with 2 endpoint labels: treat yt as max
-                        ax.set_ylim(0.5, yt + 0.5)
-                    else:
-                        # Numeric data (fNIRS, etc.): treat yt as symmetric limit around zero
-                        ax.set_ylim(-abs(yt), abs(yt))
-                else:
-                    ax.set_ylim(global_y_lim)
-            else:
-                # For 'line_grid' type, create line plot
-                ax.plot(xd_list, yd_list, linewidth=2.5, alpha=0.85, color='dimgray')
-                
-                # Add shaded error region if variance provided
-                if yv is not None:
-                    yv_list = to_lst(yv)
-                    import numpy as np
-                    # Filter out None values
-                    if yv_list and all(v is not None for v in yv_list):
-                        ax.fill_between(xd_list, [y - e for y, e in zip(yd_list, yv_list)], 
-                                       [y + e for y, e in zip(yd_list, yv_list)], alpha=0.3, color='dimgray')
-                
-                if global_x_lim:
-                    ax.set_xlim(global_x_lim)
-                # Check if y_ticks override is set (for fixed Y-axis limits across participants)
-                yt = row.get('y_ticks')
-                if yt and isinstance(yt, (int, float)):
-                    ax.set_ylim(0, yt)
-                else:
-                    ax.set_ylim(global_y_lim)
-            
-            ax.set_title(lbl(i), fontsize=14, fontweight='bold')
-            ax.set_xlabel(row.get('x_label', '') if plot_type == 'line_grid' else row.get('x_axis', ''), fontsize=12)
-            ax.set_ylabel(row.get('y_label', ''), fontsize=12)
-            # Apply y_ticks/y_labels for questionnaire scale labels (grid/bar plots only)
-            yt = row.get('y_ticks')
-            yl = row.get('y_labels')
-            if plot_type == 'grid':
-                if yt and isinstance(yt, int):
-                    # y_ticks is int: use as scale max
-                    ax.set_yticks(list(range(1, yt + 1)))
-                    if yl and isinstance(yl, (list, tuple)) and len(yl) == 2:
-                        # 2 labels: endpoints only (renamed to avoid shadowing condition labels)
-                        ytick_labels = [''] * yt
-                        ytick_labels[0] = str(yl[0])
-                        ytick_labels[-1] = str(yl[1])
-                        ax.set_yticklabels(ytick_labels, fontsize=9)
-                    elif yl and isinstance(yl, (list, tuple)) and len(yl) == 3:
-                        # 3 labels: bottom, middle, top (requires odd y-max for true center)
-                        ytick_labels = [''] * yt
-                        ytick_labels[0] = str(yl[0])
-                        ytick_labels[(yt - 1) // 2] = str(yl[1])
-                        ytick_labels[-1] = str(yl[2])
-                        ax.set_yticklabels(ytick_labels, fontsize=9)
-                    # else: numeric ticks (SAM case)
-                elif yl and isinstance(yl, (list, tuple)) and len(yl) > 2:
-                    # Full labels list (PANAS, BISBAS): use length as scale, all labeled
-                    ax.set_yticks(list(range(1, len(yl) + 1)))
-                    ax.set_yticklabels(yl, fontsize=9)
-                    ax.set_ylim(0.5, len(yl) + 0.5)
-            ax.grid(True, alpha=0.25, linestyle='--', linewidth=0.8)
-            [ax.spines[s].set_visible(False) for s in ['top', 'right']]
-            [ax.spines[s].set_linewidth(1.2) for s in ['left', 'bottom']]
+            all_x.extend([v for v in to_lst(xd) if isinstance(v, (int, float))])
+            all_y.extend([v for v in to_lst(yd) if isinstance(v, (int, float))])
         
-        # Hide unused subplots
-        for i in range(n_plots, len(axes)):
-            axes[i].set_visible(False)
+        global_y_lim = None
+        if all_y:
+            y_min, y_max = float(min(all_y)), float(max(all_y))
+            global_y_lim = (y_min - (y_max - y_min) * 0.1, y_max + (y_max - y_min) * 0.1)
         
-        # Rotate x-axis labels diagonally for all subplots (same as singular plots)
-        for ax in axes[:n_plots]:
-            plt.setp(ax.get_xticklabels(), rotation=45, ha='right')
+        global_x_lim = None
+        if plot_type == 'line_grid' and all_x:
+            x_min, x_max = float(min(all_x)), float(max(all_x))
+            global_x_lim = (x_min - (x_max - x_min) * 0.05, x_max + (x_max - x_min) * 0.05)
         
-        # Use tight_layout with rect to leave space for rotated labels
-        fig.tight_layout(rect=[0, 0.05, 1, 1])  # [left, bottom, right, top]
+        for i in range(n_plots):
+            xd = x_data[i] if is_concat_x else x_data
+            yd, yv = y_data[i], (y_var[i] if y_var and i < len(y_var) else None)
+            plot_single_panel(axes[i], xd, yd, yv, plot_type, row, lbl(i), global_y_lim, global_x_lim)
+        
+        [axes[i].set_visible(False) for i in range(n_plots, len(axes))]
+        fig.tight_layout(rect=(0, 0.05, 1, 1))
     else:
-        # Original single-plot layout
+        # Single plot
         fig, ax = plt.subplots(figsize=(12, 6))
+        colors = ['dimgray', 'darkgray', 'gray', 'lightgray', 'silver']
         
-        # For bar plots with concatenated y_data but flat x_data, use x_data directly as categories
-        # This handles cases like fnirs_asym where x_data=['Left PFC-Right PFC'] and y_data=[[-5.3], [9.5], [-2.2]]
-        get_cats = lambda: to_lst(x_data[0]) if is_concat_x else x_data
+        if is_concat:
+            if plot_type == 'line':
+                # Multi-channel line plots with offset for many channels
+                n_ch = len(y_data)
+                if n_ch > 5:
+                    all_vals = [v for yd in y_data for v in to_lst(yd)]
+                    offset_step = float((max(all_vals) - min(all_vals)) * 1.2) if all_vals else 1.0
+                    for i, (xd, yd) in enumerate(zip(x_data, y_data)):
+                        ax.plot(to_lst(xd), np.array(to_lst(yd)) + float(i * offset_step), linewidth=0.5, alpha=0.7, color='dimgray')
+                    if n_ch <= 50:
+                        for i in range(n_ch):
+                            ax.text(1.01, float(i * offset_step), lbl(i), transform=ax.get_yaxis_transform(), fontsize=6, va='center', ha='left')
+                    ax.set_ylabel(f'{n_ch} channels (offset)', fontsize=10)
+                    ax.set_yticks([])
+                else:
+                    [ax.plot(to_lst(xd), to_lst(yd), linewidth=1.0, label=lbl(i), alpha=0.85, color=colors[i % len(colors)]) for i, (xd, yd) in enumerate(zip(x_data, y_data))]
+                    ax.legend(loc='upper right', fontsize=11, framealpha=0.95, edgecolor='gray')
+            elif plot_type == 'scatter':
+                [ax.scatter(to_lst(xd), to_lst(yd), s=50, label=lbl(i), alpha=0.7, color=colors[i % len(colors)]) for i, (xd, yd) in enumerate(zip(x_data, y_data))]
+                ax.legend(loc='upper right', fontsize=11, framealpha=0.95, edgecolor='gray')
+            elif plot_type == 'bar':
+                cats = to_lst(x_data[0]) if is_concat_x else x_data
+                n_cond, w = len(labels), 0.75 / max(len(cats), 1)
+                for j, cat in enumerate(cats):
+                    vals = [float(to_lst(y_data[i])[j]) if j < len(to_lst(y_data[i])) else 0.0 for i in range(n_cond)]
+                    errs = [float(to_lst(y_var[i])[j]) if y_var and i < len(y_var) and j < len(to_lst(y_var[i])) else 0.0 for i in range(n_cond)]
+                    ax.bar([i + (j - len(cats)/2 + 0.5) * w for i in range(n_cond)], vals, width=w, label=str(cat), yerr=safe_yerr(errs) if y_var else None, color=colors[j % len(colors)], alpha=0.85, capsize=4, error_kw={'linewidth': 1.5})
+                ax.set_xticks(range(n_cond))
+                ax.set_xticklabels([str(lbl) for lbl in labels], rotation=45, ha='right', fontsize=11)
+                ax.legend(loc='upper right', fontsize=10, framealpha=0.95, edgecolor='gray')
+        else:
+            # Non-concatenated
+            if plot_type == 'line':
+                ax.plot(x_data, y_data, linewidth=2.5, alpha=0.85, color='dimgray')
+            elif plot_type == 'scatter':
+                ax.scatter(x_data, y_data, s=50, alpha=0.7, color='dimgray')
+            else:  # bar
+                ax.bar(range(len(y_data)), [float(v) for v in y_data], yerr=safe_yerr(y_var) if y_var else None, color='dimgray', alpha=0.85, capsize=4, error_kw={'linewidth': 1.5})
+                ax.set_xticks(range(len(x_data)))
+                ax.set_xticklabels([truncate(str(x)) for x in x_data], rotation=45, ha='right', fontsize=10)
         
-        (([ax.plot(to_lst(xd), to_lst(yd), linewidth=2.5, label=lbl(i), alpha=0.85, color=colors[i % len(colors)]) for i, (xd, yd) in enumerate(zip(x_data, y_data))], ax.legend(loc='upper right', fontsize=11, framealpha=0.95, edgecolor='gray')) if plot_type == 'line' else
-         ([ax.scatter(to_lst(xd), to_lst(yd), s=50, label=lbl(i), alpha=0.7, color=colors[i % len(colors)]) for i, (xd, yd) in enumerate(zip(x_data, y_data))], ax.legend(loc='upper right', fontsize=11, framealpha=0.95, edgecolor='gray')) if plot_type == 'scatter' else
-         (lambda n_cond, cats, w: ([ax.bar([i + (j - len(cats)/2 + 0.5) * w for i in range(n_cond)], [to_lst(y_data[i])[j] for i in range(n_cond)], width=w, label=cats[j], yerr=safe_yerr([to_lst(y_var[i])[j] if i < len(y_var) and j < len(to_lst(y_var[i])) else 0 for i in range(n_cond)]) if y_var else None, color=colors[j % len(colors)], alpha=0.85, capsize=4, error_kw={'linewidth': 1.5}) for j in range(len(cats))], ax.set_xticks(range(n_cond)), ax.set_xticklabels(labels, rotation=45, ha='right', fontsize=11), ax.legend(loc='upper right', fontsize=10, framealpha=0.95, edgecolor='gray')))(len(labels), get_cats(), 0.75 / len(get_cats()) if len(get_cats()) > 0 else 0.75) if plot_type == 'bar' else None) if is_concat else (
-         ax.plot(x_data, y_data, linewidth=2.5, alpha=0.85, color='dimgray') if plot_type == 'line' else
-         ax.scatter(x_data, y_data, s=50, alpha=0.7, color='dimgray') if plot_type == 'scatter' else
-         (ax.bar(range(len(y_data)), y_data, yerr=safe_yerr(y_var) if y_var else None, color='dimgray', alpha=0.85, capsize=4, error_kw={'linewidth': 1.5}), ax.set_xticks(range(len(x_data))), ax.set_xticklabels([truncate(x) for x in x_data], rotation=45, ha='right', fontsize=10)))
-        
-        ax.set_xlabel(row.get('x_axis') or row.get('x_label', ''), fontsize=13, fontweight='medium')
-        ax.set_ylabel(row.get('y_axis') or row.get('y_label', ''), fontsize=13, fontweight='medium')
-        (lambda yt: (ax.set_yticks(list(range(1, len(yt) + 1))), ax.set_yticklabels(yt, fontsize=9), ax.set_ylim(0.5, len(yt) + 0.5)) if yt and isinstance(yt, (list, tuple)) else ax.tick_params(labelsize=11))(row.get('y_ticks'))
-        ax.grid(True, alpha=0.25, linestyle='--', linewidth=0.8); [ax.spines[s].set_visible(False) for s in ['top', 'right']]; [ax.spines[s].set_linewidth(1.2) for s in ['left', 'bottom']]
-        plt.setp(ax.get_xticklabels(), rotation=45, ha='right')  # Ensure diagonal labels
-        fig.tight_layout(rect=[0, 0.05, 1, 1])  # Leave space for rotated labels
+        style_axis(ax, row.get('x_axis') or row.get('x_label', ''), row.get('y_axis') or row.get('y_label', ''))
+        apply_y_limits(ax, row)
+        fig.tight_layout(rect=(0, 0.05, 1, 1))
     
-    pdf.savefig(fig, bbox_inches='tight', dpi=300); plt.close(fig); pdf.close()
+    pdf.savefig(fig, bbox_inches='tight', dpi=300)
+    plt.close(fig)
+    pdf.close()
     print(f"[plotter] Plotting finished: {pdf_path}")
     return pdf_path
 
 def run(inp, out_dir, pre):
+    """Run plotter to create final result PDFs with embedded data.
+    
+    This plotter creates publication-ready PDFs with embedded parquet data.
+    Procedure/QC plots are handled by interactive_plotter.py.
+    
+    Args:
+        inp: Input parquet file
+        out_dir: Output directory (participant folder)
+        pre: Prefix for output files
+    """
     print(f"[plotter] Input: {inp}, Output dir: {out_dir}, Prefix: {pre}")
-    df = pl.read_parquet(inp); os.makedirs(out_dir, exist_ok=True)
-    tf = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf'); tf_path = (plot(df, tf.name), tf.close(), tf.name)[2]
+    df = pl.read_parquet(inp)
+
+    # Always output flat in the provided directory (final results)
+    os.makedirs(out_dir, exist_ok=True)
+    tf = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf')
+    tf_path = tf.name
+    tf.close()
+    
+    # Create plot - returns None if failed
+    plot_result = plot(df, tf_path)
+    
+    # Check if plot was created successfully (file size > 0)
+    if not os.path.exists(tf_path) or os.path.getsize(tf_path) == 0:
+        print(f"[plotter] ERROR: Plot creation failed, no valid PDF generated")
+        if os.path.exists(tf_path):
+            os.remove(tf_path)
+        sys.exit(1)
+    
     out_pdf = os.path.join(out_dir, f"{pre}.pdf")
+    
+    # Attach data to PDF for final results (plotter always creates full PDFs with embedded data)
     comb_pq = os.path.join(os.getcwd(), f"{sanitize(pre)}_data.parquet")
     df.write_parquet(comb_pq)
     # Attach data to PDF if pypdf available, then clean up temp files

@@ -1,5 +1,10 @@
 import polars as pl, sys, os
 
+# Logging helpers
+def log_info(msg): print(f"[relative] INFO: {msg}")
+def log_warning(msg): print(f"[relative] WARNING: {msg}")
+def log_error(msg): print(f"[relative] ERROR: {msg}")
+
 def relative_normalize(ip: str, baseline_cond: str = 'NEU', y_lim: float | None = None) -> str:
     """Convert concatenated analyzer output to relative change from baseline condition.
     
@@ -25,12 +30,12 @@ def relative_normalize(ip: str, baseline_cond: str = 'NEU', y_lim: float | None 
     # Get labels and find baseline index
     labels = row.get('labels', [])
     if not labels:
-        print(f"[relative] Error: No 'labels' field found. Columns: {df.columns}")
+        log_error(f"No 'labels' field found. Columns: {df.columns}")
         sys.exit(1)
     
     baseline_idx = next((i for i, l in enumerate(labels) if l == baseline_cond), None)
     if baseline_idx is None:
-        print(f"[relative] Warning: Baseline '{baseline_cond}' not found in {labels}, using first condition")
+        log_warning(f"Baseline '{baseline_cond}' not found in {labels}, using first condition")
         baseline_idx = 0
         baseline_cond = labels[0]
     
@@ -40,7 +45,7 @@ def relative_normalize(ip: str, baseline_cond: str = 'NEU', y_lim: float | None 
     x_data = row.get('x_data', [])
     
     if not y_data or baseline_idx >= len(y_data):
-        print(f"[relative] Error: Invalid y_data structure")
+        log_error("Invalid y_data structure")
         sys.exit(1)
     
     baseline_values = y_data[baseline_idx]
@@ -89,6 +94,11 @@ def relative_normalize(ip: str, baseline_cond: str = 'NEU', y_lim: float | None 
     out_dir = os.path.dirname(ip) or '.'
     out_path = os.path.join(out_dir, f"{base}_rel.parquet")
     out_df.write_parquet(out_path)
+    
+    # Create procedure visualization
+    vis_path = out_path.replace('.parquet', '_vis.parquet')
+    out_df.write_parquet(vis_path)
+    print(f"[relative] Created procedure visualization: {vis_path}")
     
     print(f"[relative] Normalized {len(new_labels)} conditions relative to {baseline_cond} (baseline excluded):")
     for i, label in enumerate(new_labels):

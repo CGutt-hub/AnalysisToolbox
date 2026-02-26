@@ -160,6 +160,18 @@ def compute_plv(stream_paths: list[str], stream_configs: list[dict[str, Any]], o
             output.write_parquet(out_file)
             print(f"[plv]   {cond}: {os.path.basename(out_file)} ({len(plv_results)} pairs)")
     
+    # Create procedure visualization file (aggregate all conditions)
+    plot_files = [os.path.join(out_folder, f"{output_name}_plv{idx+1}.parquet") for idx in range(len(conditions))]
+    if all(os.path.exists(f) for f in plot_files):
+        try:
+            all_plots = [pl.read_parquet(f) for f in plot_files]
+            combined = pl.concat(all_plots)
+            vis_path = os.path.join(workspace, f"{output_name}_plv_vis.parquet")
+            combined.write_parquet(vis_path)
+            print(f"[plv] Created procedure visualization: {vis_path}")
+        except Exception as e:
+            print(f"[plv] WARNING: Could not create procedure visualization: {e}")
+    
     # Signal file
     signal_path = os.path.join(workspace, f"{output_name}_plv.parquet")
     pl.DataFrame({

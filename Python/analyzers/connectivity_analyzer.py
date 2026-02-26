@@ -3,9 +3,14 @@ import polars as pl, mne, sys, os, warnings, numpy as np
 from mne_connectivity import spectral_connectivity_epochs
 warnings.filterwarnings('ignore', message='.*does not conform to MNE naming conventions.*')
 
+# Logging helpers
+def log_info(msg): print(f"[connectivity] INFO: {msg}")
+def log_warning(msg): print(f"[connectivity] WARNING: {msg}")
+def log_error(msg): print(f"[connectivity] ERROR: {msg}")
+
 def analyze_connectivity(ip: str, method: str = 'coh', y_lim: float | None = None) -> str:
-    if not os.path.exists(ip): print(f"[connectivity] File not found: {ip}"); sys.exit(1)
-    if not ip.endswith('.fif'): print("[connectivity] Error: Requires .fif format"); sys.exit(1)
+    if not os.path.exists(ip): log_error(f"File not found: {ip}"); sys.exit(1)
+    if not ip.endswith('.fif'): log_error("Requires .fif format"); sys.exit(1)
     print(f"[connectivity] Connectivity analysis: {ip}, method={method}")
     
     raw = mne.io.read_raw_fif(ip, preload=True, verbose=False)
@@ -42,6 +47,17 @@ def analyze_connectivity(ip: str, method: str = 'coh', y_lim: float | None = Non
     
     out.write_parquet(os.path.join(out_folder, f"{base}_connectivity1.parquet"))
     print(f"[connectivity] {len(pairs)} channel pairs (mean {method}: {np.mean(values):.3f})")
+    
+    # Quality check: very weak connectivity
+    mean_conn = float(np.mean(values))
+    if mean_conn < 0.1:
+        log_warning(f"Very weak mean connectivity ({mean_conn:.3f}), check signal quality or frequency band")
+    
+    # Create procedure visualization
+    vis_path = os.path.join(workspace_root, f"{base}_connectivity_vis.parquet")
+    out.write_parquet(vis_path)
+    print(f"[connectivity] Created procedure visualization: {vis_path}")
+    
     signal_path = os.path.join(workspace_root, f"{base}_connectivity.parquet")
     pl.DataFrame({'signal': [1], 'source': [os.path.basename(ip)], 'conditions': [1], 'folder_path': [os.path.abspath(out_folder)]}).write_parquet(signal_path)
     print(f"[connectivity] Output: {signal_path}")

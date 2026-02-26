@@ -72,22 +72,35 @@ def find_in_subdir(signal_file, pattern):
         return []
     
     if not os.path.isdir(folder_path):
-        print(f"Error: Folder not found: {folder_path}", file=sys.stderr)
+        print(f"[file_finder] Warning: Folder not found (upstream passthrough?): {folder_path}", file=sys.stderr)
         return []
     
     matches = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if fnmatch.fnmatch(f, pattern)]
     if not matches:
-        print(f"Error: No files matching '{pattern}' in {folder_path}", file=sys.stderr)
+        print(f"[file_finder] Warning: No files matching '{pattern}' in {folder_path}", file=sys.stderr)
     return matches
 
-def copy_and_output(matches):
-    if not matches: return 1
+def copy_and_output(matches, signal_file, pattern):
+    if not matches:
+        # No files found — upstream produced an empty folder (graceful passthrough chain).
+        # Emit a proper signal file with folder_path so downstream modules can still resolve it.
+        base = os.path.splitext(os.path.basename(os.path.realpath(signal_file)))[0]
+        suffix = re.sub(r'[*?]', '', pattern).lstrip('._')        # strip glob chars
+        suffix = os.path.splitext(suffix)[0] or 'pass'
+        out_folder = os.path.abspath(f"{base}_{suffix}")
+        os.makedirs(out_folder, exist_ok=True)
+        out_name = f"{base}_{suffix}.parquet"
+        pl.DataFrame({'signal': [1], 'source': [base], 'conditions': [0],
+                      'folder_path': [out_folder]}).write_parquet(out_name)
+        print(f"[file_finder] No matches for '{pattern}' — emitting passthrough signal: {out_name}", file=sys.stderr)
+        print(os.path.abspath(out_name))
+        return 0
     for f in matches: shutil.copy2(f, b := os.path.basename(f)); print(os.path.abspath(b))
     return 0
 
 if __name__ == "__main__":
     if len(sys.argv) != 3: print("Usage: python file_finder.py <signal_file> <pattern>", file=sys.stderr); sys.exit(1)
     matches = find_in_subdir(sys.argv[1], sys.argv[2])
-    sys.exit(copy_and_output(matches))
+    sys.exit(copy_and_output(matches, sys.argv[1], sys.argv[2]))
 
 

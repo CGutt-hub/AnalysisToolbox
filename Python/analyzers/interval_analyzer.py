@@ -1,5 +1,10 @@
 import polars as pl, numpy as np, sys, os
 
+# Logging helpers
+def log_info(msg): print(f"[interval] INFO: {msg}")
+def log_warning(msg): print(f"[interval] WARNING: {msg}")
+def log_error(msg): print(f"[interval] ERROR: {msg}")
+
 def analyze_intervals(ip: str, event_col: str | None = None, y_lim: float | None = None, 
                       y_label: str = 'Value (ms)', suffix: str = 'interval',
                       metrics_mode: str = 'auto') -> str:
@@ -24,6 +29,8 @@ def analyze_intervals(ip: str, event_col: str | None = None, y_lim: float | None
     df = pl.read_parquet(ip)
     
     if 'condition' not in df.columns or 'epoch_id' not in df.columns:
+        log_error(f"Missing required columns. Available: {list(df.columns)}")
+        log_error(f"Required: ['condition', 'epoch_id']. Please check input data.")
         raise ValueError("Input must have 'condition' and 'epoch_id' columns")
     
     # Auto-detect event column
@@ -36,7 +43,17 @@ def analyze_intervals(ip: str, event_col: str | None = None, y_lim: float | None
             event_col = [c for c in df.columns if c not in meta_cols][0]
     
     print(f"[interval] Using event column: {event_col}")
-    sfreq = float(df['sfreq'][0]) if 'sfreq' in df.columns else 1000.0
+    sfreq = float(df['sfreq'][0]) if 'sfreq' in df.columns and len(df) > 0 else 1000.0
+    
+    # Handle empty DataFrame (no epochs to analyze)
+    if len(df) == 0:
+        log_warning("Empty input - no epochs to analyze")
+        base = os.path.splitext(os.path.basename(ip))[0]
+        out_folder = os.path.join(os.getcwd(), f"{base}_{suffix}")
+        os.makedirs(out_folder, exist_ok=True)
+        signal_path = os.path.join(os.getcwd(), f"{base}_{suffix}.parquet")
+        pl.DataFrame({'signal': [1], 'source': [os.path.basename(ip)], 'conditions': [0], 'folder_path': [os.path.abspath(out_folder)]}).write_parquet(signal_path)
+        return signal_path
     
     base = os.path.splitext(os.path.basename(ip))[0]
     out_folder = os.path.join(os.getcwd(), f"{base}_{suffix}")
@@ -44,6 +61,14 @@ def analyze_intervals(ip: str, event_col: str | None = None, y_lim: float | None
     
     conditions = sorted(df['condition'].unique().to_list())
     print(f"[interval] Processing {len(conditions)} conditions (sfreq={sfreq} Hz)")
+    
+    # Quality check: epoch counts per condition
+    for cond in conditions:
+        n_epochs = len(df.filter(pl.col('condition') == cond)['epoch_id'].unique())
+        if n_epochs < 3:
+            log_warning(f"Only {n_epochs} epoch(s) in {cond} (recommended minimum: 5 for reliable statistics)")
+        elif n_epochs < 5:
+            log_info(f"{n_epochs} epochs in {cond} (acceptable, but >5 preferred)")
     
     # Compute epoch-level metrics
     all_epoch_data = []
@@ -69,6 +94,12 @@ def analyze_intervals(ip: str, event_col: str | None = None, y_lim: float | None
             
             # RMSSD: Root mean square of successive differences
             rmssd_val = float(np.sqrt(np.mean(np.diff(intervals) ** 2)))
+            
+            # Quality check: high variance in IBIs suggests artifacts
+            ibi_mean = float(np.mean(intervals))
+            ibi_std = sdnn_val
+            if ibi_mean > 0 and (ibi_std / ibi_mean) > 0.5:
+                log_warning(f"{cond} epoch {eid}: High IBI variability (CV={ibi_std/ibi_mean:.2f}), possible artifacts")
             
             all_epoch_data.append({'condition': cond, 'epoch_id': eid, 'SDNN': sdnn_val, 'RMSSD': rmssd_val})
     
@@ -138,6 +169,18 @@ def analyze_intervals(ip: str, event_col: str | None = None, y_lim: float | None
             out_path = os.path.join(out_folder, f"{base}_{suffix}{idx+1}.parquet")
             output.write_parquet(out_path)
             print(f"[interval]   {cond}: SDNN={sdnn_mean:.2f}±{sdnn_sem:.2f}, RMSSD={rmssd_mean:.2f}±{rmssd_sem:.2f} ({len(sdnn_vals)} epochs)")
+    
+    # Create procedure visualization file
+    plot_files = [os.path.join(out_folder, f"{base}_{suffix}{idx+1}.parquet") for idx in range(len(conditions))]
+    if all(os.path.exists(f) for f in plot_files):
+        try:
+            all_plots = [pl.read_parquet(f) for f in plot_files]
+            combined = pl.concat(all_plots)
+            vis_path = os.path.join(os.getcwd(), f"{base}_{suffix}_vis.parquet")
+            combined.write_parquet(vis_path)
+            print(f"[interval] Created procedure visualization: {vis_path}")
+        except Exception as e:
+            print(f"[interval] WARNING: Could not create procedure visualization: {e}")
     
     signal_path = os.path.join(os.getcwd(), f"{base}_{suffix}.parquet")
     pl.DataFrame({

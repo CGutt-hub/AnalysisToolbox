@@ -3,6 +3,11 @@ import pyxdf, polars as pl, sys, os, numpy as np, mne, warnings
 # Suppress MNE naming convention warnings
 warnings.filterwarnings('ignore', message='.*does not conform to MNE naming conventions.*')
 
+# Logging helpers
+def log_info(msg): print(f"[xdf_reader] INFO: {msg}")
+def log_warning(msg): print(f"[xdf_reader] WARNING: {msg}")
+def log_error(msg): print(f"[xdf_reader] ERROR: {msg}")
+
 def get_ch_names(stream):
     info = stream.get('info', {})
     desc = info.get('desc')
@@ -41,6 +46,7 @@ def save_as_mne(stream, out_path, stream_type):
         info = mne.create_info(['empty'], 1.0, ch_types='misc')
         raw = mne.io.RawArray(np.array([[0.0]]), info, verbose=False)
         raw.save(out_path, overwrite=True, verbose=False)
+        log_warning(f"Stream has no data or channels (samples={len(ts)}, channels={len(ch_names) if ch_names else 0})")
         return False
     
     ch_type = 'fnirs_cw_amplitude' if stream_type in ['NIRS', 'fNIRS'] else ('eeg' if stream_type == 'EEG' else 'misc')
@@ -56,7 +62,14 @@ def read_xdf(ip):
     import time
     t0 = time.time()
     streams = pyxdf.load_xdf(ip)[0]
-    print(f"[xdf_reader] Loaded {len(streams)} streams in {time.time()-t0:.1f}s")
+    load_time = time.time() - t0
+    print(f"[xdf_reader] Loaded {len(streams)} streams in {load_time:.1f}s")
+    
+    # Quality check: no streams or very long load time
+    if len(streams) == 0:
+        log_warning("No streams found in XDF file")
+    elif load_time > 60:
+        log_info(f"Long load time ({load_time:.1f}s), large file or many streams")
     base = os.path.splitext(os.path.basename(ip))[0]
     workspace_root = os.getcwd()
     out_folder = os.path.join(workspace_root, f"{base}_xdf")
@@ -68,6 +81,13 @@ def read_xdf(ip):
     for i, s in enumerate(streams):
         stream_type = get_stream_type(s) or 'Unknown'
         stream_name = get_stream_name(s) or 'stream'
+        n_samples = len(s.get('time_stamps', []))
+        n_channels = len(get_ch_names(s) or [])
+        
+        # Quality check: very short streams
+        if n_samples > 0 and n_samples < 10:
+            log_warning(f"Stream {i+1} ({stream_type}): Only {n_samples} samples, may be incomplete")
+        
         # Keep numbered filenames for consistent module order
         fif_path = os.path.join(out_folder, f"{base}_xdf{i+1}.fif")
         parquet_path = os.path.join(out_folder, f"{base}_xdf{i+1}.parquet")

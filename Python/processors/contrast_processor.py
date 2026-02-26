@@ -45,6 +45,20 @@ def contrast_process(ip: str, contrasts_str: str, output_suffix: str = 'contrast
     result_df = pl.DataFrame(results)
     base, out_file = os.path.splitext(os.path.basename(ip))[0], f"{os.path.splitext(os.path.basename(ip))[0]}_{output_suffix}.parquet"
     result_df.write_parquet(out_file)
+    
+    # Generate inline visualization - bar plot of contrast values per channel
+    contrasts = result_df['contrast'].unique().to_list()
+    vis_df = pl.DataFrame({
+        'x_data': [result_df['channel'].to_list()],
+        'y_data': [[result_df.filter(pl.col('contrast') == c)['value'].to_list() for c in contrasts]],
+        'y_var': [[result_df.filter(pl.col('contrast') == c)['se'].to_list() for c in contrasts]],
+        'plot_type': ['grid'],
+        'labels': [contrasts],
+        'x_label': ['Channel'],
+        'y_label': ['Contrast Value']
+    })
+    vis_df.write_parquet(out_file.replace('.parquet', '_vis.parquet'))
+    
     print(f"[contrast] Output: {out_file} ({len(results)} rows)")
     return out_file
 

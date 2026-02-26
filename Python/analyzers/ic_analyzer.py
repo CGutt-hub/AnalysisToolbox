@@ -1,5 +1,5 @@
 """ICA Analyzer - Perform ICA on EEG data, output cleaned .fif and component variance."""
-import polars as pl, mne, sys, os, numpy as np, warnings
+import polars as pl, mne, sys, os, warnings
 warnings.filterwarnings('ignore', message='.*does not conform to MNE naming conventions.*')
 
 def analyze_ica(ip: str, n_components: float = 0.99, y_lim: float | None = None) -> str:
@@ -27,6 +27,10 @@ def analyze_ica(ip: str, n_components: float = 0.99, y_lim: float | None = None)
         'plot_type': ['bar'], 'x_label': ['Independent Component'], 'y_label': ['Explained Variance (%)'],
         'y_ticks': [y_lim] if y_lim is not None else [None]})
     variance_data.write_parquet(os.path.join(out_folder, f"{base}_ica1.parquet"))
+    # Create procedure visualization
+    vis_path = os.path.join(os.getcwd(), f"{base}_ica_vis.parquet")
+    variance_data.write_parquet(vis_path)
+    print(f"[ic] Created procedure visualization: {vis_path}")
     signal_path = os.path.join(os.getcwd(), f"{base}_ica.parquet")
     pl.DataFrame({'signal': [1], 'source': [os.path.basename(ip)], 'n_components': [n_ics], 'cleaned_fif': [cleaned_fif], 'folder_path': [os.path.abspath(out_folder)]}).write_parquet(signal_path)
     print(f"[ic] Output: {signal_path}")

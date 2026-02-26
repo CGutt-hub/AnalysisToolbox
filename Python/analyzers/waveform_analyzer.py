@@ -1,5 +1,10 @@
 import polars as pl, sys, os
 
+# Logging helpers
+def log_info(msg): print(f"[waveform] INFO: {msg}")
+def log_warning(msg): print(f"[waveform] WARNING: {msg}")
+def log_error(msg): print(f"[waveform] ERROR: {msg}")
+
 def analyze_waveform(ip: str, y_lim: float | None = None, y_label: str = 'Mean amplitude', 
                      downsample: int = 50, suffix: str = 'waveform') -> str:
     """
@@ -35,6 +40,11 @@ def analyze_waveform(ip: str, y_lim: float | None = None, y_label: str = 'Mean a
     for idx, cond in enumerate(conditions):
         cond_df = df.filter(pl.col('condition') == cond)
         
+        # Quality check: low epoch count
+        n_epochs = len(cond_df['epoch_id'].unique())
+        if n_epochs < 3:
+            log_warning(f"{cond}: Only {n_epochs} epoch(s), waveform SEM may be unreliable (recommended minimum: 5)")
+        
         # Compute relative time within each epoch
         cond_df = cond_df.with_columns([
             (pl.col('time') - pl.col('time').min().over('epoch_id')).alias('relative_time')
@@ -63,6 +73,18 @@ def analyze_waveform(ip: str, y_lim: float | None = None, y_label: str = 'Mean a
         out_path = os.path.join(out_folder, f"{base}_{suffix}{idx+1}.parquet")
         output.write_parquet(out_path)
         print(f"[waveform]   {cond}: {len(result)} points -> {os.path.basename(out_path)}")
+    
+    # Create procedure visualization file (aggregate all conditions)
+    plot_files = [os.path.join(out_folder, f"{base}_{suffix}{idx+1}.parquet") for idx in range(len(conditions))]
+    if all(os.path.exists(f) for f in plot_files):
+        try:
+            all_plots = [pl.read_parquet(f) for f in plot_files]
+            combined = pl.concat(all_plots)
+            vis_path = os.path.join(os.getcwd(), f"{base}_{suffix}_vis.parquet")
+            combined.write_parquet(vis_path)
+            print(f"[waveform] Created procedure visualization: {vis_path}")
+        except Exception as e:
+            print(f"[waveform] WARNING: Could not create procedure visualization: {e}")
     
     signal_path = os.path.join(os.getcwd(), f"{base}_{suffix}.parquet")
     pl.DataFrame({

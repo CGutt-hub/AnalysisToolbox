@@ -67,6 +67,12 @@ workflow participant_discovery {
             pipeline_log.text = ""
         }
 
+        // Clean up any leftover .finalized marker files from old pipeline runs
+        output_path.eachDirRecurse { dir ->
+            def marker = new File(dir, ".finalized")
+            if (marker.exists()) marker.delete()
+        }
+
         def watched_participants = Channel
             .watchPath("${workflow.launchDir}/${input_dir}/*", 'create,modify')
             .map { path -> path.getName() }
@@ -84,25 +90,58 @@ workflow participant_discovery {
             def safe_id = pid.replaceAll('\r', '').trim().replaceAll('[^A-Za-z0-9._-]', '_')
             def folder_path = new File("${workflow.launchDir}/${output_dir}/${safe_id}")
             folder_path.mkdirs()
+            
             def log_file = new File(folder_path, "${safe_id}_pipeline.log")
             def timestamp = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
             
-            // Write initial messages (without terminal_modules count)
-            log_file.text = "=== ${safe_id} initialized: ${timestamp} ===\n"
-            log_file.append("Workflow: ${workflow.projectDir}\n")
-            log_file.append("Session: ${workflow.sessionId}\n")
-            log_file.append("Launch dir: ${workflow.launchDir}\n")
-            log_file.append("Output: ${folder_path}\n")
-            log_file.append("\n=== Analysis started for ${safe_id}: ${timestamp} ===\n\n")
+            // Only initialize log if it doesn't exist (preserve on resume/sync)
+            if (!log_file.exists()) {
+                log_file.text = "=== ${safe_id} initialized: ${timestamp} ===\n"
+                log_file.append("Workflow: ${workflow.projectDir}\n")
+                log_file.append("Session: ${workflow.sessionId}\n")
+                log_file.append("Launch dir: ${workflow.launchDir}\n")
+                log_file.append("Output: ${folder_path}\n")
+                log_file.append("\n=== Analysis started for ${safe_id}: ${timestamp} ===\n\n")
+                
+                // Log to global pipeline log only on new initialization
+                def global_pipeline_log = new File("${workflow.launchDir}", "pipeline.log")
+                global_pipeline_log.append("=== ${safe_id} initialized: ${timestamp} ===\n")
+                global_pipeline_log.append("Workflow: ${workflow.projectDir}\n")
+                global_pipeline_log.append("Session: ${workflow.sessionId}\n")
+                global_pipeline_log.append("Launch dir: ${workflow.launchDir}\n")
+                global_pipeline_log.append("Output: ${folder_path}\n")
+                global_pipeline_log.append("\n=== Analysis started for ${safe_id}: ${timestamp} ===\n\n")
+            }
             
-            // Log to pipeline log (without terminal_modules count)
-            def global_pipeline_log = new File("${workflow.launchDir}", "pipeline.log")
-            global_pipeline_log.append("=== ${safe_id} initialized: ${timestamp} ===\n")
-            global_pipeline_log.append("Workflow: ${workflow.projectDir}\n")
-            global_pipeline_log.append("Session: ${workflow.sessionId}\n")
-            global_pipeline_log.append("Launch dir: ${workflow.launchDir}\n")
-            global_pipeline_log.append("Output: ${folder_path}\n")
-            global_pipeline_log.append("\n=== Analysis started for ${safe_id}: ${timestamp} ===\n\n")
+            // Initialize interactive HTML archive on first participant discovery
+            // This ensures the file exists before any parallel plot updates race to create it.
+            // IOInterface auto-plots *_vis.parquet files and calls update_archive() which
+            // only adds sidecar JSON + updates metadata — never recreates from scratch.
+            def html_file = new File("${workflow.launchDir}/${params.procedure_html_dir}", "${params.project_name}_interactive.html")
+            if (!html_file.exists()) {
+                html_file.parentFile.mkdirs()
+                def init_cmd = [
+                    params.python_exe, "-c",
+                    """
+import sys, os
+sys.path.insert(0, '${workflow.launchDir}/${params.toolbox_dir}/utils')
+from interactive_plotter import load_or_create_archive, create_archive_html
+html = r'${html_file.absolutePath}'
+os.makedirs(os.path.dirname(html), exist_ok=True)
+meta = load_or_create_archive(html, '${safe_id}')
+with open(html, 'w', encoding='utf-8') as f:
+    f.write(create_archive_html('${params.project_name}', meta))
+print(f'[workflow] Initialized interactive archive: {html}')
+"""
+                ]
+                def proc = init_cmd.execute()
+                proc.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)
+                if (proc.exitValue() != 0) {
+                    new File("${workflow.launchDir}", "pipeline.log").append(
+                        "[${new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())}] [workflow] Warning: Could not initialize HTML archive: ${proc.text}\n"
+                    )
+                }
+            }
             
             def folder = "${output_dir}/${safe_id}"
             [pid, folder]
@@ -123,6 +162,8 @@ workflow finalize_participant {
         def terminal_count = terminal_plots.size()
         terminal_plots.each { ch -> terminal_outputs = terminal_outputs.mix(ch) }
         
+        def finalizedPids = Collections.synchronizedSet(new HashSet<String>())
+
         terminal_outputs
             .map { file -> 
                 def pid = file.baseName.toString().split('_')[0..1].join('_')
@@ -131,6 +172,11 @@ workflow finalize_participant {
             .groupTuple(size: terminal_count)
             .join(participant_context)
             .subscribe { pid, files, folder ->
+                // Deduplicate in-memory (no marker file needed)
+                if (!finalizedPids.add(pid)) {
+                    return
+                }
+                
                 Thread.sleep(2000)
                 
                 def timestamp = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
@@ -148,28 +194,81 @@ workflow finalize_participant {
                 
                 // Write finalization to central pipeline log
                 def pipeline_log = new File("${workflow.launchDir}", "pipeline.log")
-                pipeline_log?.append("\n=== Analysis completed for ${pid}: ${timestamp} ===\n")
-                pipeline_log?.append("Terminal modules completed: ${files.size()}\n")
-                pipeline_log?.append("Session: ${workflow.sessionId}\n")
-                pipeline_log?.append("Duration: ${duration}s\n")
-                pipeline_log?.append("Files processed: ${files.size()}\n")
-                pipeline_log?.append("\n=== ${pid} finalized: ${timestamp} ===\n\n")
+                if (!pipeline_log.exists()) {
+                    pipeline_log.text = ""
+                }
+
+                // Add participant log + global pipeline.log to interactive HTML archive
+                def procedure_html = new File("${workflow.launchDir}/${params.procedure_html_dir}", "${params.project_name}_interactive.html")
+                if (procedure_html.exists() && log_file.exists()) {
+                    try {
+                        def add_log_cmd = [
+                            params.python_exe,
+                            "-c",
+                            """
+import sys
+sys.path.insert(0, '${workflow.launchDir}/${params.toolbox_dir}/utils')
+from interactive_plotter import add_log_to_archive
+add_log_to_archive('${procedure_html.absolutePath}', '${pid}', '${log_file.absolutePath}', 'Pipeline Log')
+"""
+                        ]
+                        def proc = add_log_cmd.execute()
+                        proc.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)
+                        if (proc.exitValue() != 0) {
+                            pipeline_log.append("Warning: Failed to add ${pid} log to HTML archive\n")
+                        }
+                    } catch (Exception e) {
+                        pipeline_log.append("Warning: Failed to add ${pid} log to HTML archive: ${e.message}\n")
+                    }
+                }
+                // Also add the global pipeline.log so it appears in the archive
+                if (procedure_html.exists() && pipeline_log.exists()) {
+                    try {
+                        def add_global_cmd = [
+                            params.python_exe,
+                            "-c",
+                            """
+import sys
+sys.path.insert(0, '${workflow.launchDir}/${params.toolbox_dir}/utils')
+from interactive_plotter import add_log_to_archive
+add_log_to_archive('${procedure_html.absolutePath}', 'Global', '${pipeline_log.absolutePath}', 'pipeline.log')
+"""
+                        ]
+                        def proc2 = add_global_cmd.execute()
+                        proc2.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)
+                    } catch (Exception e) {
+                        pipeline_log.append("Warning: Failed to add global pipeline.log to HTML archive: ${e.message}\n")
+                    }
+                }
+
+                // Delete the per-participant log — it is now embedded in the HTML archive
+                if (log_file.exists()) {
+                    log_file.delete()
+                }
+
+                pipeline_log.append("\n=== Analysis completed for ${pid}: ${timestamp} ===\n")
+                pipeline_log.append("Terminal modules completed: ${files.size()}\n")
+                pipeline_log.append("Session: ${workflow.sessionId}\n")
+                pipeline_log.append("Duration: ${duration}s\n")
+                pipeline_log.append("Files processed: ${files.size()}\n")
+                pipeline_log.append("\n=== ${pid} finalized: ${timestamp} ===\n\n")
                 
-                // Git sync - last operation
+                // Git sync
                 git_lock.lock()
                 try {
                     def results_full_path = new File("${workflow.launchDir}/${folder}").getAbsoluteFile()
+                    def html_file_full    = new File("${workflow.launchDir}/${params.procedure_html_dir}", "${params.project_name}_interactive.html").getAbsoluteFile()
+                    def plots_dir_full    = new File("${workflow.launchDir}/${params.procedure_html_dir}/plots").getAbsoluteFile()
                     def git_root = results_full_path
                     while (git_root != null && !new File(git_root, ".git").exists()) {
                         git_root = git_root.getParentFile()
                     }
-                    
-                    if (!git_root) {
-                        sync_log?.append("ERROR: No git repository found\n")
-                        return
-                    }
-                    
-                    def relative_path = git_root.toPath().relativize(results_full_path.toPath()).toString().replace('\\', '/')
+                    if (!git_root) return
+
+                    def relative_path     = git_root.toPath().relativize(results_full_path.toPath()).toString().replace('\\', '/')
+                    def pipeline_log_path = git_root.toPath().relativize(pipeline_log.toPath()).toString().replace('\\', '/')
+                    def html_file_path    = git_root.toPath().relativize(html_file_full.toPath()).toString().replace('\\', '/')
+                    def plots_dir_path    = plots_dir_full.exists() ? git_root.toPath().relativize(plots_dir_full.toPath()).toString().replace('\\', '/') : null
                     
                     def runGit = { cmd, timeout = 10 ->
                         try {
@@ -178,198 +277,74 @@ workflow finalize_participant {
                             def out = new StringBuilder()
                             proc.consumeProcessOutput(out, out)
                             def done = proc.waitFor(timeout, java.util.concurrent.TimeUnit.SECONDS)
-                            if (!done) {
-                                proc.destroy()
-                                return [exit: -1, out: "", timeout: true]
-                            }
-                            return [exit: proc.exitValue(), out: out.toString(), timeout: false]
+                            if (!done) { proc.destroy(); return [exit: -1, out: "timeout"] }
+                            return [exit: proc.exitValue(), out: out.toString()]
                         } catch (Exception e) {
-                            return [exit: -1, out: e.message, timeout: false]
+                            return [exit: -1, out: e.message]
                         }
                     }
                     
-                    def status = runGit(["git", "status", "--porcelain", "-uno", relative_path], 5)
-                    
-                    if (status.timeout || status.exit != 0 || !status.out?.trim()) {
-                        def check_timestamp = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
-                        pipeline_log?.append("\n=== Git sync check for ${pid}: ${check_timestamp} ===\n")
-                        pipeline_log?.append("Path: ${relative_path}\n")
-                        pipeline_log?.append("Status: No changes to sync\n")
-                        pipeline_log?.append("=== ${pid} thread closed: ${check_timestamp} ===\n\n")
-                        return
+                    def cleanupRebase = {
+                        runGit(["git", "rebase", "--abort"], 2)
+                        new File(git_root, ".git/rebase-merge").with { if (exists()) deleteDir() }
+                        new File(git_root, ".git/rebase-apply").with { if (exists()) deleteDir() }
                     }
                     
-                    def syncFailed = false
-                    def syncError = ""
-                    
-                    // Add participant folder (includes all files in it)
-                    def add = runGit(["git", "add", relative_path], 10)
-                    if (add.timeout || add.exit != 0) {
-                        def error_timestamp = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
-                        pipeline_log?.append("\n=== Git sync check for ${pid}: ${error_timestamp} ===\n")
-                        pipeline_log?.append("Path: ${relative_path}\n")
-                        pipeline_log?.append("Error: git add failed - ${add.out?.trim() ?: 'timeout'}\n")
-                        pipeline_log?.append("=== ${pid} thread closed: ${error_timestamp} ===\n\n")
-                        return
+                    def logSync = { status, details = "" ->
+                        def ts = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
+                        pipeline_log.append("\n=== Git sync for ${pid}: ${ts} ===\n")
+                        pipeline_log.append("Paths: ${relative_path}, ${html_file_path}\n")
+                        pipeline_log.append("Status: ${status}\n")
+                        if (details) pipeline_log.append("${details}\n")
+                        pipeline_log.append("=== ${pid} sync complete ===\n\n")
                     }
                     
-                    // Add pipeline.log
-                    def pipeline_log_path = git_root.toPath().relativize(pipeline_log.toPath()).toString().replace('\\', '/')
-                    def log_add = runGit(["git", "add", pipeline_log_path], 10)
-                    if (log_add.timeout || log_add.exit != 0) {
-                        def error_timestamp = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
-                        pipeline_log?.append("\n=== Git sync check for ${pid}: ${error_timestamp} ===\n")
-                        pipeline_log?.append("Path: ${relative_path}\n")
-                        pipeline_log?.append("Error: git add pipeline.log failed - ${log_add.out?.trim() ?: 'timeout'}\n")
-                        pipeline_log?.append("=== ${pid} thread closed: ${error_timestamp} ===\n\n")
-                        return
-                    }
-                    
-                    def commit = runGit(["git", "commit", "-m", "autosync: ${pid} completed"], 10)
-                    if (commit.timeout) {
-                        def error_timestamp = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
-                        pipeline_log?.append("\n=== Git sync check for ${pid}: ${error_timestamp} ===\n")
-                        pipeline_log?.append("Path: ${relative_path}\n")
-                        pipeline_log?.append("Error: git commit timed out\n")
-                        pipeline_log?.append("=== ${pid} thread closed: ${error_timestamp} ===\n\n")
-                        return
-                    }
-                    if (commit.exit != 0) {
-                        def no_commit_timestamp = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
-                        pipeline_log?.append("\n=== Git sync check for ${pid}: ${no_commit_timestamp} ===\n")
-                        pipeline_log?.append("Path: ${relative_path}\n")
-                        pipeline_log?.append("Status: No new commits\n")
-                        pipeline_log?.append("Git commit output: ${commit.out?.trim()}\n")
-                        pipeline_log?.append("=== ${pid} thread closed: ${no_commit_timestamp} ===\n\n")
-                        
-                        // Commit pipeline.log to track thread closure
-                        runGit(["git", "add", "pipeline.log"], 5)
-                        runGit(["git", "commit", "-m", "pipeline.log: ${pid} thread closed (no new results)"], 5)
-                        runGit(["git", "pull", "--rebase", "--autostash"], 10)
-                        runGit(["git", "push"], 10)
-                        return
-                    }
-                    
-                    def pull = runGit(["git", "pull", "--rebase", "--autostash"], 20)
-                    if (pull.timeout) {
-                        def error_timestamp = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
-                        runGit(["git", "rebase", "--abort"], 5)
-                        pipeline_log?.append("\n=== Git sync check for ${pid}: ${error_timestamp} ===\n")
-                        pipeline_log?.append("Path: ${relative_path}\n")
-                        pipeline_log?.append("Error: git pull timed out\n")
-                        pipeline_log?.append("=== ${pid} thread closed: ${error_timestamp} ===\n\n")
-                        
-                        // Commit pipeline.log to track thread closure
-                        runGit(["git", "add", "pipeline.log"], 5)
-                        runGit(["git", "commit", "-m", "pipeline.log: ${pid} thread closed (pull timeout)"], 5)
-                        runGit(["git", "push"], 10)
-                        return
-                    }
-                    if (pull.exit != 0) {
-                        def error_timestamp = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
-                        runGit(["git", "rebase", "--abort"], 5)
-                        
-                        // Check if it's an authentication error
-                        def isAuthError = pull.out?.contains("Authentication failed") || pull.out?.contains("Invalid username")
-                        if (isAuthError) {
-                            pipeline_log?.append("\n=== Git sync check for ${pid}: ${error_timestamp} ===\n")
-                            pipeline_log?.append("Path: ${relative_path}\n")
-                            pipeline_log?.append("Status: Committed locally (push skipped - authentication required)\n")
-                            pipeline_log?.append("Note: Results are saved locally. Configure SSH keys or access token for remote sync.\n")
-                            pipeline_log?.append("=== ${pid} thread closed: ${error_timestamp} ===\n\n")
-                            
-                            // Commit pipeline.log to track thread closure (local only)
-                            runGit(["git", "add", "pipeline.log"], 5)
-                            runGit(["git", "commit", "-m", "pipeline.log: ${pid} thread closed (auth required)"], 5)
-                            return
+                    cleanupRebase()
+
+                    // --- Commit 1: participant folder + HTML file + plots/ sidecar (only if changed) ---
+                    def addPaths = [relative_path, html_file_path]
+                    if (plots_dir_path) addPaths << plots_dir_path
+
+                    def status_participant = runGit(["git", "status", "--porcelain", "-uno"] + addPaths, 5)
+                    def hasParticipantChanges = status_participant.out?.trim()
+
+                    if (hasParticipantChanges) {
+                        def add = runGit(["git", "add"] + addPaths, 30)
+                        if (add.exit != 0) {
+                            runGit(["git", "reset", "HEAD"], 5)  // clean up partial staging
+                            logSync("Git add failed", add.out)
+                        } else {
+                            def commit = runGit(["git", "commit", "-m", "autosync: ${pid} completed"], 10)
+                            if (commit.exit == 0) {
+                                def pull = runGit(["git", "pull", "--rebase", "--autostash"], 20)
+                                if (pull.exit != 0) {
+                                    cleanupRebase()
+                                    runGit(["git", "reset", "--hard", "HEAD"], 5)
+                                    logSync("Git pull failed", pull.out)
+                                } else {
+                                    def push = runGit(["git", "push"], 20)
+                                    logSync(push.exit == 0 ? "Participant synced" : "Push failed (committed locally)", push.out)
+                                }
+                            } else {
+                                logSync("No participant changes to commit", commit.out)
+                                runGit(["git", "pull", "--rebase", "--autostash"], 10)
+                                runGit(["git", "push"], 10)
+                            }
                         }
-                        
-                        pipeline_log?.append("\n=== Git sync check for ${pid}: ${error_timestamp} ===\n")
-                        pipeline_log?.append("Path: ${relative_path}\n")
-                        pipeline_log?.append("Error: git pull failed - ${pull.out?.trim()}\n")
-                        pipeline_log?.append("=== ${pid} thread closed: ${error_timestamp} ===\n\n")
-                        
-                        // Commit pipeline.log to track thread closure
-                        runGit(["git", "add", "pipeline.log"], 5)
-                        runGit(["git", "commit", "-m", "pipeline.log: ${pid} thread closed (pull failed)"], 5)
-                        runGit(["git", "push"], 10)
-                        return
+                    } else {
+                        logSync("No participant changes")
                     }
-                    
-                    def push = runGit(["git", "push"], 20)
-                    if (push.timeout) {
-                        def error_timestamp = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
-                        pipeline_log?.append("\n=== Git sync check for ${pid}: ${error_timestamp} ===\n")
-                        pipeline_log?.append("Path: ${relative_path}\n")
-                        pipeline_log?.append("Status: Committed locally (push timed out)\n")
-                        pipeline_log?.append("=== ${pid} thread closed: ${error_timestamp} ===\n\n")
-                        
-                        // Commit pipeline.log to track thread closure (local only)
-                        runGit(["git", "add", "pipeline.log"], 5)
-                        runGit(["git", "commit", "-m", "pipeline.log: ${pid} thread closed (push timeout)"], 5)
-                        return
-                    }
-                    if (push.exit != 0) {
-                        def error_timestamp = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
-                        
-                        // Check if it's an authentication error
-                        def isAuthError = push.out?.contains("Authentication failed") || push.out?.contains("Invalid username")
-                        if (isAuthError) {
-                            pipeline_log?.append("\n=== Git sync check for ${pid}: ${error_timestamp} ===\n")
-                            pipeline_log?.append("Path: ${relative_path}\n")
-                            pipeline_log?.append("Status: Committed locally (push skipped - authentication required)\n")
-                            pipeline_log?.append("Note: Results are saved locally. Configure SSH keys or access token for remote sync.\n")
-                            pipeline_log?.append("=== ${pid} thread closed: ${error_timestamp} ===\n\n")
-                            
-                            // Commit pipeline.log to track thread closure (local only)
-                            runGit(["git", "add", "pipeline.log"], 5)
-                            runGit(["git", "commit", "-m", "pipeline.log: ${pid} thread closed (auth required)"], 5)
-                            return
+
+                    // --- Commit 2: pipeline.log always (captures final sync status above) ---
+                    def addLog = runGit(["git", "add", pipeline_log_path], 5)
+                    if (addLog.exit == 0) {
+                        def commitLog = runGit(["git", "commit", "-m", "pipeline.log: ${pid} complete"], 5)
+                        if (commitLog.exit == 0) {
+                            runGit(["git", "pull", "--rebase"], 10)
+                            runGit(["git", "push"], 10)
                         }
-                        
-                        pipeline_log?.append("\n=== Git sync check for ${pid}: ${error_timestamp} ===\n")
-                        pipeline_log?.append("Path: ${relative_path}\n")
-                        pipeline_log?.append("Error: git push failed - ${push.out?.trim()}\n")
-                        pipeline_log?.append("=== ${pid} thread closed: ${error_timestamp} ===\n\n")
-                        
-                        // Commit pipeline.log to track thread closure (local only)
-                        runGit(["git", "add", "pipeline.log"], 5)
-                        runGit(["git", "commit", "-m", "pipeline.log: ${pid} thread closed (push failed)"], 5)
-                        return
                     }
                     
-                    // Log successful sync
-                    try {
-                        def sync_timestamp = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
-                        
-                        pipeline_log.append("\n=== Git sync check for ${pid}: ${sync_timestamp} ===\n")
-                        pipeline_log.append("Path: ${relative_path}\n")
-                        pipeline_log.append("Status: synced (${sync_timestamp})\n")
-                        pipeline_log.append("=== ${pid} thread closed: ${sync_timestamp} ===\n\n")
-                        
-                        // Commit pipeline.log to track thread closure
-                        runGit(["git", "add", "pipeline.log"], 5)
-                        runGit(["git", "commit", "-m", "pipeline.log: ${pid} thread closed"], 5)
-                        runGit(["git", "pull", "--rebase", "--autostash"], 10)
-                        runGit(["git", "push"], 10)
-                    } catch (Exception e) {
-                        // Ignore log sync errors - main sync already succeeded
-                    }
-                } catch (Exception e) {
-                    def err_timestamp = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
-                    pipeline_log?.append("\n=== Git sync check for ${pid}: ${err_timestamp} ===\n")
-                    pipeline_log?.append("Path: ${relative_path}\n")
-                    pipeline_log?.append("Error: ${e.message}\n")
-                    pipeline_log?.append("=== ${pid} thread closed: ${err_timestamp} ===\n\n")
-                    
-                    // Commit pipeline.log to track thread closure
-                    try {
-                        runGit(["git", "add", "pipeline.log"], 5)
-                        runGit(["git", "commit", "-m", "pipeline.log: ${pid} thread closed (exception)"], 5)
-                        runGit(["git", "push"], 10)
-                    } catch (Exception logErr) {
-                        // Ignore - already in error state
-                    }
                 } finally {
                     git_lock.unlock()
                 }
@@ -388,7 +363,7 @@ process IOInterface {
         val extraParams         // Additional arguments
 
     output:
-        path "*.{fif,parquet}"
+        path "*.{fif,parquet}", optional: true
 
     script:
     // Shell-escape single quotes by replacing ' with '\''
@@ -469,8 +444,28 @@ process IOInterface {
         if [ \$EXIT_CODE -ne 0 ]; then
             echo "" >> "\$LOG_FILE"
             echo "\$(date '+%Y-%m-%d %H:%M:%S') [ERROR] ${scriptName} exit code \$EXIT_CODE" >> "\$LOG_FILE"
+            exit \$EXIT_CODE
         fi
-        exit \$EXIT_CODE
+        
+        # Auto-plot any *_vis.parquet files generated by this process (interactive HTML for QC)
+        for VIS_FILE in *_vis.parquet; do
+            if [ -f "\$VIS_FILE" ]; then
+                PREFIX=\$(basename "\$VIS_FILE" _vis.parquet)
+                # Create directory first, then resolve absolute path
+                mkdir -p "${workflow.launchDir}/${params.procedure_html_dir}"
+                PROCEDURE_FOLDER="\$(cd "${workflow.launchDir}/${params.procedure_html_dir}" && pwd)"
+                PROJECT_NAME="${params.project_name}"
+                echo "\$(date '+%Y-%m-%d %H:%M:%S') [autoplot] Creating interactive plot \$VIS_FILE -> \$PROCEDURE_FOLDER/\${PROJECT_NAME}_interactive.html" >> "\$LOG_FILE"
+                # Use interactive plotter for procedure visualization (project-level HTML)
+                ${env_exe} -u "${workflow.launchDir}/${params.interactive_plotter_script}" "\$VIS_FILE" "\$PROCEDURE_FOLDER" "\$PREFIX" "\$PROJECT_NAME" 2>&1 | while IFS= read -r line; do
+                    echo "\$(date '+%Y-%m-%d %H:%M:%S') \$line" >> "\$LOG_FILE"
+                done
+                # Remove vis file so it doesn't get passed to next stage
+                rm -f "\$VIS_FILE"
+            fi
+        done
+        
+        exit 0
     else
         ${env_exe} -u "${workflow.launchDir}/${script}" ${inputArgs} ${extraArgs}
     fi

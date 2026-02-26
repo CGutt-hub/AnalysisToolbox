@@ -60,6 +60,19 @@ def ols_process(ip: str, output_suffix: str = 'ols') -> str:
     base, out_file = os.path.splitext(os.path.basename(ip))[0], None
     out_file = f"{base}_{output_suffix}.parquet"
     result_df.write_parquet(out_file)
+    
+    # Generate inline visualization - bar plot of beta coefficients per condition
+    vis_df = pl.DataFrame({
+        'x_data': [result_df['channel'].to_list()],
+        'y_data': [[result_df.filter(pl.col('condition') == c)['beta'].to_list() for c in conditions]],
+        'y_var': [[result_df.filter(pl.col('condition') == c)['se'].to_list() for c in conditions]],
+        'plot_type': ['grid'],
+        'labels': [conditions],
+        'x_label': ['Channel'],
+        'y_label': ['Beta Coefficient']
+    })
+    vis_df.write_parquet(out_file.replace('.parquet', '_vis.parquet'))
+    
     print(f"[ols] Output: {out_file} ({len(results)} rows)")
     return out_file
 
