@@ -4,78 +4,45 @@ This plotter creates a single HTML file per participant containing all procedure
 with a collapsible file tree for navigation.
 """
 import polars as pl
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import numpy as np
 import sys
 import os
 import json
-import re
 import time
-import fcntl
 from typing import Any, IO
 
 # Import shared helpers from plotter
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from plotter import to_lst
 
-# Type-safe fcntl constants and functions
-flock: Any = getattr(fcntl, 'flock')
-LOCK_EX: int = getattr(fcntl, 'LOCK_EX')
-LOCK_NB: int = getattr(fcntl, 'LOCK_NB')
-LOCK_UN: int = getattr(fcntl, 'LOCK_UN')
-
-def acquire_file_lock(f: IO[Any], timeout: float = 120) -> None:
-    """Acquire exclusive lock on file with timeout (increased for large HTML files)."""
-    start_time = time.time()
-    while time.time() - start_time < timeout:
+# File locking: fcntl on Linux/macOS, msvcrt on Windows
+if os.name == 'nt':
+    import msvcrt
+    def acquire_file_lock(f: IO[Any], timeout: float = 120) -> None:
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+                return
+            except OSError:
+                time.sleep(0.1)
+        raise TimeoutError("Could not acquire file lock")
+    def release_file_lock(f: IO[Any]) -> None:
         try:
-            flock(f.fileno(), LOCK_EX | LOCK_NB)
-            return
-        except IOError:
-            time.sleep(0.1)
-    raise TimeoutError("Could not acquire file lock")
-
-def release_file_lock(f: IO[Any]) -> None:
-    """Release file lock."""
-    flock(f.fileno(), LOCK_UN)
-
-def compress_timeseries(x_data, y_data, max_points=5000):
-    """Compress time series data using adaptive decimation that preserves peaks.
-    
-    Args:
-        x_data: Time points (list or array)
-        y_data: Signal values (list or array)
-        max_points: Maximum number of points to retain
-    
-    Returns:
-        Tuple of (compressed_x, compressed_y)
-    """
-    if len(x_data) <= max_points:
-        return x_data, y_data
-    
-    # Use LTTB (Largest Triangle Three Buckets) decimation - preserves visual features
-    x = np.array(x_data)
-    y = np.array(y_data)
-    
-    # Simple bucket-based decimation with peak preservation
-    bucket_size = len(x) // max_points
-    indices = []
-    
-    for i in range(0, len(x), bucket_size):
-        bucket_end = min(i + bucket_size, len(x))
-        bucket_y = y[i:bucket_end]
-        
-        # Keep both min and max in each bucket to preserve peaks/troughs
-        if len(bucket_y) > 0:
-            min_idx = i + np.argmin(bucket_y)
-            max_idx = i + np.argmax(bucket_y)
-            indices.extend([min_idx, max_idx])
-    
-    # Add first and last points
-    indices = sorted(set([0] + indices + [len(x) - 1]))
-    
-    return x[indices].tolist(), y[indices].tolist()
+            msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+else:
+    import fcntl as _fcntl
+    def acquire_file_lock(f: IO[Any], timeout: float = 120) -> None:
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                _fcntl.flock(f.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+                return
+            except IOError:
+                time.sleep(0.1)
+        raise TimeoutError("Could not acquire file lock")
+    def release_file_lock(f: IO[Any]) -> None:
+        _fcntl.flock(f.fileno(), _fcntl.LOCK_UN)
 
 def parse_filename_to_tree_path(filename, participant_id):
     """Parse filename to tree path with participant folder.
@@ -94,294 +61,27 @@ def parse_filename_to_tree_path(filename, participant_id):
     # Return path with participant folder + filename
     return [participant_id, base]
 
-def create_plotly_json(df):
-    """Create Plotly-compatible JSON data from vis dataframe."""
-    
-    # Check if we have multiple rows with grid plot type (e.g., EA11 with conditions)
-    if len(df) > 1 and all(df['plot_type'] == 'grid'):
-        # Multiple condition grid - each row is one condition
-        first_row = df.row(0, named=True)
-        x_label = first_row.get('x_label', '')
-        y_label = first_row.get('y_label', '')
-        title = first_row.get('title', '')
-        
-        # Create subplot for each condition
-        fig = make_subplots(
-            rows=1, cols=len(df),
-            subplot_titles=[row.get('condition', f'Condition {i+1}') for i, row in enumerate(df.iter_rows(named=True))],
-            horizontal_spacing=0.05
-        )
-        
-        for idx, row_dict in enumerate(df.iter_rows(named=True)):
-            x_data = to_lst(row_dict.get('x_data', []))
-            y_data = to_lst(row_dict.get('y_data', []))
-            y_var = to_lst(row_dict.get('y_var', []))
-            
-            if not x_data:
-                x_data = list(range(len(y_data)))
-            
-            fig.add_trace(
-                go.Bar(
-                    x=x_data,
-                    y=y_data,
-                    error_y=dict(type='data', array=y_var) if y_var and any(v is not None for v in y_var) else None,
-                    marker_color='dimgray',
-                    showlegend=False
-                ),
-                row=1, col=idx+1
-            )
-            
-            fig.update_xaxes(title_text=x_label if idx == len(df) // 2 else '', row=1, col=idx+1)
-            fig.update_yaxes(title_text=y_label if idx == 0 else '', row=1, col=idx+1)
-        
-        fig.update_layout(
-            title=title,
-            template='plotly_white',
-            height=600,
-            margin=dict(l=60, r=40, t=60, b=60)
-        )
-        
-        fig_json = fig.to_json()
-        return json.loads(fig_json) if fig_json else {}, title
-    
-    # Single row processing (original logic)
-    row = df.row(0, named=True)
-    
-    plot_type = row.get('plot_type', 'line')
-    labels = to_lst(row.get('labels', []))
-    x_label = row.get('x_label', '')
-    y_label = row.get('y_label', '')
-    title = row.get('title', '')
-    
-    # Get data and detect concatenation by inspecting structure (same as plotter.py)
-    x_data_raw = row.get('x_data')
-    y_data_raw = row.get('y_data')
-    y_var = row.get('y_var')
-    
-    x_data = to_lst(x_data_raw)
-    y_data = to_lst(y_data_raw)
-    
-    # Detect concatenation by checking if data contains nested lists
-    is_concat_y = y_data and len(y_data) > 0 and isinstance(y_data[0], (list, tuple))
-    is_concat_x = x_data and len(x_data) > 0 and isinstance(x_data[0], (list, tuple))
-    is_concatenated = is_concat_y or is_concat_x
-    
-    # Create figure
-    if plot_type in ('grid', 'line_grid') and is_concatenated:
-        # Grid layout for concatenated conditions
-        n_conditions = len(y_data) if is_concat_y else len(x_data)
-        fig = make_subplots(
-            rows=1, cols=n_conditions,
-            subplot_titles=labels if labels else [f'Condition {i+1}' for i in range(n_conditions)],
-            horizontal_spacing=0.05
-        )
-        
-        y_var_list = to_lst(y_var) if y_var else []
-        
-        for idx in range(n_conditions):
-            xd = to_lst(x_data[idx]) if is_concat_x else x_data
-            yd = to_lst(y_data[idx]) if is_concat_y else y_data
-            yv = to_lst(y_var_list[idx]) if y_var_list and idx < len(y_var_list) else None
-            
-            # Ensure xd has proper length
-            if not xd or len(xd) == 0:
-                xd = list(range(len(yd)))
-            
-            # Bar chart for grid
-            fig.add_trace(
-                go.Bar(
-                    x=xd,
-                    y=yd,
-                    error_y=dict(type='data', array=yv) if yv else None,
-                    marker_color='dimgray',
-                    showlegend=False
-                ),
-                row=1, col=idx+1
-            )
-            
-            fig.update_xaxes(title_text=x_label if idx == n_conditions // 2 else '', row=1, col=idx+1)
-            fig.update_yaxes(title_text=y_label if idx == 0 else '', row=1, col=idx+1)
-    
-    elif plot_type == 'line':
-        # Line plot (potentially many channels)
-        fig = go.Figure()
-        
-        # Handle multi-channel time series
-        if labels and len(labels) > 1 and is_concat_y:
-            # Multiple channels - use staggered/offset visualization for clarity
-            # First pass: collect all channel data and calculate offset spacing
-            channel_data = []
-            for idx, label in enumerate(labels):
-                if idx < len(y_data):
-                    yd_raw = to_lst(y_data[idx])
-                    xd_raw = to_lst(x_data[idx]) if is_concat_x and idx < len(x_data) else list(range(len(yd_raw)))
-                    
-                    # Compress to max 5000 points per channel
-                    xd, yd = compress_timeseries(xd_raw, yd_raw, max_points=5000)
-                    channel_data.append((xd, yd, str(label)))
-            
-            # Calculate appropriate vertical offset based on signal range
-            if channel_data:
-                # Use the std of all channels to determine spacing
-                all_y_values = []
-                for _, yd, _ in channel_data:
-                    all_y_values.extend(yd)
-                
-                if all_y_values:
-                    y_std = np.std(all_y_values)
-                    y_range = np.max(all_y_values) - np.min(all_y_values)
-                    # Use 3x std or 1.5x range as offset spacing, whichever is larger
-                    offset_spacing = max(3 * y_std, y_range / len(channel_data) * 1.5)
-                else:
-                    offset_spacing = 1.0
-                
-                # Second pass: add traces with staggered offsets
-                channel_positions = []  # Track center position of each channel for y-axis labels
-                for idx, (xd, yd, label) in enumerate(channel_data):
-                    # Apply vertical offset (reverse order so first channel is on top)
-                    offset = (len(channel_data) - 1 - idx) * offset_spacing
-                    channel_positions.append((offset, label))
-                    yd_offset = [y + offset for y in yd]
-                    
-                    fig.add_trace(go.Scatter(
-                        x=xd,
-                        y=yd_offset,
-                        mode='lines',
-                        name=label,
-                        line=dict(width=1),
-                        opacity=0.8,
-                        hovertemplate=f'<b>{label}</b><br>Time: %{{x}}<br>Value: %{{customdata}}<extra></extra>',
-                        customdata=[y for y in yd]  # Show original values in hover
-                    ))
-                
-                # Add baseline reference lines for each channel at their offset
-                for offset, label in channel_positions:
-                    fig.add_hline(
-                        y=offset,
-                        line_dash="dot",
-                        line_color="lightgray",
-                        line_width=0.5,
-                        annotation_text=label,
-                        annotation_position="right",
-                        annotation=dict(font=dict(size=10, color="gray"))
-                    )
-                
-                # Configure y-axis to show offsets (meaningful for visual separation)
-                fig.update_yaxes(
-                    title_text='Channel Position (staggered)',
-                    showgrid=False,
-                    zeroline=False
-                )
-        else:
-            # Single channel
-            yd_raw = to_lst(y_data)
-            xd_raw = to_lst(x_data) if x_data else list(range(len(yd_raw)))
-            
-            xd, yd = compress_timeseries(xd_raw, yd_raw, max_points=10000)
-            
-            fig.add_trace(go.Scatter(
-                x=xd,
-                y=yd,
-                mode='lines',
-                line=dict(color='dimgray', width=1.5)
-            ))
-            
-            # Single channel y-axis with meaningful amplitude scale
-            fig.update_yaxes(title_text=y_label)
-        
-        fig.update_xaxes(title_text=x_label)
-    
-    elif plot_type == 'bar':
-        # Simple bar chart
-        fig = go.Figure()
-        
-        xd = to_lst(x_data)
-        yd = to_lst(y_data)
-        yv = to_lst(y_var) if y_var else None
-        
-        fig.add_trace(go.Bar(
-            x=xd,
-            y=yd,
-            error_y=dict(type='data', array=yv) if yv else None,
-            marker_color='dimgray'
-        ))
-        
-        fig.update_xaxes(title_text=x_label)
-        fig.update_yaxes(title_text=y_label)
-    
-    elif plot_type == 'scatter':
-        # Scatter plot with optional compression
-        fig = go.Figure()
-        
-        xd_raw = to_lst(x_data)
-        yd_raw = to_lst(y_data)
-        
-        # Compress if too many points
-        if len(xd_raw) > 10000:
-            indices = np.linspace(0, len(xd_raw) - 1, 10000, dtype=int)
-            xd = [xd_raw[i] for i in indices]
-            yd = [yd_raw[i] for i in indices]
-        else:
-            xd, yd = xd_raw, yd_raw
-        
-        fig.add_trace(go.Scatter(
-            x=xd,
-            y=yd,
-            mode='markers',
-            marker=dict(color='dimgray', size=4, opacity=0.6)
-        ))
-        
-        fig.update_xaxes(title_text=x_label)
-        fig.update_yaxes(title_text=y_label)
-    
-    else:
-        print(f"[interactive_plotter] Warning: Unknown plot type '{plot_type}', creating empty plot")
-        fig = go.Figure()
-        fig.add_annotation(
-            text=f"Unsupported plot type: {plot_type}",
-            xref="paper", yref="paper",
-            x=0.5, y=0.5,
-            showarrow=False,
-            font=dict(size=20)
-        )
-    
-    # Update layout for interactivity
-    fig.update_layout(
-        title=title,
-        template='plotly_white',
-        hovermode='closest',
-        height=600,
-        margin=dict(l=60, r=40, t=60, b=60)
-    )
-    
-    # Return figure JSON
-    fig_json = fig.to_json()
-    return json.loads(fig_json) if fig_json else {}, title
-
 def load_or_create_archive(archive_path, participant_id):
-    """Load existing archive metadata (titles/paths only, no plot data)."""
-    if os.path.exists(archive_path):
-        with open(archive_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-        match = re.search(r'(?:const|let) plotMeta = (\{.*?\});', content, re.DOTALL)
-        if match:
-            return json.loads(match.group(1))
-        return {}
+    """Load existing archive metadata from meta.json."""
+    archive_dir = os.path.dirname(os.path.abspath(archive_path))
+    meta_path = os.path.join(archive_dir, 'plots', 'meta.json')
+    if os.path.exists(meta_path):
+        with open(meta_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
     return {}
 
-def create_archive_html(participant_id, plot_meta, inline_data=None):
-    """Create HTML archive with all plot data embedded inline.
-    
-    inline_data: dict of plot_id -> plot JSON (embedded into window._EV_sidecar so no
-    dynamic script injection is needed — works from file://, VS Code webview, anywhere).
+def create_archive_html(participant_id=None):
+    """Create a static HTML archive shell. plotMeta is fetched from plots/meta.json
+    at startup and polled every 10 s — never baked into the HTML.
+    Sidecars are .parquet (plots) or .js (logs) fetched on demand by the browser.
     """
-    sidecar_init = json.dumps(inline_data or {})
     return f"""<!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
     <title>EmotiView - Interactive Procedure Archive</title>
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; display: flex; height: 100vh; overflow: hidden; }}
@@ -401,14 +101,23 @@ def create_archive_html(participant_id, plot_meta, inline_data=None):
         .tree-folder-content.expanded {{ display: block; }}
         .tree-folder-icon {{ display: inline-block; width: 16px; transition: transform 0.2s; }}
         .tree-folder-icon.expanded {{ transform: rotate(90deg); }}
-        .plot-container {{ width: 100%; height: calc(100vh - 150px); }}
-        .plot-title {{ font-size: 24px; font-weight: 600; color: #2c3e50; margin-bottom: 20px; }}
+        .plot-container {{ width: 100%; height: calc(100vh - 200px); }}
+        .plot-title {{ font-size: 24px; font-weight: 600; color: #2c3e50; margin-bottom: 10px; }}
+        .export-bar {{ display: flex; gap: 8px; margin-bottom: 12px; align-items: center; flex-wrap: wrap; }}
+        .export-btn {{ padding: 6px 14px; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600; }}
+        .export-btn.png {{ background: #27ae60; color: white; }}
+        .export-btn.svg {{ background: #2980b9; color: white; }}
+        .export-btn.pdf {{ background: #8e44ad; color: white; }}
+        .export-btn:hover {{ opacity: 0.85; }}
+        .export-size {{ font-size: 12px; color: #555; display: flex; gap: 6px; align-items: center; }}
+        .export-size select {{ font-size: 12px; padding: 4px; border-radius: 4px; border: 1px solid #ccc; }}
         .empty-state {{ text-align: center; padding: 100px 20px; color: #999; }}
         .empty-state h2 {{ margin-bottom: 10px; }}
         .log-container {{ width: 100%; height: calc(100vh - 150px); font-family: 'Courier New', monospace; font-size: 12px; background: #1e1e1e; color: #d4d4d4; padding: 20px; overflow-y: auto; border-radius: 4px; }}
         .log-line {{ padding: 2px 0; }}
         .log-error {{ color: #f48771; font-weight: 600; }}
         .log-warning {{ color: #dcdcaa; }}
+        .log-info {{ color: #9cdcfe; }}
         .log-info {{ color: #4fc1ff; }}
         .log-toggle {{ margin-bottom: 15px; padding: 10px 15px; background: #3498db; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; font-weight: 600; }}
         .log-toggle:hover {{ background: #2980b9; }}
@@ -420,6 +129,27 @@ def create_archive_html(participant_id, plot_meta, inline_data=None):
         .search-highlight {{ background-color: #f39c12; color: #000; font-weight: 600; padding: 0 2px; }}
         .search-result-count {{ margin-left: 10px; font-size: 12px; color: #7f8c8d; }}
         .hidden {{ display: none !important; }}
+        .sidebar-tabs {{ display:flex; border-bottom:2px solid #ddd; margin-bottom:10px; }}
+        .sidebar-tab {{ flex:1; padding:8px 4px; text-align:center; cursor:pointer; font-size:12px; font-weight:600; color:#888; background:none; border:none; border-bottom:3px solid transparent; transition:all 0.2s; }}
+        .sidebar-tab.active {{ color:#3498db; border-bottom:3px solid #3498db; }}
+        .proc-group {{ margin-bottom:6px; }}
+        .proc-group-hdr {{ padding:7px 10px; font-size:12px; font-weight:700; color:#fff; background:#34495e; border-radius:4px; cursor:pointer; display:flex; align-items:center; gap:8px; user-select:none; }}
+        .proc-group-hdr:hover {{ background:#2c3e50; }}
+        .proc-group-body {{ padding:4px 0 2px 8px; }}
+        .proc-pid-row {{ margin-bottom:5px; }}
+        .proc-pid-label {{ font-size:10px; font-weight:700; text-transform:uppercase; color:#95a5a6; letter-spacing:0.5px; margin-bottom:2px; }}
+        .proc-chain {{ display:flex; flex-wrap:wrap; align-items:center; gap:3px; }}
+        .proc-node {{ display:inline-flex; align-items:center; padding:3px 8px; border-radius:10px; font-size:11px; border:1px solid transparent; transition:all 0.15s; white-space:nowrap; }}
+        .proc-node.ok {{ background:#d5f5e3; color:#1e8449; border-color:#a9dfbf; cursor:pointer; }}
+        .proc-node.ok:hover {{ background:#a9dfbf; }}
+        .proc-node.ok.active {{ background:#27ae60; color:#fff; border-color:#1e8449; }}
+        .proc-node.missing {{ background:#f5f5f5; color:#ccc; border-color:#eee; font-style:italic; }}
+        .proc-node.group-ok {{ background:#d6eaf8; color:#1a5276; border-color:#a9cce3; cursor:pointer; }}
+        .proc-node.group-ok:hover {{ background:#a9cce3; }}
+        .proc-node.group-ok.active {{ background:#2980b9; color:#fff; border-color:#1a5276; }}
+        .proc-node.group-missing {{ background:#f5f5f5; color:#ccc; border-color:#eee; font-style:italic; }}
+        .proc-arrow {{ color:#ccc; font-size:13px; line-height:1; }}
+        .proc-group-divider {{ border:none; border-top:1px solid #e8e8e8; margin:5px 0; }}
     </style>
 </head>
 <body>
@@ -430,7 +160,16 @@ def create_archive_html(participant_id, plot_meta, inline_data=None):
         <input type="text" id="search-input" placeholder="Search plots and logs..." />
     </div>
     <div id="sidebar">
-        <div id="tree"></div>
+        <div class="sidebar-tabs">
+            <button class="sidebar-tab active" id="tab-tree" onclick="switchTab('tree')">🌲 Tree</button>
+            <button class="sidebar-tab" id="tab-list" onclick="switchTab('list')">📋 List</button>
+        </div>
+        <div id="proc-tree-view">
+            <div id="proc-tree"></div>
+        </div>
+        <div id="list-view" style="display:none">
+            <div id="tree"></div>
+        </div>
     </div>
     <div id="content">
         <div class="empty-state">
@@ -440,48 +179,465 @@ def create_archive_html(participant_id, plot_meta, inline_data=None):
     </div>
     
     <script>
-        let plotMeta = {json.dumps(plot_meta)};
+        let plotMeta = {{}};
         let searchTerm = '';
-        // All plot data is embedded inline \u2014 no dynamic file loading needed.
-        // Works from file://, VS Code webview, Simple Browser, or any context.
-        window._EV_sidecar = {sidecar_init};
-        
-        function loadSidecar(id) {{
-            return new Promise((resolve, reject) => {{
-                // Already cached (either pre-embedded or previously loaded)
-                if (window._EV_sidecar[id] !== undefined) {{
-                    resolve(window._EV_sidecar[id]);
-                    return;
-                }}
-                // Load on-demand via script tag (requires HTTP server, not file://)
-                const script = document.createElement('script');
-                script.src = 'plots/' + id + '.js';
-                script.onload = () => {{
-                    if (window._EV_sidecar[id] !== undefined) {{
-                        resolve(window._EV_sidecar[id]);
-                    }} else {{
-                        reject(new Error('Sidecar loaded but data missing for ' + id));
-                    }}
-                }};
-                script.onerror = () => reject(new Error(
-                    'Could not load plots/' + id + '.js — open via HTTP server (AnalysisToolbox/Python/utils/serve_html.ps1)'
-                ));
-                document.head.appendChild(script);
+
+        // ── Parquet sidecar loader (hyparquet, pure JS — no WASM startup) ─────────
+        const _EV_cache = {{}};
+        let _hyparquetPromise = null;
+        function getHyparquet() {{
+            if (!_hyparquetPromise) _hyparquetPromise = import('https://esm.sh/hyparquet@1');
+            return _hyparquetPromise;
+        }}
+
+        async function loadSidecar(id) {{
+            if (_EV_cache[id] !== undefined) return _EV_cache[id];
+            const meta = plotMeta[id];
+            if (!meta) throw new Error('Unknown plot id: ' + id);
+            const pid = (meta.path && meta.path[0]) || 'unknown';
+
+            if (meta.type === 'log') {{
+                // Logs are small .js text sidecars
+                return new Promise((resolve, reject) => {{
+                    window._EV_sidecar = window._EV_sidecar || {{}};
+                    if (window._EV_sidecar[id]) {{ resolve(window._EV_sidecar[id]); return; }}
+                    const script = document.createElement('script');
+                    script.src = pid + '/plots/' + id + '.js';
+                    script.onload = () => {{
+                        const data = window._EV_sidecar && window._EV_sidecar[id];
+                        if (data) resolve(data);
+                        else reject(new Error('Log sidecar missing data: ' + id));
+                    }};
+                    script.onerror = () => reject(new Error('Could not load log: ' + pid + '/plots/' + id + '.js — open via HTTP server'));
+                    document.head.appendChild(script);
+                }});
+            }}
+
+            // Plot: fetch .parquet, decode, build Plotly figure
+            const url = pid + '/plots/' + id + '.parquet';
+            const resp = await fetch(url);
+            if (!resp.ok) throw new Error('HTTP ' + resp.status + ' fetching ' + url + ' — open via HTTP server (serve_html.ps1 or GitHub Pages)');
+            const buf = await resp.arrayBuffer();
+            const {{ parquetRead }} = await getHyparquet();
+            const rows = [];
+            await parquetRead({{ file: buf, onComplete: data => rows.push(...data) }});
+            const result = buildFigureFromTable(rows);
+            _EV_cache[id] = result;
+            return result;
+        }}
+
+        // ── Helpers ──────────────────────────────────────────────────────────────
+        function toLst(v) {{
+            if (v === null || v === undefined) return [];
+            return Array.isArray(v) ? v : [v];
+        }}
+        function stdDev(arr) {{
+            if (!arr.length) return 0;
+            const mean = arr.reduce((a, b) => a + b, 0) / arr.length;
+            return Math.sqrt(arr.reduce((s, v) => s + (v - mean) ** 2, 0) / arr.length);
+        }}
+        function buildErrorY(arr) {{
+            if (!arr || !arr.length || arr.every(v => v == null)) return undefined;
+            return {{ type: 'data', array: arr, visible: true }};
+        }}
+        function buildGridLayout(subLabels, n, titleText, xLabel, yLabel) {{
+            const layout = {{ title: titleText, template: 'plotly_white', height: 600,
+                margin: {{ l: 60, r: 40, t: 80, b: 60 }},
+                grid: {{ rows: 1, columns: n, pattern: 'independent' }} }};
+            subLabels.forEach((lbl, i) => {{
+                const ax = i === 0 ? '' : String(i + 1);
+                layout['xaxis' + ax] = {{ title: i === Math.floor(n / 2) ? xLabel : '' }};
+                layout['yaxis' + ax] = {{ title: i === 0 ? yLabel : '' }};
             }});
+            layout.annotations = subLabels.map((lbl, i) => ({{
+                text: String(lbl), showarrow: false,
+                x: (i + 0.5) / n, y: 1.07, xref: 'paper', yref: 'paper', font: {{ size: 12 }}
+            }}));
+            return layout;
+        }}
+
+        // ── Figure builder — ports create_plotly_json() from Python ──────────────
+        function buildFigureFromTable(rows) {{
+            if (!rows || !rows.length) return {{ data: [], layout: {{ title: 'No data' }}, title: 'No data' }};
+            const first = rows[0];
+            const plotType = String(first.plot_type || 'line');
+            const title   = String(first.title   || '');
+            const xLabel  = String(first.x_label || '');
+            const yLabel  = String(first.y_label || '');
+            const labels  = toLst(first.labels).map(String);
+            const base = {{ title, template: 'plotly_white', hovermode: 'closest', height: 600,
+                margin: {{ l: 60, r: 40, t: 60, b: 60 }},
+                xaxis: {{ title: xLabel }}, yaxis: {{ title: yLabel }} }};
+
+            // Multi-row grid (each row = one condition, e.g. ea11)
+            if (rows.length > 1 && rows.every(r => r.plot_type === 'grid')) {{
+                const n = rows.length;
+                const subL = rows.map(r => String(r.condition || ''));
+                const data = rows.map((row, i) => ({{
+                    type: 'bar', x: toLst(row.x_data), y: toLst(row.y_data),
+                    error_y: buildErrorY(toLst(row.y_var)),
+                    marker: {{ color: 'dimgray' }}, showlegend: false,
+                    xaxis: 'x' + (i > 0 ? String(i + 1) : ''),
+                    yaxis: 'y' + (i > 0 ? String(i + 1) : ''),
+                }}));
+                return {{ data, layout: buildGridLayout(subL, n, title, xLabel, yLabel), title }};
+            }}
+
+            const xR = toLst(first.x_data), yR = toLst(first.y_data), yVR = toLst(first.y_var);
+            const cy = yR.length > 0 && Array.isArray(yR[0]);
+            const cx = xR.length > 0 && Array.isArray(xR[0]);
+
+            // Grid / line_grid with concatenated conditions
+            if ((plotType === 'grid' || plotType === 'line_grid') && (cy || cx)) {{
+                const n = cy ? yR.length : xR.length;
+                const subL = labels.length ? labels : Array.from({{ length: n }}, (_, i) => 'Cond ' + (i + 1));
+                const data = Array.from({{ length: n }}, (_, i) => ({{
+                    type: 'bar',
+                    x: cx ? toLst(xR[i]) : xR, y: cy ? toLst(yR[i]) : yR,
+                    error_y: buildErrorY(yVR.length > i ? toLst(yVR[i]) : null),
+                    marker: {{ color: 'dimgray' }}, showlegend: false,
+                    xaxis: 'x' + (i > 0 ? String(i + 1) : ''),
+                    yaxis: 'y' + (i > 0 ? String(i + 1) : ''),
+                }}));
+                return {{ data, layout: buildGridLayout(subL, n, title, xLabel, yLabel), title }};
+            }}
+
+            // Line
+            if (plotType === 'line') {{
+                if (labels.length > 1 && cy) {{
+                    const ch = labels.map((lbl, i) => {{
+                        if (i >= yR.length) return null;
+                        const yd = toLst(yR[i]);
+                        const xd = (cx && i < xR.length) ? toLst(xR[i]) : Array.from({{ length: yd.length }}, (_, j) => j);
+                        return {{ xd, yd, lbl: String(lbl) }};
+                    }}).filter(Boolean);
+                    const allY = ch.flatMap(c => c.yd);
+                    const yRange = allY.length ? Math.max(...allY) - Math.min(...allY) : 1;
+                    const off = Math.max(3 * stdDev(allY), yRange / ch.length * 1.5) || 1;
+                    const data = ch.map(({{ xd, yd, lbl }}, i) => ({{
+                        type: 'scatter', mode: 'lines', x: xd, y: yd.map(v => v + (ch.length - 1 - i) * off),
+                        name: lbl, line: {{ width: 1 }}, opacity: 0.8, customdata: yd,
+                        hovertemplate: '<b>' + lbl + '</b><br>Time: %{{x}}<br>Value: %{{customdata}}<extra></extra>'
+                    }}));
+                    return {{ data, layout: {{ ...base, yaxis: {{ title: 'Channel (staggered)', showgrid: false, zeroline: false }} }}, title }};
+                }}
+                const yd = toLst(yR), xd = xR.length ? toLst(xR) : Array.from({{ length: yd.length }}, (_, i) => i);
+                return {{ data: [{{ type: 'scatter', mode: 'lines', x: xd, y: yd, line: {{ color: 'dimgray', width: 1.5 }} }}], layout: base, title }};
+            }}
+
+            // Bar
+            if (plotType === 'bar') {{
+                if (cy || cx) {{
+                    const nC = yR.length;
+                    const xCats = labels.length ? labels : Array.from({{ length: nC }}, (_, i) => 'Cond ' + (i + 1));
+                    const pairs = xR.length ? toLst(xR) : [''];
+                    const data = pairs.map((pn, pi) => ({{
+                        type: 'bar', name: String(pn), x: xCats,
+                        y: Array.from({{ length: nC }}, (_, ci) => {{ const v = toLst(yR[ci]); return v[pi] ?? null; }}),
+                        error_y: buildErrorY(yVR.length ? Array.from({{ length: nC }}, (_, ci) => {{ const v = toLst(yVR[ci]); return v[pi] ?? null; }}) : null),
+                        marker: pairs.length === 1 ? {{ color: 'dimgray' }} : {{}}
+                    }}));
+                    const layout = {{ ...base }};
+                    if (pairs.length > 1) layout.barmode = 'group';
+                    return {{ data, layout, title }};
+                }}
+                return {{ data: [{{ type: 'bar', x: toLst(xR), y: toLst(yR), error_y: buildErrorY(yVR), marker: {{ color: 'dimgray' }} }}], layout: base, title }};
+            }}
+
+            // Scatter
+            if (plotType === 'scatter') {{
+                return {{ data: [{{ type: 'scatter', mode: 'markers', x: toLst(xR), y: toLst(yR), marker: {{ color: 'dimgray', size: 4, opacity: 0.6 }} }}], layout: base, title }};
+            }}
+
+            return {{ data: [], layout: {{ ...base, title: 'Unsupported type: ' + plotType }}, title }};
         }}
         
         // Search functionality
         document.getElementById('search-input').addEventListener('input', (e) => {{
             searchTerm = e.target.value.toLowerCase();
-            renderFlatList(plotMeta);
-            
+            // Preserve current active plot while filtering
+            const _cur = document.querySelector('.tree-item.active, .proc-node.active')?.dataset?.plotId;
+            renderFlatList(plotMeta, _cur);
+            // Also filter the tree view without full re-render
+            applyTreeSearch();
             // If viewing log, re-render with search highlight
             if (window.currentLog && document.getElementById('log-display')) {{
                 renderLog(window.showFullLog);
             }}
         }});
         
-        function renderFlatList(data) {{
+        function switchTab(tab) {{
+            const isTree = tab === 'tree';
+            document.getElementById('proc-tree-view').style.display = isTree ? '' : 'none';
+            document.getElementById('list-view').style.display = isTree ? 'none' : '';
+            // #search-box is always visible — it works for both tree and list views
+            document.getElementById('tab-tree').classList.toggle('active', isTree);
+            document.getElementById('tab-list').classList.toggle('active', !isTree);
+            // Re-apply tree search filter when switching to tree tab
+            if (isTree) applyTreeSearch();
+        }}
+
+        const PIPELINE_SCHEMA = [
+            {{
+                label: '📝 Questionnaires',
+                steps: [
+                    {{name: 'PANAS',   match: s => s === 'txt_tree_panas'}},
+                    {{name: 'BIS/BAS', match: s => s === 'txt_tree_bisbas'}},
+                    {{name: 'SAM',     match: s => s === 'txt_tree_sam'}},
+                    {{name: 'BE7',     match: s => s === 'txt_tree_be7'}},
+                    {{name: 'EA-11',   match: s => s === 'txt_tree_ea11'}},
+                ],
+                shared: [
+                    {{name: 'SAM \u03a3',   match: s => s === 'sam_concat'}},
+                    {{name: 'BE7 \u03a3',   match: s => s === 'be7_concat'}},
+                    {{name: 'EA-11 \u03a3', match: s => s === 'ea11_concat'}},
+                ]
+            }},
+            {{
+                label: '\u26a1 EDA Chain',
+                steps: [
+                    {{name: 'Filtered',  match: s => /extr1_filt$/.test(s)}},
+                    {{name: 'Artefact',  match: s => /extr1_filt_rej$/.test(s)}},
+                    {{name: 'Epoched',   match: s => /extr1_filt_rej_epochs$/.test(s)}},
+                    {{name: 'Bootstrap', match: s => /extr1.*windowed/.test(s)}},
+                ],
+                shared: [
+                    {{name: 'EDA \u03a3', match: s => s === 'eda_concat'}},
+                ]
+            }},
+            {{
+                label: '\u2764\ufe0f HRV Chain',
+                steps: [
+                    {{name: 'Filtered', match: s => /extr2_filt$/.test(s)}},
+                    {{name: 'Artefact', match: s => /extr2_filt_rej$/.test(s)}},
+                    {{name: 'Peaks',    match: s => /extr2_filt_rej_peaks$/.test(s)}},
+                ],
+                shared: [
+                    {{name: 'HRV \u03a3', match: s => s === 'hrv_concat'}},
+                ]
+            }},
+            {{
+                label: '\U0001f9e0 EEG / PSD',
+                steps: [
+                    {{name: 'Reref', match: s => /extr4_reref$/.test(s)}},
+                    {{name: 'ICA',   match: s => /extr4_reref_filt_ica$/.test(s)}},
+                    {{name: 'PSD',   match: s => /epochs_psd$/.test(s)}},
+                ],
+                shared: [
+                    {{name: 'PSD \u03a3', match: s => s === 'psd_concat'}},
+                    {{name: 'FAI \u03a3', match: s => s === 'psd_fai_concat'}},
+                ]
+            }},
+            {{
+                label: '\U0001fac0 fNIRS Chain',
+                steps: [
+                    {{name: 'Log',     match: s => s.startsWith('xdf') && s.endsWith('_log')}},
+                    {{name: 'TDDR',    match: s => s.startsWith('xdf') && s.endsWith('_log_tddr')}},
+                    {{name: 'MBLL',    match: s => s.startsWith('xdf') && s.endsWith('_log_tddr_regr_lin')}},
+                    {{name: 'HbC Ep.', match: s => /epochs_hbc$/.test(s)}},
+                ],
+                shared: [
+                    {{name: 'HbC \u03a3', match: s => s === 'hbc_concat'}},
+                    {{name: 'FAI \u03a3', match: s => s === 'hbc_fai_concat'}},
+                ]
+            }},
+        ];
+
+        // Filter proc-tree DOM by searchTerm — called after render and on search input
+        function applyTreeSearch() {{
+            const el = document.getElementById('proc-tree');
+            if (!el) return;
+            if (!searchTerm) {{
+                // Show everything
+                el.querySelectorAll('.proc-pid-row, .proc-group').forEach(n => n.style.display = '');
+                return;
+            }}
+            // Show/hide individual pid rows whose text matches
+            el.querySelectorAll('.proc-pid-row').forEach(row => {{
+                row.style.display = row.textContent.toLowerCase().includes(searchTerm) ? '' : 'none';
+            }});
+            // Hide entire proc-group sections that have no visible rows
+            el.querySelectorAll('.proc-group').forEach(grp => {{
+                const body = grp.querySelector('.proc-group-body');
+                if (!body) {{ grp.style.display = ''; return; }}
+                const hasVisible = Array.from(body.querySelectorAll('.proc-pid-row'))
+                    .some(r => r.style.display !== 'none');
+                grp.style.display = hasVisible ? '' : 'none';
+            }});
+        }}
+
+        function renderProcedureTree(data) {{
+            const byPid = {{}};
+            const allSteps = {{}};
+            for (const [id, info] of Object.entries(data)) {{
+                const pid = info.path[0];
+                const step = info.path[1];
+                if (!byPid[pid]) byPid[pid] = {{}};
+                byPid[pid][step] = id;
+                allSteps[step] = id;
+            }}
+            const sortedPids = Object.keys(byPid).sort();
+            const el = document.getElementById('proc-tree');
+            if (!el) return;
+            el.innerHTML = '';
+
+            for (const section of PIPELINE_SCHEMA) {{
+                const grp = document.createElement('div');
+                grp.className = 'proc-group';
+                const hdr = document.createElement('div');
+                hdr.className = 'proc-group-hdr';
+                hdr.innerHTML = `<span class="proc-toggle">\u25bc</span> ${{section.label}}`;
+                const body = document.createElement('div');
+                body.className = 'proc-group-body';
+
+                hdr.onclick = () => {{
+                    const open = body.style.display !== 'none';
+                    body.style.display = open ? 'none' : '';
+                    hdr.querySelector('.proc-toggle').textContent = open ? '\u25b6' : '\u25bc';
+                }};
+
+                let anyRendered = false;
+                for (const pid of sortedPids) {{
+                    const pidSteps = byPid[pid] || {{}};
+                    let anyInSection = false;
+                    const chain = document.createElement('div');
+                    chain.className = 'proc-chain';
+
+                    section.steps.forEach((step, i) => {{
+                        let plotId = null;
+                        for (const [s, id] of Object.entries(pidSteps)) {{
+                            if (step.match(s)) {{ plotId = id; break; }}
+                        }}
+                        if (plotId) anyInSection = true;
+                        if (i > 0) {{
+                            const arr = document.createElement('span');
+                            arr.className = 'proc-arrow';
+                            arr.textContent = '\u2192';
+                            chain.appendChild(arr);
+                        }}
+                        const node = document.createElement('span');
+                        node.className = 'proc-node ' + (plotId ? 'ok' : 'missing');
+                        node.textContent = step.name;
+                        node.title = step.name;
+                        if (plotId) {{
+                            node.dataset.plotId = plotId;
+                            node.onclick = () => showPlot(plotId);
+                        }}
+                        chain.appendChild(node);
+                    }});
+
+                    if (anyInSection) {{
+                        anyRendered = true;
+                        const row = document.createElement('div');
+                        row.className = 'proc-pid-row';
+                        const lbl = document.createElement('div');
+                        lbl.className = 'proc-pid-label';
+                        lbl.textContent = pid;
+                        row.appendChild(lbl);
+                        row.appendChild(chain);
+                        body.appendChild(row);
+                    }}
+                }}
+
+                if (section.shared && section.shared.length > 0) {{
+                    const sharedChain = document.createElement('div');
+                    sharedChain.className = 'proc-chain';
+                    let anyShared = false;
+                    section.shared.forEach((step, i) => {{
+                        let plotId = null;
+                        for (const s of Object.keys(allSteps)) {{
+                            if (step.match(s)) {{ plotId = allSteps[s]; break; }}
+                        }}
+                        if (plotId) anyShared = true;
+                        if (i > 0) {{
+                            const dot = document.createElement('span');
+                            dot.style.cssText = 'color:#aaa;font-size:11px;padding:0 2px;';
+                            dot.textContent = '\u00b7';
+                            sharedChain.appendChild(dot);
+                        }}
+                        const node = document.createElement('span');
+                        node.className = 'proc-node ' + (plotId ? 'group-ok' : 'group-missing');
+                        node.textContent = step.name;
+                        node.title = step.name;
+                        if (plotId) {{
+                            node.dataset.plotId = plotId;
+                            node.onclick = () => showPlot(plotId);
+                        }}
+                        sharedChain.appendChild(node);
+                    }});
+                    if (anyShared) {{
+                        const hr = document.createElement('hr');
+                        hr.className = 'proc-group-divider';
+                        body.appendChild(hr);
+                        const sharedRow = document.createElement('div');
+                        sharedRow.className = 'proc-pid-row';
+                        const lbl = document.createElement('div');
+                        lbl.className = 'proc-pid-label';
+                        lbl.textContent = '\U0001f465 group';
+                        sharedRow.appendChild(lbl);
+                        sharedRow.appendChild(sharedChain);
+                        body.appendChild(sharedRow);
+                    }}
+                }}
+
+                if (anyRendered) {{
+                    grp.appendChild(hdr);
+                    grp.appendChild(body);
+                    el.appendChild(grp);
+                }}
+            }}
+
+            // Logs section
+            const logEntries = Object.entries(data).filter(([, m]) => m.type === 'log');
+            if (logEntries.length > 0) {{
+                const grp = document.createElement('div');
+                grp.className = 'proc-group';
+                const hdr = document.createElement('div');
+                hdr.className = 'proc-group-hdr';
+                hdr.innerHTML = '<span class="proc-toggle">\u25bc</span> \U0001f4cb Logs';
+                const body = document.createElement('div');
+                body.className = 'proc-group-body';
+                hdr.onclick = () => {{
+                    const open = body.style.display !== 'none';
+                    body.style.display = open ? 'none' : '';
+                    hdr.querySelector('.proc-toggle').textContent = open ? '\u25b6' : '\u25bc';
+                }};
+                const byPidLog = {{}};
+                for (const [id, info] of logEntries) {{
+                    const pid = info.path[0];
+                    if (!byPidLog[pid]) byPidLog[pid] = [];
+                    byPidLog[pid].push([id, info.path[1] || id]);
+                }}
+                for (const pid of Object.keys(byPidLog).sort()) {{
+                    for (const [id, label] of byPidLog[pid]) {{
+                        const row = document.createElement('div');
+                        row.className = 'proc-pid-row';
+                        const lbl = document.createElement('div');
+                        lbl.className = 'proc-pid-label';
+                        lbl.textContent = pid;
+                        const chain = document.createElement('div');
+                        chain.className = 'proc-chain';
+                        const node = document.createElement('span');
+                        node.className = 'proc-node ok';
+                        node.textContent = '\U0001f4cb ' + label;
+                        node.title = label;
+                        node.dataset.plotId = id;
+                        node.onclick = () => showPlot(id);
+                        chain.appendChild(node);
+                        row.appendChild(lbl);
+                        row.appendChild(chain);
+                        body.appendChild(row);
+                    }}
+                }}
+                grp.appendChild(hdr);
+                grp.appendChild(body);
+                el.appendChild(grp);
+            }}
+            // Apply any active search filter to the freshly rendered tree
+            applyTreeSearch();
+        }}
+
+        function renderFlatList(data, keepActiveId) {{
             const treeEl = document.getElementById('tree');
             treeEl.innerHTML = '';
             
@@ -545,8 +701,8 @@ def create_archive_html(participant_id, plot_meta, inline_data=None):
                 treeEl.appendChild(folder);
                 treeEl.appendChild(folderContent);
                 
-                // Expand first folder and show first plot
-                if (participant === sortedParticipants[0]) {{
+                // Expand first folder and auto-show first plot only on initial load
+                if (participant === sortedParticipants[0] && !keepActiveId) {{
                     folder.querySelector('.tree-folder-icon').classList.add('expanded');
                     if (sortedFiles.length > 0) {{
                         showPlot(sortedFiles[0][0]);
@@ -559,9 +715,9 @@ def create_archive_html(participant_id, plot_meta, inline_data=None):
             const meta = plotMeta[plotId];
             if (!meta) return;
             
-            // Update active state
-            document.querySelectorAll('.tree-item').forEach(el => el.classList.remove('active'));
-            document.querySelector(`[data-plot-id="${{plotId}}"]`)?.classList.add('active');
+            // Update active state in both list and tree views
+            document.querySelectorAll('.tree-item, .proc-node').forEach(el => el.classList.remove('active'));
+            document.querySelectorAll(`[data-plot-id="${{plotId}}"]`).forEach(el => el.classList.add('active'));
             
             const content = document.getElementById('content');
             
@@ -579,13 +735,13 @@ def create_archive_html(participant_id, plot_meta, inline_data=None):
                             <span class="info-count">&#9432; Info: ${{logData.infos.length}}</span>
                         </div>
                         <button class="log-toggle" onclick="toggleLogView()">
-                            <span id="log-toggle-text">Show Full Log</span>
+                            <span id="log-toggle-text">Show Errors / Warnings / Info Only</span>
                         </button>
                         <div class="log-container" id="log-display"></div>
                     `;
                     window.currentLog = logData;
-                    window.showFullLog = false;
-                    renderLog(false);
+                    window.showFullLog = true;
+                    renderLog(true);
                 }} catch(e) {{
                     content.innerHTML = `<div class="plot-title">${{meta.title}}</div><div class="empty-state"><p>Error loading log: ${{e.message}}</p></div>`;
                 }}
@@ -593,8 +749,28 @@ def create_archive_html(participant_id, plot_meta, inline_data=None):
                 content.innerHTML = `<div class="plot-title">${{meta.title}}</div><div class="empty-state"><p>Loading plot...</p></div>`;
                 try {{
                     const plotJson = await loadSidecar(plotId);
+                    const safeName = plotId.replace(/[^a-z0-9_-]/gi, '_');
                     content.innerHTML = `
                         <div class="plot-title">${{meta.title}}</div>
+                        <div class="export-bar">
+                            <button class="export-btn png" onclick="exportPlot('png','${{safeName}}')">&#8659; PNG</button>
+                            <button class="export-btn svg" onclick="exportPlot('svg','${{safeName}}')">&#8659; SVG</button>
+                            <button class="export-btn pdf" onclick="downloadPDF('${{safeName}}')">&#128196; Download PDF</button>
+                            <span class="export-size">
+                                Width: <select id="exp-w" onchange="resizePlotForExport()">
+                                    <option value="800">800px</option>
+                                    <option value="1200" selected>1200px</option>
+                                    <option value="1600">1600px</option>
+                                    <option value="2400">2400px (print)</option>
+                                </select>
+                                Height: <select id="exp-h" onchange="resizePlotForExport()">
+                                    <option value="400">400px</option>
+                                    <option value="600" selected>600px</option>
+                                    <option value="900">900px</option>
+                                    <option value="1200">1200px</option>
+                                </select>
+                            </span>
+                        </div>
                         <div class="plot-container" id="plot-container"></div>
                     `;
                     Plotly.newPlot('plot-container', plotJson.data, plotJson.layout, {{responsive: true}});
@@ -610,9 +786,9 @@ def create_archive_html(participant_id, plot_meta, inline_data=None):
             const warnings = [];
             const infos = [];
             // Use case-insensitive word-boundary matching to catch WARNING/Warning, ERROR/Error, etc.
-            const isError   = l => /\berror\b/i.test(l);
-            const isWarning = l => /\bwarning\b/i.test(l) && !/\berror\b/i.test(l);
-            const isInfo    = l => /\bINFO:/i.test(l) || /\[INFO\]/i.test(l);
+            const isError   = l => /\\berror\\b/i.test(l);
+            const isWarning = l => /\\bwarning\\b/i.test(l) && !/\\berror\\b/i.test(l);
+            const isInfo    = l => /\\bINFO:/i.test(l) || /\\[INFO\\]/i.test(l);
             
             lines.forEach((line, idx) => {{
                 if (isError(line))        errors.push({{idx, line}});
@@ -624,9 +800,9 @@ def create_archive_html(participant_id, plot_meta, inline_data=None):
         }}
         
         function classifyLine(line) {{
-            if (/\berror\b/i.test(line))   return 'log-error';
-            if (/\bwarning\b/i.test(line)) return 'log-warning';
-            if (/\bINFO:/i.test(line) || /\[INFO\]/i.test(line)) return 'log-info';
+            if (/\\berror\\b/i.test(line))   return 'log-error';
+            if (/\\bwarning\\b/i.test(line)) return 'log-warning';
+            if (/\\bINFO:/i.test(line) || /\\[INFO\\]/i.test(line)) return 'log-info';
             return '';
         }}
 
@@ -671,8 +847,53 @@ def create_archive_html(participant_id, plot_meta, inline_data=None):
         function toggleLogView() {{
             window.showFullLog = !window.showFullLog;
             document.getElementById('log-toggle-text').textContent =
-                window.showFullLog ? 'Show Errors / Warnings / Info' : 'Show Full Log';
+                window.showFullLog ? 'Show Errors / Warnings / Info Only' : 'Show Full Log';
             renderLog(window.showFullLog);
+        }}
+
+        function exportPlot(format, filename) {{
+            const el = document.getElementById('plot-container');
+            if (!el) return;
+            const w = parseInt(document.getElementById('exp-w')?.value || 1200);
+            const h = parseInt(document.getElementById('exp-h')?.value || 600);
+            Plotly.downloadImage(el, {{format, filename, width: w, height: h}});
+        }}
+
+        function resizePlotForExport() {{
+            // No-op: Plotly.downloadImage uses its own width/height, no resize needed
+        }}
+
+        async function downloadPDF(filename) {{
+            const el = document.getElementById('plot-container');
+            if (!el) return;
+            const w = parseInt(document.getElementById('exp-w')?.value || 1200);
+            const h = parseInt(document.getElementById('exp-h')?.value || 600);
+            const title = document.querySelector('.plot-title')?.textContent || 'Plot';
+            const btn = document.querySelector('.export-btn.pdf');
+            if (btn) {{ btn.textContent = '⏳ Generating...'; btn.disabled = true; }}
+            try {{
+                const url = await Plotly.toImage(el, {{format: 'png', width: w, height: h, scale: 2}});
+                if (!window.jspdf) throw new Error('jsPDF not loaded — check CDN connectivity');
+                const {{ jsPDF }} = window.jspdf;
+                // Choose orientation based on aspect ratio
+                const orient = w >= h ? 'landscape' : 'portrait';
+                // jsPDF uses points (72pt = 1in). Scale px → pt at 96dpi: pt = px * 72/96
+                const ptW = Math.round(w * 72 / 96);
+                const ptH = Math.round(h * 72 / 96);
+                const pdf = new jsPDF({{ orientation: orient, unit: 'pt', format: [ptW, ptH] }});
+                // Add title as small header
+                pdf.setFontSize(10);
+                pdf.setTextColor(80);
+                pdf.text(title, 10, 12);
+                // Image fills page below header
+                pdf.addImage(url, 'PNG', 0, 18, ptW, ptH - 18);
+                const safe = (filename || title).replace(/[^a-z0-9_-]/gi, '_');
+                pdf.save(safe + '.pdf');
+            }} catch(e) {{
+                alert('PDF generation failed: ' + e.message);
+            }} finally {{
+                if (btn) {{ btn.textContent = '\U0001F4C4 Download PDF'; btn.disabled = false; }}
+            }}
         }}
         
         function escapeHtml(text) {{
@@ -685,13 +906,10 @@ def create_archive_html(participant_id, plot_meta, inline_data=None):
             return text.replace(/[.*+?^${{}}()|[\\]\\\\]/g, '\\\\$&');
         }}
         
-        // Initialize
-        renderFlatList(plotMeta);
-        
-        // Live update: poll plots/meta.json every 10s so the sidebar stays current
-        // while a pipeline run is in progress — no page reload needed.
+        // Fetch meta.json immediately on load, then poll every 10 s.
+        // plotMeta starts empty — no data baked into the HTML.
         (function startPolling() {{
-            let lastCount = Object.keys(plotMeta).length;
+            let lastJson = '';
             let indicator = null;
             
             function updateIndicator(n) {{
@@ -711,50 +929,28 @@ def create_archive_html(participant_id, plot_meta, inline_data=None):
                     const r = await fetch('plots/meta.json?_=' + Date.now());
                     if (!r.ok) return;
                     const newMeta = await r.json();
-                    const newCount = Object.keys(newMeta).length;
-                    if (newCount !== lastCount) {{
+                    const newJson = JSON.stringify(newMeta);
+                    if (newJson !== lastJson) {{
                         plotMeta = newMeta;
-                        lastCount = newCount;
-                        const currentId = document.querySelector('.tree-item.active')?.dataset?.plotId;
-                        renderFlatList(plotMeta);
+                        lastJson = newJson;
+                        const newCount = Object.keys(newMeta).length;
+                        const currentId = document.querySelector('.tree-item.active, .proc-node.active')?.dataset?.plotId;
+                        renderFlatList(plotMeta, currentId);
+                        renderProcedureTree(plotMeta);
                         // Restore active state without re-loading the plot
                         if (currentId) {{
-                            document.querySelector('[data-plot-id="' + currentId + '"]')?.classList.add('active');
+                            document.querySelectorAll('[data-plot-id="' + currentId + '"]').forEach(el => el.classList.add('active'));
                         }}
                         updateIndicator(newCount);
                     }}
                 }} catch(e) {{ /* server not running or no meta.json yet — silent */ }}
                 setTimeout(poll, 10000);
             }}
-            setTimeout(poll, 10000);
+            poll(); // immediate first fetch
         }})();
     </script>
 </body>
 </html>"""
-
-def _read_all_sidecars(plots_dir, plot_meta, max_bytes=None):
-    """Read sidecar .js files and return dict of plot_id -> plot data.
-    
-    If max_bytes is set, sidecars larger than that are skipped (left for dynamic loading).
-    """
-    inline_data = {}
-    for plot_id in plot_meta:
-        js_path = os.path.join(plots_dir, f'{plot_id}.js')
-        if not os.path.exists(js_path):
-            continue
-        if max_bytes and os.path.getsize(js_path) > max_bytes:
-            continue  # too large — browser will load dynamically over HTTP
-        try:
-            with open(js_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-            # Extract JSON: window._EV_sidecar["id"] = {...};
-            m = re.search(r'window\._EV_sidecar\["[^"]+"\] = (\{.+\});\s*$', content, re.DOTALL)
-            if m:
-                inline_data[plot_id] = json.loads(m.group(1))
-        except Exception:
-            pass  # skip unreadable/invalid sidecar
-    return inline_data
-
 
 def _write_meta_json(plots_dir, meta):
     """Write plots/meta.json — polled by the HTML page every 10s for live sidebar updates."""
@@ -766,24 +962,18 @@ def _write_meta_json(plots_dir, meta):
         pass  # non-critical — polling will just skip this cycle
 
 
-def update_archive(archive_path, participant_id, plot_id, plot_data, plot_title, tree_path):
-    """Add or update a plot in the unified archive.
-    
-    Sidecar .js file holds the plot data; plots/meta.json holds the metadata
-    and is polled every 10s by the open browser tab for live sidebar updates.
+def update_archive(archive_path, participant_id, plot_id, plot_title, tree_path):
+    """Register a plot in the unified archive meta.json and rewrite the HTML shell.
+
+    The .parquet sidecar must already be copied to
+    <archive_dir>/<participant_id>/plots/<plot_id>.parquet before calling this.
+    Logs still write their own .js sidecar via add_log_to_archive().
     """
     archive_path = os.path.abspath(archive_path)
     archive_dir = os.path.dirname(archive_path)
-    os.makedirs(archive_dir, exist_ok=True)  # explicit — mount may need this under concurrent load
+    os.makedirs(archive_dir, exist_ok=True)
     plots_dir = os.path.join(archive_dir, 'plots')
     os.makedirs(plots_dir, exist_ok=True)
-    
-    # Write sidecar as a .js file so it loads via <script src> from file:// without CORS issues.
-    # The script assigns into window._EV_sidecar which showPlot() reads.
-    sidecar_path = os.path.join(plots_dir, f'{plot_id}.js')
-    with open(sidecar_path, 'w', encoding='utf-8') as f:
-        f.write('window._EV_sidecar = window._EV_sidecar || {};\n')
-        f.write(f'window._EV_sidecar[{json.dumps(plot_id)}] = {json.dumps(plot_data)};\n')
     
     # Lock lives next to the HTML — always accessible
     import hashlib, time
@@ -812,16 +1002,12 @@ def update_archive(archive_path, participant_id, plot_id, plot_data, plot_title,
             'path': tree_path,
             'type': 'plot'
         }
-        
-        # Write meta.json first (polled by open browser tabs for live updates)
+        # Write meta.json (polled by open browser tabs for live updates)
         _write_meta_json(plots_dir, existing_meta)
-        
-        # Embed sidecars < 500 KB inline so result plots load from file:// without HTTP server
-        inline_data = _read_all_sidecars(plots_dir, existing_meta, max_bytes=500_000)
-        html_content = create_archive_html(participant_id, existing_meta, inline_data)
-        with open(archive_path, 'w', encoding='utf-8') as f:
-            f.write(html_content)
-        
+        # Create HTML shell once — never needs to be regenerated
+        if not os.path.exists(archive_path):
+            with open(archive_path, 'w', encoding='utf-8') as f:
+                f.write(create_archive_html())
         return archive_path
     finally:
         release_file_lock(lock_file)
@@ -857,10 +1043,14 @@ def add_log_to_archive(archive_path, participant_id, log_path, log_name):
     # Write log content to sidecar file
     archive_dir = os.path.dirname(archive_path)
     os.makedirs(archive_dir, exist_ok=True)
+    # meta.json lives at archive_dir/plots/ (top-level)
     plots_dir = os.path.join(archive_dir, 'plots')
     os.makedirs(plots_dir, exist_ok=True)
     log_id = f"{participant_id}_log_{log_name}"
-    sidecar_path = os.path.join(plots_dir, f'{log_id}.js')
+    # JS sidecar lives at archive_dir/<participant_id>/plots/<log_id>.js
+    participant_plots_dir = os.path.join(archive_dir, participant_id, 'plots')
+    os.makedirs(participant_plots_dir, exist_ok=True)
+    sidecar_path = os.path.join(participant_plots_dir, f'{log_id}.js')
     with open(sidecar_path, 'w', encoding='utf-8') as f:
         f.write('window._EV_sidecar = window._EV_sidecar || {};\n')
         f.write(f'window._EV_sidecar[{json.dumps(log_id)}] = {json.dumps({"content": log_content})};\n')
@@ -890,12 +1080,10 @@ def add_log_to_archive(archive_path, participant_id, log_path, log_name):
         }
         
         _write_meta_json(plots_dir, existing_meta)
-        
-        inline_data = _read_all_sidecars(plots_dir, existing_meta, max_bytes=500_000)
-        html_content = create_archive_html(participant_id, existing_meta, inline_data)
-        with open(archive_path, 'w', encoding='utf-8') as f:
-            f.write(html_content)
-        
+        # Create HTML shell once — never needs to be regenerated
+        if not os.path.exists(archive_path):
+            with open(archive_path, 'w', encoding='utf-8') as f:
+                f.write(create_archive_html())
         return archive_path
     finally:
         release_file_lock(lock_file)
@@ -906,59 +1094,89 @@ def add_log_to_archive(archive_path, participant_id, log_path, log_name):
             pass
 
 def run(inp, out_dir, pre, project_name='procedure'):
-    """Run interactive plotter for procedure visualization.
-    
+    """Copy _vis.parquet sidecar and register it in the HTML archive.
+
+    The browser reads the .parquet directly via hyparquet (no server-side
+    Plotly rendering). This keeps Python out of the figure-building loop.
+
     Args:
         inp: Input _vis.parquet file
-        out_dir: Output directory (parent results folder)
-        pre: Prefix for output file
-        project_name: Name of the project (default: 'procedure')
+        out_dir: Output directory (parent results folder = archive root)
+        pre: Prefix for output file (e.g. EV_002_xdf4_extr1_filt_vis)
+        project_name: Project name used for the HTML filename
     """
+    import shutil
     print(f"[interactive_plotter] Input: {inp}")
-    
+
     try:
         df = pl.read_parquet(inp)
     except Exception as e:
         print(f"[interactive_plotter] ERROR: Failed to read {inp}: {e}")
         return
-    
-    # Extract participant ID from prefix (e.g., EV_002_xdf4_extr1_filt -> EV_002)
+
+    # Extract participant ID from prefix (e.g. EV_002_xdf4_extr1_filt -> EV_002)
     parts = pre.split('_')
-    if len(parts) >= 2:
-        participant_id = '_'.join(parts[:2])
-    else:
-        participant_id = 'participant'
-    
-    # Ensure output directory exists
-    os.makedirs(out_dir, exist_ok=True)
-    
-    # Project-level HTML archive (shared across all participants)
-    archive_path = os.path.join(out_dir, f"{project_name}_interactive.html")
-    
+    participant_id = '_'.join(parts[:2]) if len(parts) >= 2 else 'participant'
+
+    # Read title from parquet (first row)
     try:
-        # Create plot JSON
-        plot_json, plot_title = create_plotly_json(df)
-        
-        # Determine tree path with participant folder
-        tree_path = parse_filename_to_tree_path(pre, participant_id)
-        
-        # Update archive
-        update_archive(archive_path, participant_id, pre, plot_json, plot_title or pre, tree_path)
-        
-        file_size = os.path.getsize(archive_path) / 1024  # KB
-        print(f"[interactive_plotter] Updated archive: {archive_path} ({file_size:.1f} KB)")
-        
+        plot_title = df.row(0, named=True).get('title', pre) if len(df) > 0 else pre
+    except Exception:
+        plot_title = pre
+
+    tree_path = parse_filename_to_tree_path(pre, participant_id)
+    archive_path = os.path.join(os.path.abspath(out_dir), f"{project_name}_results.html")
+
+    # Copy parquet to sidecar location: <archive_dir>/<pid>/plots/<pre>.parquet
+    archive_dir = os.path.dirname(archive_path)
+    participant_plots_dir = os.path.join(archive_dir, participant_id, 'plots')
+    os.makedirs(participant_plots_dir, exist_ok=True)
+    sidecar_dest = os.path.join(participant_plots_dir, f'{pre}.parquet')
+    shutil.copy2(inp, sidecar_dest)
+    print(f"[interactive_plotter] Copied sidecar: {sidecar_dest} ({os.path.getsize(sidecar_dest)//1024} KB)")
+
+    try:
+        update_archive(archive_path, participant_id, pre, plot_title or pre, tree_path)
+        print(f"[interactive_plotter] Updated archive: {archive_path} ({os.path.getsize(archive_path)//1024} KB)")
     except Exception as e:
         print(f"[interactive_plotter] ERROR: Failed to update archive: {e}")
         import traceback
         traceback.print_exc()
 
 if __name__ == '__main__':
-    if len(sys.argv) >= 4:
+    cmd = sys.argv[1] if len(sys.argv) >= 2 else ''
+
+    if cmd == 'init':
+        # Create the static HTML shell (only needed once, or to recover a deleted file)
+        # Usage: interactive_plotter.py init <html_path>
+        if len(sys.argv) < 3:
+            print('Usage: interactive_plotter.py init <html_path>')
+            sys.exit(1)
+        html_path = os.path.abspath(sys.argv[2])
+        os.makedirs(os.path.dirname(html_path), exist_ok=True)
+        if not os.path.exists(html_path):
+            with open(html_path, 'w', encoding='utf-8') as f:
+                f.write(create_archive_html())
+        print(f'[interactive_plotter] Initialized: {html_path}')
+
+    elif cmd == 'add-log':
+        # Register a log file in the archive
+        # Usage: interactive_plotter.py add-log <html> <pid> <log_path> <name>
+        if len(sys.argv) < 6:
+            print('Usage: interactive_plotter.py add-log <html> <pid> <log_path> <name>')
+            sys.exit(1)
+        add_log_to_archive(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5])
+
+    elif len(sys.argv) >= 4:
+        # Register a plot parquet sidecar
+        # Usage: interactive_plotter.py <vis.parquet> <out_dir> <prefix> [project]
         project_name = sys.argv[4] if len(sys.argv) >= 5 else 'procedure'
         run(sys.argv[1], sys.argv[2], sys.argv[3], project_name)
+
     else:
-        print('[interactive_plotter] Create unified interactive HTML archive for procedure/QC visualization.')
-        print('[interactive_plotter] Usage: interactive_plotter.py <input_vis.parquet> <output_dir> <prefix> [project_name]')
+        print('[interactive_plotter] Subcommands:')
+        print('  init <html>                             — Create the static HTML shell')
+        print('  add-log <html> <pid> <log> <name>       — Register a log file')
+        print('  <parquet> <out_dir> <prefix> [project]  — Register a plot')
         sys.exit(1)
 

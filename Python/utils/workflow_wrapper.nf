@@ -58,6 +58,7 @@ workflow participant_discovery {
         def regex_pattern = participant_pattern.replaceAll(/\*/, '.*').replaceAll(/\?/, '.')
         def input_path = new File("${workflow.launchDir}/${input_dir}")
         def output_path = new File("${workflow.launchDir}/${output_dir}")
+        // Discover already-processed participants by checking per-participant output subfolders
         def output_dirs = output_path.exists() ? output_path.list() as Set : [] as Set
         def new_participants = input_path.list().findAll { it.matches(regex_pattern) }.findAll { !(it in output_dirs) }
         
@@ -82,58 +83,43 @@ workflow participant_discovery {
         def all_participants = Channel.fromList(new_participants).concat(watched_participants)
             .filter { pid ->
                 def safe_id = pid.replaceAll('\r', '').trim().replaceAll('[^A-Za-z0-9._-]', '_')
-                def out_folder = new File("${workflow.launchDir}/${output_dir}/${safe_id}")
-                !out_folder.exists()
+                !new File("${workflow.launchDir}/${output_dir}/${safe_id}").exists()
             }
 
         participant_context = all_participants.map { pid ->
             def safe_id = pid.replaceAll('\r', '').trim().replaceAll('[^A-Za-z0-9._-]', '_')
-            def folder_path = new File("${workflow.launchDir}/${output_dir}/${safe_id}")
-            folder_path.mkdirs()
+            // Per-participant subfolder: EV_results/EV_002/
+            // Contains: plots/ (JS sidecars), *.pdf (exports), *_pipeline.log
+            def participant_dir = new File("${workflow.launchDir}/${output_dir}/${safe_id}")
+            participant_dir.mkdirs()
             
-            def log_file = new File(folder_path, "${safe_id}_pipeline.log")
+            def log_file = new File(participant_dir, "${safe_id}_pipeline.log")
             def timestamp = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
             
-            // Only initialize log if it doesn't exist (preserve on resume/sync)
             if (!log_file.exists()) {
                 log_file.text = "=== ${safe_id} initialized: ${timestamp} ===\n"
                 log_file.append("Workflow: ${workflow.projectDir}\n")
                 log_file.append("Session: ${workflow.sessionId}\n")
                 log_file.append("Launch dir: ${workflow.launchDir}\n")
-                log_file.append("Output: ${folder_path}\n")
+                log_file.append("Output: ${participant_dir}\n")
                 log_file.append("\n=== Analysis started for ${safe_id}: ${timestamp} ===\n\n")
                 
-                // Log to global pipeline log only on new initialization
                 def global_pipeline_log = new File("${workflow.launchDir}", "pipeline.log")
                 global_pipeline_log.append("=== ${safe_id} initialized: ${timestamp} ===\n")
                 global_pipeline_log.append("Workflow: ${workflow.projectDir}\n")
                 global_pipeline_log.append("Session: ${workflow.sessionId}\n")
                 global_pipeline_log.append("Launch dir: ${workflow.launchDir}\n")
-                global_pipeline_log.append("Output: ${folder_path}\n")
+                global_pipeline_log.append("Output: ${participant_dir}\n")
                 global_pipeline_log.append("\n=== Analysis started for ${safe_id}: ${timestamp} ===\n\n")
             }
             
-            // Initialize interactive HTML archive on first participant discovery
-            // This ensures the file exists before any parallel plot updates race to create it.
-            // IOInterface auto-plots *_vis.parquet files and calls update_archive() which
-            // only adds sidecar JSON + updates metadata — never recreates from scratch.
-            def html_file = new File("${workflow.launchDir}/${params.procedure_html_dir}", "${params.project_name}_interactive.html")
+            // HTML lives at EV_results/ root (shared across participants)
+            def output_root = new File("${workflow.launchDir}/${output_dir}")
+            def html_file = new File(output_root, "${params.project_name}_results.html")
             if (!html_file.exists()) {
-                html_file.parentFile.mkdirs()
-                def init_cmd = [
-                    params.python_exe, "-c",
-                    """
-import sys, os
-sys.path.insert(0, '${workflow.launchDir}/${params.toolbox_dir}/utils')
-from interactive_plotter import load_or_create_archive, create_archive_html
-html = r'${html_file.absolutePath}'
-os.makedirs(os.path.dirname(html), exist_ok=True)
-meta = load_or_create_archive(html, '${safe_id}')
-with open(html, 'w', encoding='utf-8') as f:
-    f.write(create_archive_html('${params.project_name}', meta))
-print(f'[workflow] Initialized interactive archive: {html}')
-"""
-                ]
+                def init_cmd = [params.python_exe, '-u',
+                    "${workflow.launchDir}/${params.toolbox_dir}/utils/interactive_plotter.py",
+                    'init', html_file.absolutePath]
                 def proc = init_cmd.execute()
                 proc.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)
                 if (proc.exitValue() != 0) {
@@ -194,24 +180,19 @@ workflow finalize_participant {
                 
                 // Write finalization to central pipeline log
                 def pipeline_log = new File("${workflow.launchDir}", "pipeline.log")
+                pipeline_log.parentFile?.mkdirs()
                 if (!pipeline_log.exists()) {
-                    pipeline_log.text = ""
+                    try { pipeline_log.text = "" } catch (Exception e) { /* ignore race */ }
                 }
 
                 // Add participant log + global pipeline.log to interactive HTML archive
-                def procedure_html = new File("${workflow.launchDir}/${params.procedure_html_dir}", "${params.project_name}_interactive.html")
+                // HTML lives at the output_dir root, not inside the participant subfolder
+                def procedure_html = new File("${workflow.launchDir}/${params.output_dir}", "${params.project_name}_results.html")
                 if (procedure_html.exists() && log_file.exists()) {
                     try {
-                        def add_log_cmd = [
-                            params.python_exe,
-                            "-c",
-                            """
-import sys
-sys.path.insert(0, '${workflow.launchDir}/${params.toolbox_dir}/utils')
-from interactive_plotter import add_log_to_archive
-add_log_to_archive('${procedure_html.absolutePath}', '${pid}', '${log_file.absolutePath}', 'Pipeline Log')
-"""
-                        ]
+                        def add_log_cmd = [params.python_exe, '-u',
+                            "${workflow.launchDir}/${params.toolbox_dir}/utils/interactive_plotter.py",
+                            'add-log', procedure_html.absolutePath, pid, log_file.absolutePath, 'Pipeline Log']
                         def proc = add_log_cmd.execute()
                         proc.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)
                         if (proc.exitValue() != 0) {
@@ -224,16 +205,9 @@ add_log_to_archive('${procedure_html.absolutePath}', '${pid}', '${log_file.absol
                 // Also add the global pipeline.log so it appears in the archive
                 if (procedure_html.exists() && pipeline_log.exists()) {
                     try {
-                        def add_global_cmd = [
-                            params.python_exe,
-                            "-c",
-                            """
-import sys
-sys.path.insert(0, '${workflow.launchDir}/${params.toolbox_dir}/utils')
-from interactive_plotter import add_log_to_archive
-add_log_to_archive('${procedure_html.absolutePath}', 'Global', '${pipeline_log.absolutePath}', 'pipeline.log')
-"""
-                        ]
+                        def add_global_cmd = [params.python_exe, '-u',
+                            "${workflow.launchDir}/${params.toolbox_dir}/utils/interactive_plotter.py",
+                            'add-log', procedure_html.absolutePath, 'Global', pipeline_log.absolutePath, 'pipeline.log']
                         def proc2 = add_global_cmd.execute()
                         proc2.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)
                     } catch (Exception e) {
@@ -257,18 +231,21 @@ add_log_to_archive('${procedure_html.absolutePath}', 'Global', '${pipeline_log.a
                 git_lock.lock()
                 try {
                     def results_full_path = new File("${workflow.launchDir}/${folder}").getAbsoluteFile()
-                    def html_file_full    = new File("${workflow.launchDir}/${params.procedure_html_dir}", "${params.project_name}_interactive.html").getAbsoluteFile()
-                    def plots_dir_full    = new File("${workflow.launchDir}/${params.procedure_html_dir}/plots").getAbsoluteFile()
                     def git_root = results_full_path
                     while (git_root != null && !new File(git_root, ".git").exists()) {
                         git_root = git_root.getParentFile()
                     }
                     if (!git_root) return
 
+                    // output_dir is now flat — HTML and plots/ live alongside results files
                     def relative_path     = git_root.toPath().relativize(results_full_path.toPath()).toString().replace('\\', '/')
                     def pipeline_log_path = git_root.toPath().relativize(pipeline_log.toPath()).toString().replace('\\', '/')
-                    def html_file_path    = git_root.toPath().relativize(html_file_full.toPath()).toString().replace('\\', '/')
-                    def plots_dir_path    = plots_dir_full.exists() ? git_root.toPath().relativize(plots_dir_full.toPath()).toString().replace('\\', '/') : null
+                    // HTML and meta.json sit at the output_dir root (parent of participant subfolder)
+                    def output_root_full  = results_full_path.parentFile
+                    def html_full         = new File(output_root_full, "${params.project_name}_results.html")
+                    def meta_full         = new File(output_root_full, "plots/meta.json")
+                    def html_path         = html_full.exists()  ? git_root.toPath().relativize(html_full.toPath()).toString().replace('\\', '/') : null
+                    def meta_path         = meta_full.exists()  ? git_root.toPath().relativize(meta_full.toPath()).toString().replace('\\', '/') : null
                     
                     def runGit = { cmd, timeout = 10 ->
                         try {
@@ -291,29 +268,39 @@ add_log_to_archive('${procedure_html.absolutePath}', 'Global', '${pipeline_log.a
                     }
                     
                     def logSync = { status, details = "" ->
-                        def ts = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
-                        pipeline_log.append("\n=== Git sync for ${pid}: ${ts} ===\n")
-                        pipeline_log.append("Paths: ${relative_path}, ${html_file_path}\n")
-                        pipeline_log.append("Status: ${status}\n")
-                        if (details) pipeline_log.append("${details}\n")
-                        pipeline_log.append("=== ${pid} sync complete ===\n\n")
+                        try {
+                            pipeline_log.parentFile?.mkdirs()
+                            def ts = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
+                            pipeline_log.append("\n=== Git sync for ${pid}: ${ts} ===\n")
+                            pipeline_log.append("Path: ${relative_path}\n")
+                            pipeline_log.append("Status: ${status}\n")
+                            if (details) pipeline_log.append("${details}\n")
+                            pipeline_log.append("=== ${pid} sync complete ===\n\n")
+                        } catch (Exception e) { /* non-critical — log write failed, ignore */ }
                     }
                     
                     cleanupRebase()
 
-                    // --- Commit 1: participant folder + HTML file + plots/ sidecar (only if changed) ---
-                    def addPaths = [relative_path, html_file_path]
-                    if (plots_dir_path) addPaths << plots_dir_path
+                    // --- Commit 1: participant subfolder + shared HTML + meta.json (only if changed) ---
+                    // NOTE: we add first, then check the staging area — NOT the working tree.
+                    // git status --porcelain -uno skips untracked files, which breaks the first
+                    // run after switching from PDF plots to parquet sidecars (all new, untracked).
+                    def addPaths = [relative_path]
+                    if (html_path) addPaths << html_path
+                    if (meta_path) addPaths << meta_path
 
-                    def status_participant = runGit(["git", "status", "--porcelain", "-uno"] + addPaths, 5)
-                    def hasParticipantChanges = status_participant.out?.trim()
-
-                    if (hasParticipantChanges) {
-                        def add = runGit(["git", "add"] + addPaths, 30)
-                        if (add.exit != 0) {
-                            runGit(["git", "reset", "HEAD"], 5)  // clean up partial staging
-                            logSync("Git add failed", add.out)
-                        } else {
+                    // -A stages additions, modifications AND deletions of tracked files.
+                    // Plain 'git add' skips deletions, which breaks after per-participant logs
+                    // are deleted (they were tracked in older pipeline runs).
+                    def add = runGit(["git", "add", "-A"] + addPaths, 30)
+                    if (add.exit != 0) {
+                        runGit(["git", "reset", "HEAD"], 5)
+                        logSync("Git add failed", add.out)
+                    } else {
+                        // --cached checks the index (what was just staged), not the working tree
+                        def status_participant = runGit(["git", "status", "--porcelain", "--cached"] + addPaths, 5)
+                        def hasParticipantChanges = status_participant.out?.trim()
+                        if (hasParticipantChanges) {
                             def commit = runGit(["git", "commit", "-m", "autosync: ${pid} completed"], 10)
                             if (commit.exit == 0) {
                                 def pull = runGit(["git", "pull", "--rebase", "--autostash"], 20)
@@ -330,9 +317,9 @@ add_log_to_archive('${procedure_html.absolutePath}', 'Global', '${pipeline_log.a
                                 runGit(["git", "pull", "--rebase", "--autostash"], 10)
                                 runGit(["git", "push"], 10)
                             }
+                        } else {
+                            logSync("No participant changes")
                         }
-                    } else {
-                        logSync("No participant changes")
                     }
 
                     // --- Commit 2: pipeline.log always (captures final sync status above) ---
@@ -452,10 +439,13 @@ process IOInterface {
             if [ -f "\$VIS_FILE" ]; then
                 PREFIX=\$(basename "\$VIS_FILE" _vis.parquet)
                 # Create directory first, then resolve absolute path
-                mkdir -p "${workflow.launchDir}/${params.procedure_html_dir}"
-                PROCEDURE_FOLDER="\$(cd "${workflow.launchDir}/${params.procedure_html_dir}" && pwd)"
+                mkdir -p "${workflow.launchDir}/${params.output_dir}"
+                PROCEDURE_FOLDER="\$(cd "${workflow.launchDir}/${params.output_dir}" && pwd)"
+                # PDFs land in the participant subfolder
+                PARTICIPANT_DIR="${workflow.launchDir}/${params.output_dir}/\${PARTICIPANT_ID}"
+                mkdir -p "\${PARTICIPANT_DIR}"
                 PROJECT_NAME="${params.project_name}"
-                echo "\$(date '+%Y-%m-%d %H:%M:%S') [autoplot] Creating interactive plot \$VIS_FILE -> \$PROCEDURE_FOLDER/\${PROJECT_NAME}_interactive.html" >> "\$LOG_FILE"
+                echo "\$(date '+%Y-%m-%d %H:%M:%S') [autoplot] Creating interactive plot \$VIS_FILE -> \$PROCEDURE_FOLDER/\${PROJECT_NAME}_results.html" >> "\$LOG_FILE"
                 # Use interactive plotter for procedure visualization (project-level HTML)
                 ${env_exe} -u "${workflow.launchDir}/${params.interactive_plotter_script}" "\$VIS_FILE" "\$PROCEDURE_FOLDER" "\$PREFIX" "\$PROJECT_NAME" 2>&1 | while IFS= read -r line; do
                     echo "\$(date '+%Y-%m-%d %H:%M:%S') \$line" >> "\$LOG_FILE"

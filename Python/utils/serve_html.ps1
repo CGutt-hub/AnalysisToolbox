@@ -1,40 +1,52 @@
-# EmotiView HTML Archive Server
-# Run this to serve the interactive HTML archive over HTTP.
-# Then open: http://localhost:8080/EV_procedure_interactive.html
+# Generic Results Archive Server
+# Serves any directory over HTTP — designed for *_results.html viewers backed by parquet sidecars.
+#
+# Usage:
+#   .\serve_html.ps1                          # serves current directory, auto-detects HTML
+#   .\serve_html.ps1 -ServeDir <path>         # serve a specific directory
+#   .\serve_html.ps1 -ServeDir <path> -Port 9090
+#   .\serve_html.ps1 -NoOpen                  # skip auto-opening browser
 
 param(
     [string]$ServeDir = '',
-    [int]$Port = 8080
+    [int]$Port = 8080,
+    [switch]$NoOpen
 )
 
+# Default: serve the current working directory
 if (-not $ServeDir) {
-    # Search upward from the current working directory for an EV_analysis folder
-    $search = Get-Location
-    while ($search) {
-        $candidate = Join-Path $search "EV_analysis"
-        if (Test-Path $candidate) { $ServeDir = $candidate; break }
-        $parent = Split-Path $search -Parent
-        if ($parent -eq $search) { break }
-        $search = $parent
-    }
+    $ServeDir = (Get-Location).Path
 }
 
+$ServeDir = (Resolve-Path $ServeDir -ErrorAction SilentlyContinue)?.Path
 if (-not $ServeDir -or -not (Test-Path $ServeDir)) {
-    Write-Error "Could not find EV_analysis folder. Pass -ServeDir <path> explicitly."
+    Write-Error "Directory not found: '$ServeDir'"
     exit 1
 }
 
+# Auto-detect the main HTML file (*_results.html preferred, else first .html)
+$htmlFile = Get-ChildItem $ServeDir -Filter '*_results.html' | Select-Object -First 1
+if (-not $htmlFile) {
+    $htmlFile = Get-ChildItem $ServeDir -Filter '*.html' | Select-Object -First 1
+}
+$defaultUrl = if ($htmlFile) { $htmlFile.Name } else { '' }
+
 Write-Host ""
-Write-Host "EmotiView Archive Server"
-Write-Host "========================"
+Write-Host "Results Archive Server"
+Write-Host "======================"
 Write-Host "Serving: $ServeDir"
-Write-Host "URL:     http://localhost:$Port/EV_procedure_interactive.html"
+if ($defaultUrl) {
+    Write-Host "URL:     http://localhost:$Port/$defaultUrl"
+} else {
+    Write-Host "URL:     http://localhost:$Port/  (no HTML file found)"
+}
 Write-Host ""
 Write-Host "Press Ctrl+C to stop."
 Write-Host ""
 
-# Open browser automatically
-Start-Process "http://localhost:$Port/EV_procedure_interactive.html"
+if ($defaultUrl -and -not $NoOpen) {
+    Start-Process "http://localhost:$Port/$defaultUrl"
+}
 
 $listener = New-Object System.Net.HttpListener
 $listener.Prefixes.Add("http://localhost:$Port/")
@@ -46,22 +58,22 @@ try {
         $request = $context.Request
         $response = $context.Response
 
-        # Map URL to file
         $urlPath = $request.Url.LocalPath.TrimStart('/')
         if ($urlPath -eq '' -or $urlPath -eq '/') {
-            $urlPath = 'EV_procedure_interactive.html'
+            $urlPath = $defaultUrl
         }
 
         $filePath = Join-Path $ServeDir $urlPath
 
-        if (Test-Path $filePath -PathType Leaf) {
+        if ($filePath -and (Test-Path $filePath -PathType Leaf)) {
             $ext = [System.IO.Path]::GetExtension($filePath).ToLower()
             $response.ContentType = switch ($ext) {
-                '.html' { 'text/html; charset=utf-8' }
-                '.js'   { 'application/javascript; charset=utf-8' }
-                '.css'  { 'text/css; charset=utf-8' }
-                '.json' { 'application/json; charset=utf-8' }
-                default { 'application/octet-stream' }
+                '.html'    { 'text/html; charset=utf-8' }
+                '.js'      { 'application/javascript; charset=utf-8' }
+                '.css'     { 'text/css; charset=utf-8' }
+                '.json'    { 'application/json; charset=utf-8' }
+                '.parquet' { 'application/octet-stream' }
+                default    { 'application/octet-stream' }
             }
             $bytes = [System.IO.File]::ReadAllBytes($filePath)
             $response.ContentLength64 = $bytes.Length
