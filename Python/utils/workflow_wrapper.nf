@@ -74,6 +74,25 @@ workflow participant_discovery {
             if (marker.exists()) marker.delete()
         }
 
+        // Delete stale old-named HTML files (e.g. *_interactive.html) alongside the new *_results.html.
+        // These are leftovers from before the rename and will confuse serve_html.ps1.
+        if (output_path.exists()) {
+            output_path.listFiles()?.each { f ->
+                if (f.name.endsWith('_interactive.html')) {
+                    f.delete()
+                    new File("${workflow.launchDir}", "pipeline.log").append(
+                        "[${new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())}] [workflow] Deleted stale HTML: ${f.name}\n"
+                    )
+                }
+            }
+        }
+        // Same cleanup in the launch dir itself (EV_analysis/)
+        new File(workflow.launchDir.toString()).listFiles()?.each { f ->
+            if (f.name.endsWith('_interactive.html')) {
+                f.delete()
+            }
+        }
+
         def watched_participants = Channel
             .watchPath("${workflow.launchDir}/${input_dir}/*", 'create,modify')
             .map { path -> path.getName() }
@@ -89,7 +108,7 @@ workflow participant_discovery {
         participant_context = all_participants.map { pid ->
             def safe_id = pid.replaceAll('\r', '').trim().replaceAll('[^A-Za-z0-9._-]', '_')
             // Per-participant subfolder: EV_results/EV_002/
-            // Contains: plots/ (JS sidecars), *.pdf (exports), *_pipeline.log
+            // Contains: plots/ (parquet sidecars), *.pdf (exports)
             def participant_dir = new File("${workflow.launchDir}/${output_dir}/${safe_id}")
             participant_dir.mkdirs()
             
@@ -207,7 +226,7 @@ workflow finalize_participant {
                     try {
                         def add_global_cmd = [params.python_exe, '-u',
                             "${workflow.launchDir}/${params.toolbox_dir}/utils/interactive_plotter.py",
-                            'add-log', procedure_html.absolutePath, 'Global', pipeline_log.absolutePath, 'pipeline.log']
+                            'add-log', procedure_html.absolutePath, 'global', pipeline_log.absolutePath, 'pipeline.log']
                         def proc2 = add_global_cmd.execute()
                         proc2.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)
                     } catch (Exception e) {
@@ -243,7 +262,7 @@ workflow finalize_participant {
                     // HTML and meta.json sit at the output_dir root (parent of participant subfolder)
                     def output_root_full  = results_full_path.parentFile
                     def html_full         = new File(output_root_full, "${params.project_name}_results.html")
-                    def meta_full         = new File(output_root_full, "plots/meta.json")
+                    def meta_full         = new File(output_root_full, "${params.project_name}_meta.json")
                     def html_path         = html_full.exists()  ? git_root.toPath().relativize(html_full.toPath()).toString().replace('\\', '/') : null
                     def meta_path         = meta_full.exists()  ? git_root.toPath().relativize(meta_full.toPath()).toString().replace('\\', '/') : null
                     
@@ -335,6 +354,13 @@ workflow finalize_participant {
                 } finally {
                     git_lock.unlock()
                 }
+
+                // Print results location once per participant — fires reliably here because
+                // finalize_participant is triggered by terminal modules, not workflow completion.
+                // workflow.onComplete never fires when participant_discovery uses watchPath (infinite loop).
+                def resultsDir = new File("${workflow.launchDir}/${params.output_dir}").canonicalPath
+                def serveScript = new File("${workflow.launchDir}/${params.toolbox_dir}/utils/serve_html.ps1").canonicalPath
+                log.info "\n==========================================\n${pid} DONE — results ready\nBrowse: cd '${resultsDir}'\n        powershell -ExecutionPolicy Bypass -File '${serveScript}'\n==========================================\n"
             }
 }
 

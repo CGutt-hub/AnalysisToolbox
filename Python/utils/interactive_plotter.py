@@ -61,19 +61,26 @@ def parse_filename_to_tree_path(filename, participant_id):
     # Return path with participant folder + filename
     return [participant_id, base]
 
-def load_or_create_archive(archive_path, participant_id):
-    """Load existing archive metadata from meta.json."""
+def _meta_filename(archive_path):
+    """Derive the meta.json filename from the archive HTML path.
+    EV_procedure_results.html  →  EV_procedure_meta.json
+    """
+    base = os.path.basename(os.path.abspath(archive_path))
+    return base.replace('_results.html', '_meta.json') if base.endswith('_results.html') else 'meta.json'
+
+def load_or_create_archive(archive_path):
+    """Load existing archive metadata from {project}_meta.json at the archive root."""
     archive_dir = os.path.dirname(os.path.abspath(archive_path))
-    meta_path = os.path.join(archive_dir, 'plots', 'meta.json')
+    meta_path = os.path.join(archive_dir, _meta_filename(archive_path))
     if os.path.exists(meta_path):
         with open(meta_path, 'r', encoding='utf-8') as f:
             return json.load(f)
     return {}
 
-def create_archive_html(participant_id=None):
-    """Create a static HTML archive shell. plotMeta is fetched from plots/meta.json
+def create_archive_html(project_name='procedure'):
+    """Create a static HTML archive shell. plotMeta is fetched from {project_name}_meta.json
     at startup and polled every 10 s — never baked into the HTML.
-    Sidecars are .parquet (plots) or .js (logs) fetched on demand by the browser.
+    Sidecars are .parquet fetched on demand by the browser.
     """
     return f"""<!DOCTYPE html>
 <html>
@@ -179,6 +186,7 @@ def create_archive_html(participant_id=None):
     </div>
     
     <script>
+        const META_URL = '{project_name}_meta.json';
         let plotMeta = {{}};
         let searchTerm = '';
 
@@ -197,20 +205,18 @@ def create_archive_html(participant_id=None):
             const pid = (meta.path && meta.path[0]) || 'unknown';
 
             if (meta.type === 'log') {{
-                // Logs are small .js text sidecars
-                return new Promise((resolve, reject) => {{
-                    window._EV_sidecar = window._EV_sidecar || {{}};
-                    if (window._EV_sidecar[id]) {{ resolve(window._EV_sidecar[id]); return; }}
-                    const script = document.createElement('script');
-                    script.src = pid + '/plots/' + id + '.js';
-                    script.onload = () => {{
-                        const data = window._EV_sidecar && window._EV_sidecar[id];
-                        if (data) resolve(data);
-                        else reject(new Error('Log sidecar missing data: ' + id));
-                    }};
-                    script.onerror = () => reject(new Error('Could not load log: ' + pid + '/plots/' + id + '.js — open via HTTP server'));
-                    document.head.appendChild(script);
-                }});
+                // Path stored in meta.file (relative to archive root) — no URL construction needed
+                const url = meta.file;
+                const resp = await fetch(url);
+                if (!resp.ok) throw new Error('HTTP ' + resp.status + ' fetching ' + url + ' — open via HTTP server (serve_html.ps1 or GitHub Pages)');
+                const buf = await resp.arrayBuffer();
+                const {{ parquetRead }} = await getHyparquet();
+                const rows = [];
+                await parquetRead({{ file: buf, onComplete: data => rows.push(...data) }});
+                const content = rows.length > 0 ? (rows[0].content || '') : '';
+                const result = {{ content }};
+                _EV_cache[id] = result;
+                return result;
             }}
 
             // Plot: fetch .parquet, decode, build Plotly figure
@@ -594,9 +600,10 @@ def create_archive_html(participant_id=None):
                 grp.className = 'proc-group';
                 const hdr = document.createElement('div');
                 hdr.className = 'proc-group-hdr';
-                hdr.innerHTML = '<span class="proc-toggle">\u25bc</span> \U0001f4cb Logs';
+                hdr.innerHTML = '<span class="proc-toggle">\u25b6</span> \U0001f4cb Logs';
                 const body = document.createElement('div');
                 body.className = 'proc-group-body';
+                body.style.display = 'none'; // start collapsed — Global pipeline.log can be large
                 hdr.onclick = () => {{
                     const open = body.style.display !== 'none';
                     body.style.display = open ? 'none' : '';
@@ -701,8 +708,13 @@ def create_archive_html(participant_id=None):
                 treeEl.appendChild(folder);
                 treeEl.appendChild(folderContent);
                 
-                // Expand first folder and auto-show first plot only on initial load
-                if (participant === sortedParticipants[0] && !keepActiveId) {{
+                // Global log folder: start collapsed — pipeline.log can be very large
+                if (participant === 'global') {{
+                    folderContent.classList.remove('expanded');
+                    folder.querySelector('.tree-folder-icon').classList.remove('expanded');
+                }}
+                // Expand first non-global folder and auto-show first plot only on initial load
+                if (participant === sortedParticipants.find(p => p !== 'global') && !keepActiveId) {{
                     folder.querySelector('.tree-folder-icon').classList.add('expanded');
                     if (sortedFiles.length > 0) {{
                         showPlot(sortedFiles[0][0]);
@@ -926,7 +938,7 @@ def create_archive_html(participant_id=None):
             
             async function poll() {{
                 try {{
-                    const r = await fetch('plots/meta.json?_=' + Date.now());
+                    const r = await fetch(META_URL + '?_=' + Date.now());
                     if (!r.ok) return;
                     const newMeta = await r.json();
                     const newJson = JSON.stringify(newMeta);
@@ -952,10 +964,10 @@ def create_archive_html(participant_id=None):
 </body>
 </html>"""
 
-def _write_meta_json(plots_dir, meta):
-    """Write plots/meta.json — polled by the HTML page every 10s for live sidebar updates."""
+def _write_meta_json(archive_dir, meta, meta_name):
+    """Write {project}_meta.json at the archive root — polled by the HTML page every 10s for live sidebar updates."""
     try:
-        meta_path = os.path.join(plots_dir, 'meta.json')
+        meta_path = os.path.join(archive_dir, meta_name)
         with open(meta_path, 'w', encoding='utf-8') as f:
             json.dump(meta, f)
     except Exception:
@@ -967,13 +979,11 @@ def update_archive(archive_path, participant_id, plot_id, plot_title, tree_path)
 
     The .parquet sidecar must already be copied to
     <archive_dir>/<participant_id>/plots/<plot_id>.parquet before calling this.
-    Logs still write their own .js sidecar via add_log_to_archive().
+    Logs are stored as .parquet sidecars via add_log_to_archive().
     """
     archive_path = os.path.abspath(archive_path)
     archive_dir = os.path.dirname(archive_path)
     os.makedirs(archive_dir, exist_ok=True)
-    plots_dir = os.path.join(archive_dir, 'plots')
-    os.makedirs(plots_dir, exist_ok=True)
     
     # Lock lives next to the HTML — always accessible
     import hashlib, time
@@ -994,7 +1004,7 @@ def update_archive(archive_path, participant_id, plot_id, plot_title, tree_path)
         acquire_file_lock(lock_file)
         
         # Load existing metadata only
-        existing_meta = load_or_create_archive(archive_path, participant_id)
+        existing_meta = load_or_create_archive(archive_path)
         
         # Update metadata entry
         existing_meta[plot_id] = {
@@ -1002,12 +1012,13 @@ def update_archive(archive_path, participant_id, plot_id, plot_title, tree_path)
             'path': tree_path,
             'type': 'plot'
         }
-        # Write meta.json (polled by open browser tabs for live updates)
-        _write_meta_json(plots_dir, existing_meta)
+        # Write {project}_meta.json (polled by open browser tabs for live updates)
+        _write_meta_json(archive_dir, existing_meta, _meta_filename(archive_path))
         # Create HTML shell once — never needs to be regenerated
         if not os.path.exists(archive_path):
+            _pn = _meta_filename(archive_path).replace('_meta.json', '')
             with open(archive_path, 'w', encoding='utf-8') as f:
-                f.write(create_archive_html())
+                f.write(create_archive_html(_pn))
         return archive_path
     finally:
         release_file_lock(lock_file)
@@ -1022,7 +1033,7 @@ def add_log_to_archive(archive_path, participant_id, log_path, log_name):
     
     Args:
         archive_path: Path to the HTML archive
-        participant_id: Participant ID (or 'Global' for project logs)
+        participant_id: Participant ID (or 'global' for project logs)
         log_path: Path to the log file
         log_name: Display name for the log
     """
@@ -1040,20 +1051,24 @@ def add_log_to_archive(archive_path, participant_id, log_path, log_name):
     except Exception as e:
         log_content = f"Error reading log file: {e}"
     
-    # Write log content to sidecar file
-    archive_dir = os.path.dirname(archive_path)
+    # Write log content as parquet sidecar
+    # Global logs: {log_name}.parquet at the archive root (e.g. pipeline.log.parquet)
+    # Participant logs: {pid}/{pid}.log.parquet alongside their plots/ folder
+    archive_dir = os.path.dirname(os.path.abspath(archive_path))
     os.makedirs(archive_dir, exist_ok=True)
-    # meta.json lives at archive_dir/plots/ (top-level)
-    plots_dir = os.path.join(archive_dir, 'plots')
-    os.makedirs(plots_dir, exist_ok=True)
-    log_id = f"{participant_id}_log_{log_name}"
-    # JS sidecar lives at archive_dir/<participant_id>/plots/<log_id>.js
-    participant_plots_dir = os.path.join(archive_dir, participant_id, 'plots')
-    os.makedirs(participant_plots_dir, exist_ok=True)
-    sidecar_path = os.path.join(participant_plots_dir, f'{log_id}.js')
-    with open(sidecar_path, 'w', encoding='utf-8') as f:
-        f.write('window._EV_sidecar = window._EV_sidecar || {};\n')
-        f.write(f'window._EV_sidecar[{json.dumps(log_id)}] = {json.dumps({"content": log_content})};\n')
+    if participant_id == 'global':
+        log_filename = f'{log_name}.parquet'         # e.g. pipeline.log.parquet
+        sidecar_dir = archive_dir
+        relative_file = log_filename
+    else:
+        log_filename = f'{participant_id}.log.parquet'  # e.g. EV_002.log.parquet
+        sidecar_dir = os.path.join(archive_dir, participant_id)
+        relative_file = f'{participant_id}/{log_filename}'
+    log_id = f'{participant_id}_log'  # unique key per participant in meta.json
+    os.makedirs(sidecar_dir, exist_ok=True)
+    sidecar_path = os.path.join(sidecar_dir, log_filename)
+    log_df = pl.DataFrame({'content': [log_content]})
+    log_df.write_parquet(sidecar_path)
     
     # Lock lives next to HTML
     import hashlib, time
@@ -1072,18 +1087,20 @@ def add_log_to_archive(archive_path, participant_id, log_path, log_name):
     try:
         acquire_file_lock(lock_file)
         
-        existing_meta = load_or_create_archive(archive_path, participant_id)
+        existing_meta = load_or_create_archive(archive_path)
         existing_meta[log_id] = {
             'title': log_name,
             'path': [participant_id, log_name],
-            'type': 'log'
+            'type': 'log',
+            'file': relative_file   # relative path from archive root for JS fetch
         }
         
-        _write_meta_json(plots_dir, existing_meta)
+        _write_meta_json(archive_dir, existing_meta, _meta_filename(archive_path))
         # Create HTML shell once — never needs to be regenerated
         if not os.path.exists(archive_path):
+            _pn = _meta_filename(archive_path).replace('_meta.json', '')
             with open(archive_path, 'w', encoding='utf-8') as f:
-                f.write(create_archive_html())
+                f.write(create_archive_html(_pn))
         return archive_path
     finally:
         release_file_lock(lock_file)
@@ -1153,10 +1170,13 @@ if __name__ == '__main__':
             print('Usage: interactive_plotter.py init <html_path>')
             sys.exit(1)
         html_path = os.path.abspath(sys.argv[2])
+        # Derive project_name from filename: EV_procedure_results.html → EV_procedure
+        base = os.path.basename(html_path)
+        proj = base.replace('_results.html', '') if base.endswith('_results.html') else 'procedure'
         os.makedirs(os.path.dirname(html_path), exist_ok=True)
         if not os.path.exists(html_path):
             with open(html_path, 'w', encoding='utf-8') as f:
-                f.write(create_archive_html())
+                f.write(create_archive_html(proj))
         print(f'[interactive_plotter] Initialized: {html_path}')
 
     elif cmd == 'add-log':
