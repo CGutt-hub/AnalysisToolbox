@@ -31,12 +31,12 @@ def configureGitUser() {
                 git_configured = true
                 
                 // Log to pipeline.log instead of terminal
-                def pipeline_log = new File(workflow.launchDir.toString(), "pipeline.log")
+                def pipeline_log = new File("${workflow.launchDir}/${params.output_dir}", "pipeline.log")
                 def timestamp = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
                 pipeline_log.append("[${timestamp}] [workflow] Git user configured: ${params.git_user_name} <${params.git_user_email}>\n")
             }
         } catch (Exception e) {
-            def pipeline_log = new File(workflow.launchDir.toString(), "pipeline.log")
+            def pipeline_log = new File("${workflow.launchDir}/${params.output_dir}", "pipeline.log")
             def timestamp = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
             pipeline_log.append("[${timestamp}] [workflow] Warning: Could not configure git user - ${e.message}\n")
         }
@@ -63,7 +63,7 @@ workflow participant_discovery {
         def new_participants = input_path.list().findAll { it.matches(regex_pattern) }.findAll { !(it in output_dirs) }
         
         // Create pipeline log file
-        def pipeline_log = new File("${workflow.launchDir}", "pipeline.log")
+        def pipeline_log = new File("${workflow.launchDir}/${params.output_dir}", "pipeline.log")
         if (!pipeline_log.exists()) {
             pipeline_log.text = ""
         }
@@ -80,7 +80,7 @@ workflow participant_discovery {
             output_path.listFiles()?.each { f ->
                 if (f.name.endsWith('_interactive.html')) {
                     f.delete()
-                    new File("${workflow.launchDir}", "pipeline.log").append(
+                    new File("${workflow.launchDir}/${params.output_dir}", "pipeline.log").append(
                         "[${new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())}] [workflow] Deleted stale HTML: ${f.name}\n"
                     )
                 }
@@ -123,7 +123,7 @@ workflow participant_discovery {
                 log_file.append("Output: ${participant_dir}\n")
                 log_file.append("\n=== Analysis started for ${safe_id}: ${timestamp} ===\n\n")
                 
-                def global_pipeline_log = new File("${workflow.launchDir}", "pipeline.log")
+                def global_pipeline_log = new File("${workflow.launchDir}/${params.output_dir}", "pipeline.log")
                 global_pipeline_log.append("=== ${safe_id} initialized: ${timestamp} ===\n")
                 global_pipeline_log.append("Workflow: ${workflow.projectDir}\n")
                 global_pipeline_log.append("Session: ${workflow.sessionId}\n")
@@ -142,7 +142,7 @@ workflow participant_discovery {
                 def proc = init_cmd.execute()
                 proc.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)
                 if (proc.exitValue() != 0) {
-                    new File("${workflow.launchDir}", "pipeline.log").append(
+                    new File("${workflow.launchDir}/${params.output_dir}", "pipeline.log").append(
                         "[${new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())}] [workflow] Warning: Could not initialize HTML archive: ${proc.text}\n"
                     )
                 }
@@ -198,7 +198,7 @@ workflow finalize_participant {
                 log_file?.append("\n=== ${pid} finalized: ${timestamp} ===\n\n")
                 
                 // Write finalization to central pipeline log
-                def pipeline_log = new File("${workflow.launchDir}", "pipeline.log")
+                def pipeline_log = new File("${workflow.launchDir}/${params.output_dir}", "pipeline.log")
                 pipeline_log.parentFile?.mkdirs()
                 if (!pipeline_log.exists()) {
                     try { pipeline_log.text = "" } catch (Exception e) { /* ignore race */ }
