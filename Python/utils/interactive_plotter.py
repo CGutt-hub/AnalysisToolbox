@@ -186,8 +186,7 @@ def create_archive_html(project_name='procedure'):
     </div>
     
     <script>
-        const META_URL = '{project_name}_meta.json';
-        let plotMeta = {{}};
+        let plotMeta = {{}};  // populated by directory discovery below
         let searchTerm = '';
 
         // ── Parquet sidecar loader (hyparquet, pure JS — no WASM startup) ─────────
@@ -918,47 +917,73 @@ def create_archive_html(project_name='procedure'):
             return text.replace(/[.*+?^${{}}()|[\\]\\\\]/g, '\\\\$&');
         }}
         
-        // Fetch meta.json immediately on load, then poll every 10 s.
-        // plotMeta starts empty — no data baked into the HTML.
-        (function startPolling() {{
+        // Discover plots from the HTTP server directory listing — no meta.json dependency.
+        // Scans EV_*/plots/*.parquet and EV_*/*.log.parquet on load and every 10 s.
+        async function discoverFromDirectory() {{
+            const meta = {{}};
+            try {{
+                const rootResp = await fetch('./?_=' + Date.now());
+                if (!rootResp.ok) return meta;
+                const rootHtml = await rootResp.text();
+                const pidMatches = [...rootHtml.matchAll(/href="(EV_[A-Za-z0-9]+)\/?"/g)];
+                const pids = [...new Set(pidMatches.map(m => m[1]))];
+                for (const pid of pids) {{
+                    const logFile = pid + '/' + pid + '.log.parquet';
+                    const logHead = await fetch(logFile, {{ method: 'HEAD' }}).catch(() => null);
+                    if (logHead?.ok) {{
+                        meta[pid + '_log'] = {{ title: pid + ' Log', path: [pid, 'log'], type: 'log', file: logFile }};
+                    }}
+                    const plotsResp = await fetch(pid + '/plots/?_=' + Date.now()).catch(() => null);
+                    if (!plotsResp?.ok) continue;
+                    const plotsHtml = await plotsResp.text();
+                    const pqMatches = [...plotsHtml.matchAll(/href="([^"?#]+\.parquet)"/g)];
+                    for (const m of pqMatches) {{
+                        const plotId = m[1].replace(/\.parquet$/, '');
+                        const plotName = plotId.startsWith(pid + '_') ? plotId.slice(pid.length + 1) : plotId;
+                        meta[plotId] = {{ title: plotId, path: [pid, plotName], type: 'plot' }};
+                    }}
+                }}
+                const gHead = await fetch('pipeline.log.parquet', {{ method: 'HEAD' }}).catch(() => null);
+                if (gHead?.ok) meta['global_log'] = {{ title: 'Pipeline Log', path: ['global', 'log'], type: 'log', file: 'pipeline.log.parquet' }};
+            }} catch(e) {{ console.warn('Discovery failed:', e); }}
+            return meta;
+        }}
+
+        (function startDiscovery() {{
             let lastJson = '';
             let indicator = null;
-            
+
             function updateIndicator(n) {{
                 if (!indicator) {{
                     indicator = document.createElement('div');
                     indicator.style.cssText = 'position:fixed;bottom:10px;right:10px;background:#27ae60;color:white;padding:6px 12px;border-radius:4px;font-size:12px;z-index:9999;';
                     document.body.appendChild(indicator);
                 }}
-                indicator.textContent = '&#x27F3; ' + n + ' plots';
+                indicator.textContent = '\u27f3 ' + n + ' plots';
                 clearTimeout(indicator._hide);
-                indicator._hide = setTimeout(() => {{ if (indicator) {{ indicator.style.opacity = '0.4'; }} }}, 3000);
+                indicator._hide = setTimeout(() => {{ if (indicator) indicator.style.opacity = '0.4'; }}, 3000);
                 indicator.style.opacity = '1';
             }}
-            
-            async function poll() {{
+
+            async function discover() {{
                 try {{
-                    const r = await fetch(META_URL + '?_=' + Date.now());
-                    if (!r.ok) return;
-                    const newMeta = await r.json();
+                    const newMeta = await discoverFromDirectory();
                     const newJson = JSON.stringify(newMeta);
                     if (newJson !== lastJson) {{
                         plotMeta = newMeta;
                         lastJson = newJson;
-                        const newCount = Object.keys(newMeta).length;
                         const currentId = document.querySelector('.tree-item.active, .proc-node.active')?.dataset?.plotId;
                         renderFlatList(plotMeta, currentId);
                         renderProcedureTree(plotMeta);
-                        // Restore active state without re-loading the plot
                         if (currentId) {{
                             document.querySelectorAll('[data-plot-id="' + currentId + '"]').forEach(el => el.classList.add('active'));
                         }}
-                        updateIndicator(newCount);
+                        updateIndicator(Object.keys(newMeta).length);
                     }}
-                }} catch(e) {{ /* server not running or no meta.json yet — silent */ }}
-                setTimeout(poll, 10000);
+                }} catch(e) {{ /* server not running — silent */ }}
+                setTimeout(discover, 10000);
             }}
-            poll(); // immediate first fetch
+            discover();
         }})();
     </script>
 </body>
