@@ -602,7 +602,7 @@ def create_archive_html(project_name='procedure'):
                 hdr.innerHTML = '<span class="proc-toggle">\u25b6</span> \U0001f4cb Logs';
                 const body = document.createElement('div');
                 body.className = 'proc-group-body';
-                body.style.display = 'none'; // start collapsed — Global pipeline.log can be large
+                body.style.display = 'none'; // start collapsed — Global EV_log can be large
                 hdr.onclick = () => {{
                     const open = body.style.display !== 'none';
                     body.style.display = open ? 'none' : '';
@@ -707,7 +707,7 @@ def create_archive_html(project_name='procedure'):
                 treeEl.appendChild(folder);
                 treeEl.appendChild(folderContent);
                 
-                // Global log folder: start collapsed — pipeline.log can be very large
+                // Global log folder: start collapsed — EV_log can be very large
                 if (participant === 'global') {{
                     folderContent.classList.remove('expanded');
                     folder.querySelector('.tree-folder-icon').classList.remove('expanded');
@@ -943,8 +943,8 @@ def create_archive_html(project_name='procedure'):
                         meta[plotId] = {{ title: plotId, path: [pid, plotName], type: 'plot' }};
                     }}
                 }}
-                const gHead = await fetch('pipeline.log.parquet', {{ method: 'HEAD' }}).catch(() => null);
-                if (gHead?.ok) meta['global_log'] = {{ title: 'Pipeline Log', path: ['global', 'log'], type: 'log', file: 'pipeline.log.parquet' }};
+                const gHead = await fetch('EV_log.parquet', {{ method: 'HEAD' }}).catch(() => null);
+                if (gHead?.ok) meta['global_log'] = {{ title: 'Pipeline Log', path: ['global', 'log'], type: 'log', file: 'EV_log.parquet' }};
             }} catch(e) {{ console.warn('Discovery failed:', e); }}
             return meta;
         }}
@@ -1077,12 +1077,12 @@ def add_log_to_archive(archive_path, participant_id, log_path, log_name):
         log_content = f"Error reading log file: {e}"
     
     # Write log content as parquet sidecar
-    # Global logs: {log_name}.parquet at the archive root (e.g. pipeline.log.parquet)
+    # Global logs: {log_name}.parquet at the archive root (e.g. EV_log.parquet)
     # Participant logs: {pid}/{pid}.log.parquet alongside their plots/ folder
     archive_dir = os.path.dirname(os.path.abspath(archive_path))
     os.makedirs(archive_dir, exist_ok=True)
     if participant_id == 'global':
-        log_filename = f'{log_name}.parquet'         # e.g. pipeline.log.parquet
+        log_filename = f'{log_name}.parquet'         # e.g. EV_log.parquet
         sidecar_dir = archive_dir
         relative_file = log_filename
     else:
@@ -1093,7 +1093,7 @@ def add_log_to_archive(archive_path, participant_id, log_path, log_name):
     os.makedirs(sidecar_dir, exist_ok=True)
     sidecar_path = os.path.join(sidecar_dir, log_filename)
     log_df = pl.DataFrame({'content': [log_content]})
-    log_df.write_parquet(sidecar_path)
+    log_df.write_parquet(sidecar_path, compression='snappy')
     
     # Lock lives next to HTML
     import hashlib, time
