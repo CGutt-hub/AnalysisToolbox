@@ -355,12 +355,7 @@ workflow finalize_participant {
                     git_lock.unlock()
                 }
 
-                // Print results location once per participant — fires reliably here because
-                // finalize_participant is triggered by terminal modules, not workflow completion.
-                // workflow.onComplete never fires when participant_discovery uses watchPath (infinite loop).
-                def resultsDir = new File("${workflow.launchDir}/${params.output_dir}").canonicalPath
-                def serveScript = new File("${workflow.launchDir}/${params.toolbox_dir}/utils/serve_html.ps1").canonicalPath
-                log.info "\n==========================================\n${pid} DONE — results ready\nBrowse: cd '${resultsDir}'\n        powershell -ExecutionPolicy Bypass -File '${serveScript}'\n==========================================\n"
+
             }
 }
 
