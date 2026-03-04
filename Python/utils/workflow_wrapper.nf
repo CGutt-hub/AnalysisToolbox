@@ -343,8 +343,11 @@ workflow finalize_participant {
                             }
                         } catch (Exception e) { /* non-critical */ }
                     }
-                    def logSyncPath = pipeline_log_parquet.exists() ? pipeline_log_parquet_path : pipeline_log_path
-                    def addLog = runGit(["git", "add", logSyncPath], 5)
+                    // Also stage the entire analysis folder (EV_analysis/) alongside the global log
+                    def analysis_dir      = new File("${workflow.launchDir}").getAbsoluteFile()
+                    def analysis_dir_path = git_root.toPath().relativize(analysis_dir.toPath()).toString().replace('\\', '/')
+                    def logSyncPath       = pipeline_log_parquet.exists() ? pipeline_log_parquet_path : pipeline_log_path
+                    def addLog = runGit(["git", "add", "-A", logSyncPath, analysis_dir_path], 5)
                     if (addLog.exit == 0) {
                         def commitLog = runGit(["git", "commit", "-m", "pipeline.log: ${pid} complete"], 5)
                         if (commitLog.exit == 0) {
