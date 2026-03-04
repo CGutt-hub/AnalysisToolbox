@@ -86,7 +86,7 @@ def create_archive_html(project_name='procedure'):
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>EmotiView - Interactive Procedure Archive</title>
+    <title>{project_name} - Analysis Archive</title>
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <style>
@@ -161,7 +161,7 @@ def create_archive_html(project_name='procedure'):
 </head>
 <body>
     <div id="header">
-        <h1>EmotiView - Interactive Procedure Archive</h1>
+        <h1>{project_name} - Analysis Archive</h1>
     </div>
     <div id="search-box">
         <input type="text" id="search-input" placeholder="Search plots and logs..." />
@@ -190,7 +190,7 @@ def create_archive_html(project_name='procedure'):
         let searchTerm = '';
 
         // ── Parquet sidecar loader (hyparquet, pure JS — no WASM startup) ─────────
-        const _EV_cache = {{}};
+        const _plot_cache = {{}};
         let _hyparquetPromise = null;
         function getHyparquet() {{
             if (!_hyparquetPromise) _hyparquetPromise = import('https://esm.sh/hyparquet@1');
@@ -198,7 +198,7 @@ def create_archive_html(project_name='procedure'):
         }}
 
         async function loadSidecar(id) {{
-            if (_EV_cache[id] !== undefined) return _EV_cache[id];
+            if (_plot_cache[id] !== undefined) return _plot_cache[id];
             const meta = plotMeta[id];
             if (!meta) throw new Error('Unknown plot id: ' + id);
             const pid = (meta.path && meta.path[0]) || 'unknown';
@@ -214,7 +214,7 @@ def create_archive_html(project_name='procedure'):
                 await parquetRead({{ file: buf, onComplete: data => rows.push(...data) }});
                 const content = rows.length > 0 ? (rows[0].content || '') : '';
                 const result = {{ content }};
-                _EV_cache[id] = result;
+                _plot_cache[id] = result;
                 return result;
             }}
 
@@ -227,7 +227,7 @@ def create_archive_html(project_name='procedure'):
             const rows = [];
             await parquetRead({{ file: buf, onComplete: data => rows.push(...data) }});
             const result = buildFigureFromTable(rows);
-            _EV_cache[id] = result;
+            _plot_cache[id] = result;
             return result;
         }}
 
@@ -382,86 +382,109 @@ def create_archive_html(project_name='procedure'):
             if (isTree) applyTreeSearch();
         }}
 
-        const PIPELINE_SCHEMA = [
-            {{
-                label: '📝 Questionnaires',
-                steps: [
-                    {{name: 'PANAS',   match: s => s === 'txt_tree_panas'}},
-                    {{name: 'BIS/BAS', match: s => s === 'txt_tree_bisbas'}},
-                    {{name: 'SAM',     match: s => s === 'txt_tree_sam'}},
-                    {{name: 'BE7',     match: s => s === 'txt_tree_be7'}},
-                    {{name: 'EA-11',   match: s => s === 'txt_tree_ea11'}},
-                ],
-                shared: [
-                    {{name: 'SAM \u03a3',   match: s => s === 'sam_concat'}},
-                    {{name: 'BE7 \u03a3',   match: s => s === 'be7_concat'}},
-                    {{name: 'EA-11 \u03a3', match: s => s === 'ea11_concat'}},
-                ]
-            }},
-            {{
-                label: '\u26a1 EDA Chain',
-                steps: [
-                    {{name: 'Filtered',  match: s => /extr1_filt$/.test(s)}},
-                    {{name: 'Artefact',  match: s => /extr1_filt_rej$/.test(s)}},
-                    {{name: 'Epoched',   match: s => /extr1_filt_rej_epochs$/.test(s)}},
-                    {{name: 'Bootstrap', match: s => /extr1.*windowed/.test(s)}},
-                ],
-                shared: [
-                    {{name: 'EDA \u03a3', match: s => s === 'eda_concat'}},
-                ]
-            }},
-            {{
-                label: '\u2764\ufe0f HRV Chain',
-                steps: [
-                    {{name: 'Filtered', match: s => /extr2_filt$/.test(s)}},
-                    {{name: 'Artefact', match: s => /extr2_filt_rej$/.test(s)}},
-                    {{name: 'Peaks',    match: s => /extr2_filt_rej_peaks$/.test(s)}},
-                ],
-                shared: [
-                    {{name: 'HRV \u03a3', match: s => s === 'hrv_concat'}},
-                ]
-            }},
-            {{
-                label: '\U0001f9e0 EEG / PSD',
-                steps: [
-                    {{name: 'Reref', match: s => /extr4_reref$/.test(s)}},
-                    {{name: 'ICA',   match: s => /extr4_reref_filt_ica$/.test(s)}},
-                    {{name: 'PSD',   match: s => /epochs_psd$/.test(s)}},
-                ],
-                shared: [
-                    {{name: 'PSD \u03a3', match: s => s === 'psd_concat'}},
-                    {{name: 'FAI \u03a3', match: s => s === 'psd_fai_concat'}},
-                ]
-            }},
-            {{
-                label: '\U0001fac0 fNIRS Chain',
-                steps: [
-                    {{name: 'Log',     match: s => s.startsWith('xdf') && s.endsWith('_log')}},
-                    {{name: 'TDDR',    match: s => s.startsWith('xdf') && s.endsWith('_log_tddr')}},
-                    {{name: 'MBLL',    match: s => s.startsWith('xdf') && s.endsWith('_log_tddr_regr_lin')}},
-                    {{name: 'HbC Ep.', match: s => /epochs_hbc$/.test(s)}},
-                ],
-                shared: [
-                    {{name: 'HbC \u03a3', match: s => s === 'hbc_concat'}},
-                    {{name: 'FAI \u03a3', match: s => s === 'hbc_fai_concat'}},
-                ]
-            }},
-        ];
+        const PIPELINE_SCHEMA = [];  // unused — kept for API compat
 
-        // Filter proc-tree DOM by searchTerm — called after render and on search input
+        // ── Auto-discovery: build pipeline schema from actual step names ─────────
+        function longestCommonPrefix(strs) {{
+            if (!strs.length) return '';
+            let prefix = strs[0];
+            for (let i = 1; i < strs.length; i++) {{
+                while (!strs[i].startsWith(prefix)) {{
+                    prefix = prefix.slice(0, -1);
+                    if (!prefix) return '';
+                }}
+            }}
+            // Only strip at underscore boundary
+            const lastUs = prefix.lastIndexOf('_');
+            return lastUs >= 0 ? prefix.slice(0, lastUs + 1) : '';
+        }}
+
+        function buildAutoSchema(data) {{
+            const perPidSteps = new Set();
+            const sharedSteps = new Set();
+            const stepIds = {{}};
+            for (const [id, info] of Object.entries(data)) {{
+                if (info.type === 'log') continue;
+                const step = info.path[1];
+                if (!step) continue;
+                if (/_concat$/.test(step)) {{
+                    sharedSteps.add(step);
+                }} else {{
+                    perPidSteps.add(step);
+                }}
+                stepIds[step] = id;
+            }}
+            // Group per-participant steps by first underscore token
+            const chainMap = {{}};
+            for (const step of perPidSteps) {{
+                const key = step.split('_')[0];
+                if (!chainMap[key]) chainMap[key] = [];
+                if (!chainMap[key].includes(step)) chainMap[key].push(step);
+            }}
+            // Sort within each chain: shorter name = earlier stage
+            for (const key of Object.keys(chainMap)) {{
+                chainMap[key].sort((a, b) => a.length - b.length || a.localeCompare(b));
+            }}
+            // Associate shared outputs with the chain whose steps contain the shared step's base
+            const chainShared = {{}};
+            const orphanShared = [];
+            for (const step of sharedSteps) {{
+                const base = step.replace(/_fai_concat$/, '').replace(/_concat$/, '');
+                let matched = false;
+                for (const key of Object.keys(chainMap)) {{
+                    if (chainMap[key].some(s => s.includes(base)) || base.includes(key)) {{
+                        if (!chainShared[key]) chainShared[key] = [];
+                        chainShared[key].push(step);
+                        matched = true;
+                        break;
+                    }}
+                }}
+                if (!matched) orphanShared.push(step);
+            }}
+            return {{ chainMap, chainShared, orphanShared, stepIds }};
+        }}
+
+        function makeGroupSection(label, startOpen) {{
+            const grp = document.createElement('div');
+            grp.className = 'proc-group';
+            const hdr = document.createElement('div');
+            hdr.className = 'proc-group-hdr';
+            hdr.innerHTML = `<span class="proc-toggle">${{startOpen ? '\u25bc' : '\u25b6'}}</span> ${{label}}`;
+            const body = document.createElement('div');
+            body.className = 'proc-group-body';
+            if (!startOpen) body.style.display = 'none';
+            hdr.onclick = () => {{
+                const open = body.style.display !== 'none';
+                body.style.display = open ? 'none' : '';
+                hdr.querySelector('.proc-toggle').textContent = open ? '\u25b6' : '\u25bc';
+            }};
+            return {{ grp, hdr, body }};
+        }}
+
+        function makeChainNode(label, title, plotId, isGroup) {{
+            const node = document.createElement('span');
+            const has = !!plotId;
+            node.className = 'proc-node ' + (has ? (isGroup ? 'group-ok' : 'ok') : (isGroup ? 'group-missing' : 'missing'));
+            node.textContent = label;
+            node.title = title;
+            if (has) {{
+                node.dataset.plotId = plotId;
+                node.onclick = () => showPlot(plotId);
+            }}
+            return node;
+        }}
+
+        // Filter proc-tree DOM by searchTerm
         function applyTreeSearch() {{
             const el = document.getElementById('proc-tree');
             if (!el) return;
             if (!searchTerm) {{
-                // Show everything
                 el.querySelectorAll('.proc-pid-row, .proc-group').forEach(n => n.style.display = '');
                 return;
             }}
-            // Show/hide individual pid rows whose text matches
             el.querySelectorAll('.proc-pid-row').forEach(row => {{
                 row.style.display = row.textContent.toLowerCase().includes(searchTerm) ? '' : 'none';
             }});
-            // Hide entire proc-group sections that have no visible rows
             el.querySelectorAll('.proc-group').forEach(grp => {{
                 const body = grp.querySelector('.proc-group-body');
                 if (!body) {{ grp.style.display = ''; return; }}
@@ -473,46 +496,37 @@ def create_archive_html(project_name='procedure'):
 
         function renderProcedureTree(data) {{
             const byPid = {{}};
-            const allSteps = {{}};
             for (const [id, info] of Object.entries(data)) {{
+                if (info.type === 'log') continue;
                 const pid = info.path[0];
                 const step = info.path[1];
+                if (!step) continue;
                 if (!byPid[pid]) byPid[pid] = {{}};
                 byPid[pid][step] = id;
-                allSteps[step] = id;
             }}
             const sortedPids = Object.keys(byPid).sort();
             const el = document.getElementById('proc-tree');
             if (!el) return;
             el.innerHTML = '';
 
-            for (const section of PIPELINE_SCHEMA) {{
-                const grp = document.createElement('div');
-                grp.className = 'proc-group';
-                const hdr = document.createElement('div');
-                hdr.className = 'proc-group-hdr';
-                hdr.innerHTML = `<span class="proc-toggle">\u25bc</span> ${{section.label}}`;
-                const body = document.createElement('div');
-                body.className = 'proc-group-body';
+            const {{ chainMap, chainShared, orphanShared, stepIds }} = buildAutoSchema(data);
 
-                hdr.onclick = () => {{
-                    const open = body.style.display !== 'none';
-                    body.style.display = open ? 'none' : '';
-                    hdr.querySelector('.proc-toggle').textContent = open ? '\u25b6' : '\u25bc';
-                }};
+            for (const chainKey of Object.keys(chainMap).sort()) {{
+                const chainSteps = chainMap[chainKey];
+                const sharedForChain = chainShared[chainKey] || [];
+                const commonPfx = longestCommonPrefix(chainSteps);
+                const stepLabel = s => (commonPfx && s.startsWith(commonPfx) ? s.slice(commonPfx.length) : s) || s;
 
+                const {{ grp, hdr, body }} = makeGroupSection(chainKey.replace(/_/g, ' '), true);
                 let anyRendered = false;
+
                 for (const pid of sortedPids) {{
                     const pidSteps = byPid[pid] || {{}};
-                    let anyInSection = false;
                     const chain = document.createElement('div');
                     chain.className = 'proc-chain';
-
-                    section.steps.forEach((step, i) => {{
-                        let plotId = null;
-                        for (const [s, id] of Object.entries(pidSteps)) {{
-                            if (step.match(s)) {{ plotId = id; break; }}
-                        }}
+                    let anyInSection = false;
+                    chainSteps.forEach((step, i) => {{
+                        const plotId = pidSteps[step] || null;
                         if (plotId) anyInSection = true;
                         if (i > 0) {{
                             const arr = document.createElement('span');
@@ -520,17 +534,8 @@ def create_archive_html(project_name='procedure'):
                             arr.textContent = '\u2192';
                             chain.appendChild(arr);
                         }}
-                        const node = document.createElement('span');
-                        node.className = 'proc-node ' + (plotId ? 'ok' : 'missing');
-                        node.textContent = step.name;
-                        node.title = step.name;
-                        if (plotId) {{
-                            node.dataset.plotId = plotId;
-                            node.onclick = () => showPlot(plotId);
-                        }}
-                        chain.appendChild(node);
+                        chain.appendChild(makeChainNode(stepLabel(step), step, plotId, false));
                     }});
-
                     if (anyInSection) {{
                         anyRendered = true;
                         const row = document.createElement('div');
@@ -544,15 +549,12 @@ def create_archive_html(project_name='procedure'):
                     }}
                 }}
 
-                if (section.shared && section.shared.length > 0) {{
+                if (sharedForChain.length > 0) {{
                     const sharedChain = document.createElement('div');
                     sharedChain.className = 'proc-chain';
                     let anyShared = false;
-                    section.shared.forEach((step, i) => {{
-                        let plotId = null;
-                        for (const s of Object.keys(allSteps)) {{
-                            if (step.match(s)) {{ plotId = allSteps[s]; break; }}
-                        }}
+                    sharedForChain.forEach((step, i) => {{
+                        const plotId = stepIds[step] || null;
                         if (plotId) anyShared = true;
                         if (i > 0) {{
                             const dot = document.createElement('span');
@@ -560,25 +562,15 @@ def create_archive_html(project_name='procedure'):
                             dot.textContent = '\u00b7';
                             sharedChain.appendChild(dot);
                         }}
-                        const node = document.createElement('span');
-                        node.className = 'proc-node ' + (plotId ? 'group-ok' : 'group-missing');
-                        node.textContent = step.name;
-                        node.title = step.name;
-                        if (plotId) {{
-                            node.dataset.plotId = plotId;
-                            node.onclick = () => showPlot(plotId);
-                        }}
-                        sharedChain.appendChild(node);
+                        sharedChain.appendChild(makeChainNode(step, step, plotId, true));
                     }});
                     if (anyShared) {{
-                        const hr = document.createElement('hr');
-                        hr.className = 'proc-group-divider';
-                        body.appendChild(hr);
+                        body.appendChild(Object.assign(document.createElement('hr'), {{className: 'proc-group-divider'}}));
                         const sharedRow = document.createElement('div');
                         sharedRow.className = 'proc-pid-row';
                         const lbl = document.createElement('div');
                         lbl.className = 'proc-pid-label';
-                        lbl.textContent = '\U0001f465 group';
+                        lbl.textContent = 'group';
                         sharedRow.appendChild(lbl);
                         sharedRow.appendChild(sharedChain);
                         body.appendChild(sharedRow);
@@ -592,22 +584,34 @@ def create_archive_html(project_name='procedure'):
                 }}
             }}
 
+            // Orphan shared outputs (no chain matched)
+            if (orphanShared.length > 0) {{
+                const {{ grp, hdr, body }} = makeGroupSection('Group outputs', true);
+                const chain = document.createElement('div');
+                chain.className = 'proc-chain';
+                orphanShared.forEach((step, i) => {{
+                    const plotId = stepIds[step] || null;
+                    if (i > 0) {{
+                        const dot = document.createElement('span');
+                        dot.style.cssText = 'color:#aaa;font-size:11px;padding:0 2px;';
+                        dot.textContent = '\u00b7';
+                        chain.appendChild(dot);
+                    }}
+                    chain.appendChild(makeChainNode(step, step, plotId, true));
+                }});
+                const row = document.createElement('div');
+                row.className = 'proc-pid-row';
+                row.appendChild(chain);
+                body.appendChild(row);
+                grp.appendChild(hdr);
+                grp.appendChild(body);
+                el.appendChild(grp);
+            }}
+
             // Logs section
             const logEntries = Object.entries(data).filter(([, m]) => m.type === 'log');
             if (logEntries.length > 0) {{
-                const grp = document.createElement('div');
-                grp.className = 'proc-group';
-                const hdr = document.createElement('div');
-                hdr.className = 'proc-group-hdr';
-                hdr.innerHTML = '<span class="proc-toggle">\u25b6</span> \U0001f4cb Logs';
-                const body = document.createElement('div');
-                body.className = 'proc-group-body';
-                body.style.display = 'none'; // start collapsed — Global EV.log can be large
-                hdr.onclick = () => {{
-                    const open = body.style.display !== 'none';
-                    body.style.display = open ? 'none' : '';
-                    hdr.querySelector('.proc-toggle').textContent = open ? '\u25b6' : '\u25bc';
-                }};
+                const {{ grp, hdr, body }} = makeGroupSection('Logs', false);
                 const byPidLog = {{}};
                 for (const [id, info] of logEntries) {{
                     const pid = info.path[0];
@@ -623,13 +627,7 @@ def create_archive_html(project_name='procedure'):
                         lbl.textContent = pid;
                         const chain = document.createElement('div');
                         chain.className = 'proc-chain';
-                        const node = document.createElement('span');
-                        node.className = 'proc-node ok';
-                        node.textContent = '\U0001f4cb ' + label;
-                        node.title = label;
-                        node.dataset.plotId = id;
-                        node.onclick = () => showPlot(id);
-                        chain.appendChild(node);
+                        chain.appendChild(makeChainNode(label, label, id, false));
                         row.appendChild(lbl);
                         row.appendChild(chain);
                         body.appendChild(row);
@@ -639,10 +637,8 @@ def create_archive_html(project_name='procedure'):
                 grp.appendChild(body);
                 el.appendChild(grp);
             }}
-            // Apply any active search filter to the freshly rendered tree
             applyTreeSearch();
         }}
-
         function renderFlatList(data, keepActiveId) {{
             const treeEl = document.getElementById('tree');
             treeEl.innerHTML = '';
@@ -707,7 +703,7 @@ def create_archive_html(project_name='procedure'):
                 treeEl.appendChild(folder);
                 treeEl.appendChild(folderContent);
                 
-                // Global log folder: start collapsed — EV.log can be very large
+                // Global log folder: start collapsed — {project_name}.log can be very large
                 if (participant === 'global') {{
                     folderContent.classList.remove('expanded');
                     folder.querySelector('.tree-folder-icon').classList.remove('expanded');
@@ -943,8 +939,8 @@ def create_archive_html(project_name='procedure'):
                         meta[plotId] = {{ title: plotId, path: [pid, plotName], type: 'plot' }};
                     }}
                 }}
-                const gHead = await fetch('EV.log.parquet', {{ method: 'HEAD' }}).catch(() => null);
-                if (gHead?.ok) meta['global_log'] = {{ title: 'Pipeline Log', path: ['global', 'log'], type: 'log', file: 'EV.log.parquet' }};
+                const gHead = await fetch('{project_name}.log.parquet', {{ method: 'HEAD' }}).catch(() => null);
+                if (gHead?.ok) meta['global_log'] = {{ title: 'Pipeline Log', path: ['global', 'log'], type: 'log', file: '{project_name}.log.parquet' }};
             }} catch(e) {{ console.warn('Discovery failed:', e); }}
             return meta;
         }}
