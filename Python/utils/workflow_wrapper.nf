@@ -221,19 +221,6 @@ workflow finalize_participant {
                         pipeline_log.append("Warning: Failed to add ${pid} log to HTML archive: ${e.message}\n")
                     }
                 }
-                // Also add the global pipeline.log so it appears in the archive
-                if (procedure_html.exists() && pipeline_log.exists()) {
-                    try {
-                        def add_global_cmd = [params.python_exe, '-u',
-                            "${workflow.launchDir}/${params.toolbox_dir}/utils/interactive_plotter.py",
-                            'add-log', procedure_html.absolutePath, 'global', pipeline_log.absolutePath, 'pipeline.log']
-                        def proc2 = add_global_cmd.execute()
-                        proc2.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)
-                    } catch (Exception e) {
-                        pipeline_log.append("Warning: Failed to add global pipeline.log to HTML archive: ${e.message}\n")
-                    }
-                }
-
                 // Delete the per-participant log — it is now embedded in the HTML archive
                 if (log_file.exists()) {
                     log_file.delete()
@@ -341,8 +328,23 @@ workflow finalize_participant {
                         }
                     }
 
-                    // --- Commit 2: pipeline.log always (captures final sync status above) ---
-                    def addLog = runGit(["git", "add", pipeline_log_path], 5)
+                    // --- Commit 2: convert pipeline.log → parquet, delete text file, sync parquet ---
+                    def pipeline_log_parquet      = new File(pipeline_log.parentFile, "pipeline.log.parquet")
+                    def pipeline_log_parquet_path = git_root.toPath().relativize(pipeline_log_parquet.toPath()).toString().replace('\\', '/')
+                    if (procedure_html.exists() && pipeline_log.exists()) {
+                        try {
+                            def add_global_cmd = [params.python_exe, '-u',
+                                "${workflow.launchDir}/${params.toolbox_dir}/utils/interactive_plotter.py",
+                                'add-log', procedure_html.absolutePath, 'global', pipeline_log.absolutePath, 'pipeline.log']
+                            def proc2 = add_global_cmd.execute()
+                            proc2.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)
+                            if (proc2.exitValue() == 0) {
+                                pipeline_log.delete()
+                            }
+                        } catch (Exception e) { /* non-critical */ }
+                    }
+                    def logSyncPath = pipeline_log_parquet.exists() ? pipeline_log_parquet_path : pipeline_log_path
+                    def addLog = runGit(["git", "add", logSyncPath], 5)
                     if (addLog.exit == 0) {
                         def commitLog = runGit(["git", "commit", "-m", "pipeline.log: ${pid} complete"], 5)
                         if (commitLog.exit == 0) {
