@@ -337,17 +337,17 @@ workflow finalize_participant {
                                 "${workflow.launchDir}/${params.toolbox_dir}/utils/interactive_plotter.py",
                                 'add-log', procedure_html.absolutePath, 'global', pipeline_log.absolutePath, 'pipeline.log']
                             def proc2 = add_global_cmd.execute()
-                            proc2.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)
-                            if (proc2.exitValue() == 0) {
+                            def finished = proc2.waitFor(60, java.util.concurrent.TimeUnit.SECONDS)
+                            if (finished && proc2.exitValue() == 0) {
                                 pipeline_log.delete()
                             }
                         } catch (Exception e) { /* non-critical */ }
                     }
-                    // Also stage the entire analysis folder (EV_analysis/) alongside the global log
+                    // Decide what to sync — resolve AFTER conversion so .exists() reflects the actual outcome
                     def analysis_dir      = new File("${workflow.launchDir}").getAbsoluteFile()
                     def analysis_dir_path = git_root.toPath().relativize(analysis_dir.toPath()).toString().replace('\\', '/')
                     def logSyncPath       = pipeline_log_parquet.exists() ? pipeline_log_parquet_path : pipeline_log_path
-                    def addLog = runGit(["git", "add", "-A", logSyncPath, analysis_dir_path], 5)
+                    def addLog = runGit(["git", "add", "-A", logSyncPath, analysis_dir_path], 30)
                     if (addLog.exit == 0) {
                         def commitLog = runGit(["git", "commit", "-m", "pipeline.log: ${pid} complete"], 5)
                         if (commitLog.exit == 0) {
