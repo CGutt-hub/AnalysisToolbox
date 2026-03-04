@@ -17,17 +17,8 @@ def configureGitUser() {
             }
             if (git_root) {
                 // Set git user config in repository (not global to avoid permission issues)
-                def email_cmd = ["git", "config", "user.email", params.git_user_email].execute(null, git_root)
-                email_cmd.waitFor()
-                def name_cmd = ["git", "config", "user.name", params.git_user_name].execute(null, git_root)
-                name_cmd.waitFor()
-                
-                // Verify config was set
-                def verify_email = ["git", "config", "user.email"].execute(null, git_root)
-                verify_email.waitFor()
-                def verify_name = ["git", "config", "user.name"].execute(null, git_root)
-                verify_name.waitFor()
-                
+                ["git", "config", "user.email", params.git_user_email].execute(null, git_root).waitFor()
+                ["git", "config", "user.name",  params.git_user_name ].execute(null, git_root).waitFor()
                 git_configured = true
                 
                 // Log to pipeline.log instead of terminal
@@ -72,25 +63,6 @@ workflow participant_discovery {
         output_path.eachDirRecurse { dir ->
             def marker = new File(dir, ".finalized")
             if (marker.exists()) marker.delete()
-        }
-
-        // Delete stale old-named HTML files (e.g. *_interactive.html) alongside the new *_results.html.
-        // These are leftovers from before the rename and will confuse serve_html.ps1.
-        if (output_path.exists()) {
-            output_path.listFiles()?.each { f ->
-                if (f.name.endsWith('_interactive.html')) {
-                    f.delete()
-                    new File("${workflow.launchDir}/${params.output_dir}", "pipeline.log").append(
-                        "[${new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())}] [workflow] Deleted stale HTML: ${f.name}\n"
-                    )
-                }
-            }
-        }
-        // Same cleanup in the launch dir itself (EV_analysis/)
-        new File(workflow.launchDir.toString()).listFiles()?.each { f ->
-            if (f.name.endsWith('_interactive.html')) {
-                f.delete()
-            }
         }
 
         def watched_participants = Channel
@@ -191,10 +163,9 @@ workflow finalize_participant {
                 
                 // Write finalization to participant log
                 log_file?.append("\n=== Analysis completed for ${pid}: ${timestamp} ===\n")
-                log_file?.append("Terminal modules completed: ${files.size()}\n")
+                log_file?.append("Modules completed: ${files.size()}\n")
                 log_file?.append("Session: ${workflow.sessionId}\n")
                 log_file?.append("Duration: ${duration}s\n")
-                log_file?.append("Files processed: ${files.size()}\n")
                 log_file?.append("\n=== ${pid} finalized: ${timestamp} ===\n\n")
                 
                 // Write finalization to central pipeline log
@@ -227,10 +198,9 @@ workflow finalize_participant {
                 }
 
                 pipeline_log.append("\n=== Analysis completed for ${pid}: ${timestamp} ===\n")
-                pipeline_log.append("Terminal modules completed: ${files.size()}\n")
+                pipeline_log.append("Modules completed: ${files.size()}\n")
                 pipeline_log.append("Session: ${workflow.sessionId}\n")
                 pipeline_log.append("Duration: ${duration}s\n")
-                pipeline_log.append("Files processed: ${files.size()}\n")
                 pipeline_log.append("\n=== ${pid} finalized: ${timestamp} ===\n\n")
                 
                 // Git sync
@@ -275,7 +245,6 @@ workflow finalize_participant {
                     
                     def logSync = { status, details = "" ->
                         try {
-                            pipeline_log.parentFile?.mkdirs()
                             def ts = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
                             pipeline_log.append("\n=== Git sync for ${pid}: ${ts} ===\n")
                             pipeline_log.append("Path: ${relative_path}\n")
