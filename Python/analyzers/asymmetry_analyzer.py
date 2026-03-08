@@ -44,13 +44,13 @@ def compute_asymmetry(ip: str, pairs: list[tuple[str,str]], mode: str = 'log',
                 log_warning(f"Signal folder is empty: {folder}, cannot compute asymmetry")
                 # Return empty output
                 out_path = os.path.join(os.getcwd(), f"{os.path.splitext(os.path.basename(ip))[0]}_{suffix}.parquet")
-                pl.DataFrame({'condition': [os.path.splitext(os.path.basename(ip))[0]], 'x_data': [[]], 'y_data': [[]], 'y_var': [[]], 'plot_type': ['bar'], 'x_label': ['Pair'], 'y_label': [y_label or 'Asymmetry']}).write_parquet(out_path)
+                pl.DataFrame({'condition': [os.path.splitext(os.path.basename(ip))[0]], 'x_data': [[]], 'y_data': [[]], 'y_var': [[]], 'plot_type': ['bar'], 'x_label': ['Pair'], 'y_label': [y_label or 'Asymmetry']}).write_parquet(out_path, compression='snappy')
                 print(f"[asymmetry] Output: {out_path}")
                 return out_path
         else:
             log_warning(f"Signal folder not found: {folder}, cannot compute asymmetry")
             out_path = os.path.join(os.getcwd(), f"{os.path.splitext(os.path.basename(ip))[0]}_{suffix}.parquet")
-            pl.DataFrame({'condition': [os.path.splitext(os.path.basename(ip))[0]], 'x_data': [[]], 'y_data': [[]], 'y_var': [[]], 'plot_type': ['bar'], 'x_label': ['Pair'], 'y_label': [y_label or 'Asymmetry']}).write_parquet(out_path)
+            pl.DataFrame({'condition': [os.path.splitext(os.path.basename(ip))[0]], 'x_data': [[]], 'y_data': [[]], 'y_var': [[]], 'plot_type': ['bar'], 'x_label': ['Pair'], 'y_label': [y_label or 'Asymmetry']}).write_parquet(out_path, compression='snappy')
             print(f"[asymmetry] Output: {out_path}")
             return out_path
 
@@ -146,7 +146,7 @@ def compute_asymmetry(ip: str, pairs: list[tuple[str,str]], mode: str = 'log',
                 'x_label': ['Pair'],
                 'y_label': [y_label or 'Asymmetry'],
                 'y_ticks': [y_lim] if y_lim is not None else [None]
-            }).write_parquet(out_path)
+            }).write_parquet(out_path, compression='snappy')
         else:
             # Single series
             asym_vals, asym_sems = compute_asym(df)
@@ -174,7 +174,7 @@ def compute_asymmetry(ip: str, pairs: list[tuple[str,str]], mode: str = 'log',
                 'x_label': ['Pair'],
                 'y_label': [y_label or 'Asymmetry'],
                 'y_ticks': [y_lim] if y_lim is not None else [None]
-            }).write_parquet(out_path)
+            }).write_parquet(out_path, compression='snappy')
     
     elif 'epoch_id' in df.columns and any(p[0] in df.columns and p[1] in df.columns for p in pairs):
         # Wide-format epoch data: condition, epoch_id, time, ch1, ch2, ...
@@ -210,8 +210,8 @@ def compute_asymmetry(ip: str, pairs: list[tuple[str,str]], mode: str = 'log',
                 'x_label': ['Pair'],
                 'y_label': [y_label or 'Asymmetry']
             })
-            plot_df.write_parquet(out_path)
-            plot_df.write_parquet(out_path.replace('.parquet', '_vis.parquet'))
+            plot_df.write_parquet(out_path, compression='snappy')
+            plot_df.write_parquet(out_path.replace('.parquet', '_vis.parquet'), compression='snappy')
             print(f"[asymmetry] Output: {out_path}")
             return out_path
         
@@ -254,7 +254,7 @@ def compute_asymmetry(ip: str, pairs: list[tuple[str,str]], mode: str = 'log',
                 'plot_type': ['grid'],
                 'x_label': ['Pair'],
                 'y_label': [y_label or 'Asymmetry']
-            }).write_parquet(out_path)
+            }).write_parquet(out_path, compression='snappy')
         else:
             # Single series - compute asymmetry with proper error propagation
             region_dict = {x_data[j]: y_data[j] for j in range(min(len(x_data), len(y_data)))}
@@ -286,8 +286,8 @@ def compute_asymmetry(ip: str, pairs: list[tuple[str,str]], mode: str = 'log',
                 'y_label': [y_label or 'Asymmetry'],
                 'title': [f"{base} - Asymmetry"]
             })
-            plot_df.write_parquet(out_path)
-            plot_df.write_parquet(out_path.replace('.parquet', '_vis.parquet'))
+            plot_df.write_parquet(out_path, compression='snappy')
+            plot_df.write_parquet(out_path.replace('.parquet', '_vis.parquet'), compression='snappy')
     print(f"[asymmetry] Output: {out_path}")
     print(f"[asymmetry] Created procedure visualization: {out_path.replace('.parquet', '_vis.parquet')}")
     return out_path

@@ -102,7 +102,7 @@ def read_xdf(ip):
             print(f"[xdf_reader] Warning: Stream {i+1}/{len(streams)} ({stream_type}) empty or not suitable for .fif, skipped")
         # Save as parquet (always attempt)
         df = make_df(s)
-        df.write_parquet(parquet_path)
+        df.write_parquet(parquet_path, compression='snappy')
         print(f"[xdf_reader] Stream {i+1}/{len(streams)} ({stream_type}): {df.shape} -> .parquet")
         
         # Record stream info
@@ -125,7 +125,7 @@ def read_xdf(ip):
         'stream_types': [','.join(s['type'] for s in stream_info)],
         'stream_names': [','.join(s['name'] for s in stream_info)]
     })
-    signal_df.write_parquet(signal_path)
+    signal_df.write_parquet(signal_path, compression='snappy')
     print(f"[xdf_reader] Output: {signal_path}")
 
 if __name__ == '__main__': (lambda a: read_xdf(a[1]) if len(a) == 2 else (print("[xdf_reader] Usage: python xdf_reader.py <input.xdf>"), sys.exit(1)))(sys.argv)

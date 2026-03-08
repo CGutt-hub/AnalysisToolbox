@@ -37,7 +37,7 @@ def reject_samples(ip: str, columns: list | None = None, criterion: str = 'ampli
     # Output cleaned data
     out_file = ip.replace('.parquet', '_rej.parquet')
     df_clean = df.filter(mask)
-    df_clean.write_parquet(out_file)
+    df_clean.write_parquet(out_file, compression='snappy')
     print(f"[rejection] Output: {out_file}")
     
     # Generate inline visualization
@@ -57,7 +57,7 @@ def reject_samples(ip: str, columns: list | None = None, criterion: str = 'ampli
             'x_label': ['Time (s)'],
             'y_label': ['Amplitude']
         })
-        vis_df.write_parquet(out_file.replace('.parquet', '_vis.parquet'))
+        vis_df.write_parquet(out_file.replace('.parquet', '_vis.parquet'), compression='snappy')
     
     return out_file
 

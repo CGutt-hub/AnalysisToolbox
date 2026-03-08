@@ -175,7 +175,7 @@ def analyze_amplitude(ip: str, method: str = 'peak_baseline', y_lim: float | Non
                 'title': [f"{base} - {y_label}"]
             })
             vis_path = os.path.join(os.getcwd(), f"{base}_{suffix}_vis.parquet")
-            vis_output.write_parquet(vis_path)
+            vis_output.write_parquet(vis_path, compression='snappy')
             print(f"[amplitude] Created procedure visualization: {vis_path}")
     
     signal_path = os.path.join(os.getcwd(), f"{base}_{suffix}.parquet")
@@ -184,7 +184,7 @@ def analyze_amplitude(ip: str, method: str = 'peak_baseline', y_lim: float | Non
         'source': [os.path.basename(ip)],
         'conditions': [len(conditions)],
         'folder_path': [os.path.abspath(out_folder)]
-    }).write_parquet(signal_path)
+    }).write_parquet(signal_path, compression='snappy')
     
     print(f"[amplitude] Output: {signal_path}")
     return signal_path

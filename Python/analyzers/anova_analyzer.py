@@ -20,10 +20,10 @@ def anova_analyze(ip: str, dv: str, between: str, participant_id: str, apply_fdr
         pl.col("Source").alias("x_data"), pl.col("F").alias("y_data"), pl.lit("F-statistic").alias("y_label"),
         pl.lit(y_lim).alias("y_ticks"), pl.lit(1).alias("plot_weight")])
     out_file = f"{os.path.splitext(os.path.basename(ip))[0]}_anova.parquet"
-    results.write_parquet(out_file)
+    results.write_parquet(out_file, compression='snappy')
     # Create procedure visualization
     vis_file = out_file.replace('.parquet', '_vis.parquet')
-    results.write_parquet(vis_file)
+    results.write_parquet(vis_file, compression='snappy')
     print(f"[anova] Output: {out_file}")
     print(f"[anova] Created procedure visualization: {vis_file}")
     return out_file

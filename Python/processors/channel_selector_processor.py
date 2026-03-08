@@ -66,7 +66,7 @@ def select_channels(ip: str, selector: str = '.*', mode: str = 'regex') -> str:
         'x_label': ['Time (s)'],
         'y_label': ['Amplitude']
     })
-    vis_df.write_parquet(out_file.replace('.fif', '_vis.parquet'))
+    vis_df.write_parquet(out_file.replace('.fif', '_vis.parquet'), compression='snappy')
     
     print(f"[channel_selector] Output: {out_file}")
     return out_file

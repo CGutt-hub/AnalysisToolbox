@@ -158,7 +158,7 @@ def analyze_groups(ip: str, groups_config: str, y_lim: float | None = None,
             all_plots = [pl.read_parquet(f) for f in plot_files]
             combined = pl.concat(all_plots)
             vis_path = os.path.join(os.getcwd(), f"{base}_{suffix}_vis.parquet")
-            combined.write_parquet(vis_path)
+            combined.write_parquet(vis_path, compression='snappy')
             print(f"[group] Created procedure visualization: {vis_path}")
         except Exception as e:
             print(f"[group] WARNING: Could not create procedure visualization: {e}")
@@ -170,7 +170,7 @@ def analyze_groups(ip: str, groups_config: str, y_lim: float | None = None,
         'conditions': [len(conditions)],
         'groups': [group_names],
         'folder_path': [os.path.abspath(out_folder)]
-    }).write_parquet(signal_path)
+    }).write_parquet(signal_path, compression='snappy')
     
     print(f"[group] Output: {signal_path}")
     return signal_path

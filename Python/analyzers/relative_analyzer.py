@@ -93,11 +93,11 @@ def relative_normalize(ip: str, baseline_cond: str = 'NEU', y_lim: float | None 
     base = os.path.splitext(os.path.basename(ip))[0]
     out_dir = os.path.dirname(ip) or '.'
     out_path = os.path.join(out_dir, f"{base}_rel.parquet")
-    out_df.write_parquet(out_path)
+    out_df.write_parquet(out_path, compression='snappy')
     
     # Create procedure visualization
     vis_path = out_path.replace('.parquet', '_vis.parquet')
-    out_df.write_parquet(vis_path)
+    out_df.write_parquet(vis_path, compression='snappy')
     print(f"[relative] Created procedure visualization: {vis_path}")
     
     print(f"[relative] Normalized {len(new_labels)} conditions relative to {baseline_cond} (baseline excluded):")

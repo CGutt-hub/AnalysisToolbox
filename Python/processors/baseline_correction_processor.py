@@ -25,7 +25,7 @@ def baseline_correct(ip: str, baseline_sec: float = 5.0, sfreq: float | None = N
     print(f"[baseline_correction] Using first {n_baseline} samples as baseline ({len(data_cols)} channels)")
     result = df.with_columns([(pl.col(c) - pl.col(c).head(n_baseline).mean()).alias(c) for c in data_cols])
     out_file = ip.replace('.parquet', '_bl.parquet')
-    result.write_parquet(out_file)
+    result.write_parquet(out_file, compression='snappy')
     
     # Generate inline visualization
     if 'time' in result.columns and data_cols:
@@ -43,7 +43,7 @@ def baseline_correct(ip: str, baseline_sec: float = 5.0, sfreq: float | None = N
             'x_label': ['Time (s)'],
             'y_label': ['Amplitude']
         })
-        vis_df.write_parquet(out_file.replace('.parquet', '_vis.parquet'))
+        vis_df.write_parquet(out_file.replace('.parquet', '_vis.parquet'), compression='snappy')
     
     print(f"[baseline_correction] Output: {out_file}")
     return out_file

@@ -51,7 +51,7 @@ def bootstrap_analyze(ip: str, group_col: str = 'condition', sample_col: str | N
             out_folder = os.path.join(os.getcwd(), f"{base}_{suffix}")
             os.makedirs(out_folder, exist_ok=True)
             signal_path = os.path.join(os.getcwd(), f"{base}_{suffix}.parquet")
-            pl.DataFrame({'signal': [1], 'source': [os.path.basename(ip)], 'conditions': [0], 'folder_path': [os.path.abspath(out_folder)]}).write_parquet(signal_path)
+            pl.DataFrame({'signal': [1], 'source': [os.path.basename(ip)], 'conditions': [0], 'folder_path': [os.path.abspath(out_folder)]}).write_parquet(signal_path, compression='snappy')
             print(f"[bootstrap] Empty output (no upstream data): {signal_path}")
             return signal_path
         
@@ -69,7 +69,7 @@ def bootstrap_analyze(ip: str, group_col: str = 'condition', sample_col: str | N
             out_folder = os.path.join(os.getcwd(), f"{base}_{suffix}")
             os.makedirs(out_folder, exist_ok=True)
             signal_path = os.path.join(os.getcwd(), f"{base}_{suffix}.parquet")
-            pl.DataFrame({'signal': [1], 'source': [os.path.basename(ip)], 'conditions': [0], 'folder_path': [os.path.abspath(out_folder)]}).write_parquet(signal_path)
+            pl.DataFrame({'signal': [1], 'source': [os.path.basename(ip)], 'conditions': [0], 'folder_path': [os.path.abspath(out_folder)]}).write_parquet(signal_path, compression='snappy')
             print(f"[bootstrap] Empty output (no data): {signal_path}")
             return signal_path
         log_error(f"Group column '{group_col}' not found in columns {available}"); sys.exit(1)
@@ -162,7 +162,7 @@ def bootstrap_analyze(ip: str, group_col: str = 'condition', sample_col: str | N
             all_plots = [pl.read_parquet(f) for f in plot_files]
             combined = pl.concat(all_plots)
             vis_path = os.path.join(os.getcwd(), f"{base}_{suffix}_vis.parquet")
-            combined.write_parquet(vis_path)
+            combined.write_parquet(vis_path, compression='snappy')
             print(f"[bootstrap] Created procedure visualization: {vis_path}")
         except Exception as e:
             print(f"[bootstrap] WARNING: Could not create procedure visualization: {e}")
@@ -173,7 +173,7 @@ def bootstrap_analyze(ip: str, group_col: str = 'condition', sample_col: str | N
         'source': [os.path.basename(ip)],
         'conditions': [len(groups)],
         'folder_path': [os.path.abspath(out_folder)]
-    }).write_parquet(signal_path)
+    }).write_parquet(signal_path, compression='snappy')
     print(f"[bootstrap] Output: {signal_path}")
     return signal_path
 

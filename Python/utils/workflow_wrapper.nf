@@ -21,13 +21,13 @@ def configureGitUser() {
                 ["git", "config", "user.name",  params.git_user_name ].execute(null, git_root).waitFor()
                 git_configured = true
                 
-                // Log to EV.log instead of terminal
-                def pipeline_log = new File("${workflow.launchDir}/${params.output_dir}", "EV.log")
+                // Log to ${params.project_name}.log instead of terminal
+                def pipeline_log = new File("${workflow.launchDir}/${params.output_dir}", "${params.project_name}.log")
                 def timestamp = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
                 pipeline_log.append("[${timestamp}] [workflow] Git user configured: ${params.git_user_name} <${params.git_user_email}>\n")
             }
         } catch (Exception e) {
-            def pipeline_log = new File("${workflow.launchDir}/${params.output_dir}", "EV.log")
+            def pipeline_log = new File("${workflow.launchDir}/${params.output_dir}", "${params.project_name}.log")
             def timestamp = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
             pipeline_log.append("[${timestamp}] [workflow] Warning: Could not configure git user - ${e.message}\n")
         }
@@ -54,7 +54,7 @@ workflow participant_discovery {
         def new_participants = input_path.list().findAll { it.matches(regex_pattern) }.findAll { !(it in output_dirs) }
         
         // Create global log file
-        def pipeline_log = new File("${workflow.launchDir}/${params.output_dir}", "EV.log")
+        def pipeline_log = new File("${workflow.launchDir}/${params.output_dir}", "${params.project_name}.log")
         if (!pipeline_log.exists()) {
             pipeline_log.text = ""
         }
@@ -95,7 +95,7 @@ workflow participant_discovery {
                 log_file.append("Output: ${participant_dir}\n")
                 log_file.append("\n=== Analysis started for ${safe_id}: ${timestamp} ===\n\n")
                 
-                def global_pipeline_log = new File("${workflow.launchDir}/${params.output_dir}", "EV.log")
+                def global_pipeline_log = new File("${workflow.launchDir}/${params.output_dir}", "${params.project_name}.log")
                 global_pipeline_log.append("=== ${safe_id} initialized: ${timestamp} ===\n")
                 global_pipeline_log.append("Workflow: ${workflow.projectDir}\n")
                 global_pipeline_log.append("Session: ${workflow.sessionId}\n")
@@ -114,7 +114,7 @@ workflow participant_discovery {
                 def proc = init_cmd.execute()
                 proc.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)
                 if (proc.exitValue() != 0) {
-                    new File("${workflow.launchDir}/${params.output_dir}", "EV.log").append(
+                    new File("${workflow.launchDir}/${params.output_dir}", "${params.project_name}.log").append(
                         "[${new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())}] [workflow] Warning: Could not initialize HTML archive: ${proc.text}\n"
                     )
                 }
@@ -169,7 +169,7 @@ workflow finalize_participant {
                 log_file?.append("\n=== ${pid} finalized: ${timestamp} ===\n\n")
                 
                 // Write finalization to central pipeline log
-                def pipeline_log = new File("${workflow.launchDir}/${params.output_dir}", "EV.log")
+                def pipeline_log = new File("${workflow.launchDir}/${params.output_dir}", "${params.project_name}.log")
                 pipeline_log.parentFile?.mkdirs()
                 if (!pipeline_log.exists()) {
                     try { pipeline_log.text = "" } catch (Exception e) { /* ignore race */ }
@@ -297,14 +297,14 @@ workflow finalize_participant {
                         }
                     }
 
-                    // --- Commit 2: convert EV.log → parquet, delete text file, sync parquet ---
-                    def pipeline_log_parquet      = new File(pipeline_log.parentFile, "EV.log.parquet")
+                    // --- Commit 2: convert ${params.project_name}.log → parquet, delete text file, sync parquet ---
+                    def pipeline_log_parquet      = new File(pipeline_log.parentFile, "${params.project_name}.log.parquet")
                     def pipeline_log_parquet_path = git_root.toPath().relativize(pipeline_log_parquet.toPath()).toString().replace('\\', '/')
                     if (procedure_html.exists() && pipeline_log.exists()) {
                         try {
                             def add_global_cmd = [params.python_exe, '-u',
                                 "${workflow.launchDir}/${params.toolbox_dir}/utils/interactive_plotter.py",
-                                'add-log', procedure_html.absolutePath, 'global', pipeline_log.absolutePath, 'EV.log']
+                                'add-log', procedure_html.absolutePath, 'global', pipeline_log.absolutePath, "${params.project_name}.log"]
                             def proc2 = add_global_cmd.execute()
                             def finished = proc2.waitFor(60, java.util.concurrent.TimeUnit.SECONDS)
                             if (finished && proc2.exitValue() == 0) {
@@ -318,7 +318,7 @@ workflow finalize_participant {
                     def logSyncPath       = pipeline_log_parquet.exists() ? pipeline_log_parquet_path : pipeline_log_path
                     def addLog = runGit(["git", "add", "-A", logSyncPath, analysis_dir_path], 30)
                     if (addLog.exit == 0) {
-                        def commitLog = runGit(["git", "commit", "-m", "EV.log: ${pid} complete"], 5)
+                        def commitLog = runGit(["git", "commit", "-m", "${params.project_name}.log: ${pid} complete"], 5)
                         if (commitLog.exit == 0) {
                             runGit(["git", "pull", "--rebase"], 10)
                             runGit(["git", "push"], 10)

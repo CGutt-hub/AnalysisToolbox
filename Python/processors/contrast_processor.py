@@ -44,7 +44,7 @@ def contrast_process(ip: str, contrasts_str: str, output_suffix: str = 'contrast
     
     result_df = pl.DataFrame(results)
     base, out_file = os.path.splitext(os.path.basename(ip))[0], f"{os.path.splitext(os.path.basename(ip))[0]}_{output_suffix}.parquet"
-    result_df.write_parquet(out_file)
+    result_df.write_parquet(out_file, compression='snappy')
     
     # Generate inline visualization - bar plot of contrast values per channel
     contrasts = result_df['contrast'].unique().to_list()
@@ -57,7 +57,7 @@ def contrast_process(ip: str, contrasts_str: str, output_suffix: str = 'contrast
         'x_label': ['Channel'],
         'y_label': ['Contrast Value']
     })
-    vis_df.write_parquet(out_file.replace('.parquet', '_vis.parquet'))
+    vis_df.write_parquet(out_file.replace('.parquet', '_vis.parquet'), compression='snappy')
     
     print(f"[contrast] Output: {out_file} ({len(results)} rows)")
     return out_file

@@ -60,7 +60,7 @@ def apply_reference(ip: str, ref: str = 'average') -> str:
             'x_label': ['Time (s)'],
             'y_label': ['Amplitude (µV)']
         })
-        vis_df.write_parquet(out_file.replace('.fif', '_vis.parquet'))
+        vis_df.write_parquet(out_file.replace('.fif', '_vis.parquet'), compression='snappy')
     except Exception as e:
         print(f"[referencing] WARNING: Failed to create visualization: {e}")
         # Don't fail the whole process if visualization fails

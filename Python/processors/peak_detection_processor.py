@@ -51,7 +51,7 @@ def detect_peaks(ip: str, column: str, fs: float, method: str = 'scipy', height:
         log_warning(f"{len(peaks)} peaks detected ({len(peaks)/len(sig)*100:.1f}% of samples), may be over-detecting")
     
     out_file = ip.replace('.parquet', '_peaks.parquet')
-    result.write_parquet(out_file)
+    result.write_parquet(out_file, compression='snappy')
     print(f"[peak_detection] Output: {out_file} ({len(peaks)} peaks)")
     
     # Generate inline visualization: interval time series
@@ -71,7 +71,7 @@ def detect_peaks(ip: str, column: str, fs: float, method: str = 'scipy', height:
             'x_label': ['Time (s)'],
             'y_label': ['Interval (ms)']
         })
-        vis_df.write_parquet(out_file.replace('.parquet', '_vis.parquet'))
+        vis_df.write_parquet(out_file.replace('.parquet', '_vis.parquet'), compression='snappy')
     
     return out_file
 

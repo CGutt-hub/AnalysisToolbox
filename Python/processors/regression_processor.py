@@ -68,7 +68,7 @@ def apply_regression(ip: str, regr_type: str = 'short_channel', out: str | None 
                 'x_label': ['Time (s)'],
                 'y_label': ['Optical Density (OD)']
             })
-            vis_df.write_parquet(out_file.replace('.fif', '_vis.parquet'))
+            vis_df.write_parquet(out_file.replace('.fif', '_vis.parquet'), compression='snappy')
             print(f"[regression] Output (MNE Raw): {out_file}")
             return out_file
         
@@ -106,7 +106,7 @@ def apply_regression(ip: str, regr_type: str = 'short_channel', out: str | None 
         if not short_channels:
             print(f"[regression] Warning: No short channels detected, skipping regression")
             out_file = out or f"{ip.replace('.parquet', '')}_{suffix}.parquet"
-            df.write_parquet(out_file)
+            df.write_parquet(out_file, compression='snappy')
             return out_file
         
         data = np.array([df[col].to_numpy() for col in data_cols])
@@ -125,7 +125,7 @@ def apply_regression(ip: str, regr_type: str = 'short_channel', out: str | None 
     elif regr_type == 'none':
         print(f"[regression] No regression applied")
         out_file = out or f"{ip.replace('.parquet', '')}_{suffix}.parquet"
-        df.write_parquet(out_file)
+        df.write_parquet(out_file, compression='snappy')
         return out_file
     
     else:

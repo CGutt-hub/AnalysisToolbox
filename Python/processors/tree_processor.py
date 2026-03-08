@@ -131,7 +131,7 @@ def preprocess_run(ip, entry_delim, depth_key, kv_delim):
     
     base = os.path.splitext(os.path.basename(ip))[0]
     out = f"{base}_tree.parquet"
-    pl.DataFrame({'data': [tree_to_struct(root)]}).write_parquet(out)
+    pl.DataFrame({'data': [tree_to_struct(root)]}).write_parquet(out, compression='snappy')
     print(f"[tree] Output: {out}")
     return out
 if __name__ == '__main__': (lambda a: preprocess_run(a[1], a[2], a[3], a[4]) if len(a) == 5 else (print("[tree] Parse hierarchical tree from text, reorder by temporal onset.\nUsage: tree_processor.py <input.parquet> <entry_delim> <depth_delim> <kv_delim>"), sys.exit(1)))(sys.argv)

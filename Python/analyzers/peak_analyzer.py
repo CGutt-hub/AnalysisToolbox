@@ -109,12 +109,12 @@ def analyze_peaks(ip: str, method: str = 'max_abs', time_window: str | None = No
         })
         
         out_path = os.path.join(out_folder, f"{base}_{suffix}{idx+1}.parquet")
-        output.write_parquet(out_path)
+        output.write_parquet(out_path, compression='snappy')
         print(f"[peak]   {cond}: {len(peak_results)} channels -> {os.path.basename(out_path)}")
         
         # Also save detailed per-channel results
         detail_path = os.path.join(out_folder, f"{base}_{suffix}{idx+1}_detail.parquet")
-        pl.DataFrame(peak_results).write_parquet(detail_path)
+        pl.DataFrame(peak_results).write_parquet(detail_path, compression='snappy')
     
     # Create procedure visualization file
     plot_files = [os.path.join(out_folder, f"{base}_{suffix}{idx+1}.parquet") for idx in range(len(conditions))]
@@ -123,7 +123,7 @@ def analyze_peaks(ip: str, method: str = 'max_abs', time_window: str | None = No
             all_plots = [pl.read_parquet(f) for f in plot_files]
             combined = pl.concat(all_plots)
             vis_path = os.path.join(os.getcwd(), f"{base}_{suffix}_vis.parquet")
-            combined.write_parquet(vis_path)
+            combined.write_parquet(vis_path, compression='snappy')
             print(f"[peak] Created procedure visualization: {vis_path}")
         except Exception as e:
             print(f"[peak] WARNING: Could not create procedure visualization: {e}")
@@ -134,7 +134,7 @@ def analyze_peaks(ip: str, method: str = 'max_abs', time_window: str | None = No
         'source': [os.path.basename(ip)],
         'conditions': [len(conditions)],
         'folder_path': [os.path.abspath(out_folder)]
-    }).write_parquet(signal_path)
+    }).write_parquet(signal_path, compression='snappy')
     
     print(f"[peak] Output: {signal_path}")
     return signal_path

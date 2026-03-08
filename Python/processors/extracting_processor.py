@@ -129,7 +129,7 @@ def determine_needed_channels(sels: list[str], all_channels: list[str]) -> list[
     return list(needed) if needed else all_channels  # Fallback to all if nothing matched
 
 def save_fif(od: pl.DataFrame, pp: str, fp: str, chs: list[str], t: np.ndarray | None, sf: float, ch_types: dict[str, str] | None) -> None:
-    od.write_parquet(pp)
+    od.write_parquet(pp, compression='snappy')
     print(f"[extracting] {os.path.basename(pp)} cols={od.columns}")
     # Generate inline visualization (downsample BEFORE converting to lists to save memory)
     if chs and 'time' in od.columns:
@@ -149,7 +149,7 @@ def save_fif(od: pl.DataFrame, pp: str, fp: str, chs: list[str], t: np.ndarray |
             'x_label': ['Time (s)'],
             'y_label': ['Amplitude']
         })
-        vis_df.write_parquet(pp.replace('.parquet', '_vis.parquet'))
+        vis_df.write_parquet(pp.replace('.parquet', '_vis.parquet'), compression='snappy')
         del time_data, y_data, vis_df  # Free memory
     if not chs:
         mne.io.RawArray(np.array([[0.0]]), mne.create_info(['empty'], 1.0, ch_types='misc'), verbose=False).save(fp, overwrite=True, verbose=False)
@@ -232,7 +232,7 @@ def run(ip: str, sels: list[str]) -> str:
         'source': [os.path.basename(ip)],
         'streams': [len(sels)],
         'folder_path': [os.path.abspath(of)]
-    }).write_parquet(signal_path)
+    }).write_parquet(signal_path, compression='snappy')
     
     print(f"[extracting] Extraction finished: {b}_extr.parquet")
     return signal_path

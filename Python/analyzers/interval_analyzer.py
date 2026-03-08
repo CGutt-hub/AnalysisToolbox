@@ -52,7 +52,7 @@ def analyze_intervals(ip: str, event_col: str | None = None, y_lim: float | None
         out_folder = os.path.join(os.getcwd(), f"{base}_{suffix}")
         os.makedirs(out_folder, exist_ok=True)
         signal_path = os.path.join(os.getcwd(), f"{base}_{suffix}.parquet")
-        pl.DataFrame({'signal': [1], 'source': [os.path.basename(ip)], 'conditions': [0], 'folder_path': [os.path.abspath(out_folder)]}).write_parquet(signal_path)
+        pl.DataFrame({'signal': [1], 'source': [os.path.basename(ip)], 'conditions': [0], 'folder_path': [os.path.abspath(out_folder)]}).write_parquet(signal_path, compression='snappy')
         return signal_path
     
     base = os.path.splitext(os.path.basename(ip))[0]
@@ -167,7 +167,7 @@ def analyze_intervals(ip: str, event_col: str | None = None, y_lim: float | None
             })
             
             out_path = os.path.join(out_folder, f"{base}_{suffix}{idx+1}.parquet")
-            output.write_parquet(out_path)
+            output.write_parquet(out_path, compression='snappy')
             print(f"[interval]   {cond}: SDNN={sdnn_mean:.2f}±{sdnn_sem:.2f}, RMSSD={rmssd_mean:.2f}±{rmssd_sem:.2f} ({len(sdnn_vals)} epochs)")
     
     # Create procedure visualization file
@@ -177,7 +177,7 @@ def analyze_intervals(ip: str, event_col: str | None = None, y_lim: float | None
             all_plots = [pl.read_parquet(f) for f in plot_files]
             combined = pl.concat(all_plots)
             vis_path = os.path.join(os.getcwd(), f"{base}_{suffix}_vis.parquet")
-            combined.write_parquet(vis_path)
+            combined.write_parquet(vis_path, compression='snappy')
             print(f"[interval] Created procedure visualization: {vis_path}")
         except Exception as e:
             print(f"[interval] WARNING: Could not create procedure visualization: {e}")
@@ -188,7 +188,7 @@ def analyze_intervals(ip: str, event_col: str | None = None, y_lim: float | None
         'source': [os.path.basename(ip)],
         'conditions': [len(conditions)],
         'folder_path': [os.path.abspath(out_folder)]
-    }).write_parquet(signal_path)
+    }).write_parquet(signal_path, compression='snappy')
     
     print(f"[interval] Output: {signal_path}")
     return signal_path

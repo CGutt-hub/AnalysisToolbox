@@ -220,7 +220,7 @@ def compute_psd(ip: str, bands: dict, channels: list | None = None, regions: dic
             combined = pl.concat(all_plots)
             # Aggregate into single vis file for procedure HTML
             vis_path = os.path.join(os.getcwd(), f"{base}_psd_vis.parquet")
-            combined.write_parquet(vis_path)
+            combined.write_parquet(vis_path, compression='snappy')
             print(f"[psd] Created procedure visualization: {vis_path}")
         except Exception as e:
             print(f"[psd] WARNING: Could not create procedure visualization: {e}")
@@ -231,7 +231,7 @@ def compute_psd(ip: str, bands: dict, channels: list | None = None, regions: dic
         'source': [os.path.basename(ip)],
         'conditions': [len(conds)],
         'folder_path': [os.path.abspath(out_folder)]
-    }).write_parquet(signal_path)
+    }).write_parquet(signal_path, compression='snappy')
     
     print(f"[psd] Output: {signal_path}")
     return signal_path

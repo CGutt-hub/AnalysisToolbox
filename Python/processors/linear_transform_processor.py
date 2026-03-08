@@ -99,7 +99,7 @@ def linear_transform_process(ip: str, matrix_spec: str = '[[1,0],[0,1]]', param:
         'x_label': ['Time (s)'],
         'y_label': ['Concentration (µM)']
     })
-    vis_df.write_parquet(out_file.replace('.fif', '_vis.parquet'))
+    vis_df.write_parquet(out_file.replace('.fif', '_vis.parquet'), compression='snappy')
     print(f"[linear_transform] Output: {out_file} ({n_ch} channels)")
     return out_file
 

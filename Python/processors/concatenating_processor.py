@@ -167,9 +167,9 @@ if __name__ == '__main__': (lambda a:
         (lambda files, labels: (
             (lambda pid, out_path: (
                 (lambda result: (
-                    result.write_parquet(out_path),
+                    result.write_parquet(out_path, compression='snappy'),
                     # Only create _vis.parquet if data is plot-ready (has x_data, y_data)
-                    result.write_parquet(out_path.replace('.parquet', '_vis.parquet')) if 'x_data' in result.columns and 'y_data' in result.columns else None,
+                    result.write_parquet(out_path.replace('.parquet', '_vis.parquet'), compression='snappy') if 'x_data' in result.columns and 'y_data' in result.columns else None,
                     print(f"[concatenating] Concatenated {len(files)} files -> {out_path}"),
                     print(f"[concatenating] {'Created _vis.parquet (plot-ready data)' if 'x_data' in result.columns and 'y_data' in result.columns else 'Skipped _vis.parquet (raw data, not plot-ready)'}"),
                     print(out_path)

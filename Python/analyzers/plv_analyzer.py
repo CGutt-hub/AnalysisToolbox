@@ -157,7 +157,7 @@ def compute_plv(stream_paths: list[str], stream_configs: list[dict[str, Any]], o
             })
             
             out_file = os.path.join(out_folder, f"{output_name}_plv{idx+1}.parquet")
-            output.write_parquet(out_file)
+            output.write_parquet(out_file, compression='snappy')
             print(f"[plv]   {cond}: {os.path.basename(out_file)} ({len(plv_results)} pairs)")
     
     # Create procedure visualization file (aggregate all conditions)
@@ -167,7 +167,7 @@ def compute_plv(stream_paths: list[str], stream_configs: list[dict[str, Any]], o
             all_plots = [pl.read_parquet(f) for f in plot_files]
             combined = pl.concat(all_plots)
             vis_path = os.path.join(workspace, f"{output_name}_plv_vis.parquet")
-            combined.write_parquet(vis_path)
+            combined.write_parquet(vis_path, compression='snappy')
             print(f"[plv] Created procedure visualization: {vis_path}")
         except Exception as e:
             print(f"[plv] WARNING: Could not create procedure visualization: {e}")
@@ -179,7 +179,7 @@ def compute_plv(stream_paths: list[str], stream_configs: list[dict[str, Any]], o
         'source': [','.join([os.path.basename(p) for p in stream_paths])], 
         'conditions': [len(conditions)],
         'folder_path': [os.path.abspath(out_folder)]
-    }).write_parquet(signal_path)
+    }).write_parquet(signal_path, compression='snappy')
     
     print(f"[plv] Finished. Signal: {os.path.basename(signal_path)}")
     return signal_path

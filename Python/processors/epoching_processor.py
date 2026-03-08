@@ -108,7 +108,7 @@ def _epoch_mne(raw, events: Dict[str, List[Tuple[float, float]]], data_path: str
             }))
     
     out = f"{os.path.splitext(os.path.basename(data_path))[0]}_epochs.parquet"
-    (pl.concat(dfs) if dfs else pl.DataFrame()).write_parquet(out)
+    (pl.concat(dfs) if dfs else pl.DataFrame()).write_parquet(out, compression='snappy')
     print(f"[epoching] Output: {out} ({len(pl.concat(dfs)) if dfs else 0} rows)")
     return out
 
@@ -134,7 +134,7 @@ def window_epochs(data_path: str, window_size: float = 30.0, step_size: float = 
         # Create empty output signal file
         base = os.path.splitext(os.path.basename(data_path))[0]
         signal_path = f"{base}_windowed.parquet"
-        pl.DataFrame({'signal': [1]}).write_parquet(signal_path)
+        pl.DataFrame({'signal': [1]}).write_parquet(signal_path, compression='snappy')
         return signal_path
     
     data_cols = [c for c in df.columns if c not in ['condition', 'epoch_id', 'time']]
@@ -200,7 +200,7 @@ def window_epochs(data_path: str, window_size: float = 30.0, step_size: float = 
         empty.update({'condition': pl.Series([], dtype=pl.Utf8),
                       'epoch_id': pl.Series([], dtype=pl.Utf8),
                       'time': pl.Series([], dtype=pl.Float64)})
-        pl.DataFrame(empty).write_parquet(out)
+        pl.DataFrame(empty).write_parquet(out, compression='snappy')
         print(f"[epoching] Output: {out} (0 rows, 0 windows)")
         return out
     
@@ -215,7 +215,7 @@ def window_epochs(data_path: str, window_size: float = 30.0, step_size: float = 
     
     base = os.path.splitext(os.path.basename(data_path))[0]
     out = f"{base}_windowed.parquet"
-    result_df.write_parquet(out)
+    result_df.write_parquet(out, compression='snappy')
     print(f"[epoching] Output: {out} ({len(result_df)} rows, {total_windows} windows)")
     return out
 
@@ -319,7 +319,7 @@ def epoch_and_flatten(data_path: str, events_path: str, orig_path: str | None = 
         })
     else:
         result_df = pl.concat(dfs)
-    result_df.write_parquet(out)
+    result_df.write_parquet(out, compression='snappy')
     # Generate inline visualization - show example epochs from first few conditions
     if dfs and len(result_df) > 0:
         signal_cols: list[str] = [c for c in result_df.columns if c not in [time_col, 'condition', 'epoch_id', 'sfreq']]
@@ -341,7 +341,7 @@ def epoch_and_flatten(data_path: str, events_path: str, orig_path: str | None = 
                 'x_label': ['Time (s)'],
                 'y_label': ['Amplitude']
             })
-            vis_df.write_parquet(out.replace('.parquet', '_vis.parquet'))
+            vis_df.write_parquet(out.replace('.parquet', '_vis.parquet'), compression='snappy')
     print(f"[epoching] Output: {out} ({len(result_df) if dfs else 0} rows)")
     return out
 

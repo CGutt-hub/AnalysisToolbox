@@ -9,7 +9,7 @@ def map_join(ip_a: str, ip_b: str, key_a: str, key_b: str) -> str:
     if key_b not in df_b.columns: print(f"[mapping] Error: Key '{key_b}' not in {ip_b}"); sys.exit(1)
     mapped = df_a.join(df_b, left_on=key_a, right_on=key_b, how='inner')
     out = f"{os.path.splitext(os.path.basename(ip_a))[0]}_mapping.parquet"
-    mapped.write_parquet(out)
+    mapped.write_parquet(out, compression='snappy')
     print(f"[mapping] Output: {out} ({mapped.shape})")
     
     # Generate inline visualization if numeric columns exist
@@ -29,7 +29,7 @@ def map_join(ip_a: str, ip_b: str, key_a: str, key_b: str) -> str:
             'x_label': ['Row Index'],
             'y_label': ['Value']
         })
-        vis_df.write_parquet(out.replace('.parquet', '_vis.parquet'))
+        vis_df.write_parquet(out.replace('.parquet', '_vis.parquet'), compression='snappy')
     
     return out
 

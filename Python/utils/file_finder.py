@@ -91,7 +91,7 @@ def copy_and_output(matches, signal_file, pattern):
         os.makedirs(out_folder, exist_ok=True)
         out_name = f"{base}_{suffix}.parquet"
         pl.DataFrame({'signal': [1], 'source': [base], 'conditions': [0],
-                      'folder_path': [out_folder]}).write_parquet(out_name)
+                      'folder_path': [out_folder]}).write_parquet(out_name, compression='snappy')
         print(f"[file_finder] No matches for '{pattern}' — emitting passthrough signal: {out_name}", file=sys.stderr)
         print(os.path.abspath(out_name))
         return 0

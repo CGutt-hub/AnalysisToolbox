@@ -40,7 +40,7 @@ def tddr_process(ip: str, out: str | None = None) -> str:
         'x_label': ['Time (s)'],
         'y_label': ['Optical Density (OD)']
     })
-    vis_df.write_parquet(out_file.replace('.fif', '_vis.parquet'))
+    vis_df.write_parquet(out_file.replace('.fif', '_vis.parquet'), compression='snappy')
     print(f"[tddr] Output: {out_file}")
     return out_file
 

@@ -15,7 +15,7 @@ def normalize(ip: str, norm_type: str, cols: str) -> str:
             pl.col(col).log() if norm_type == 'log' else pl.col(col)
         ).alias(f"{col}_norm"))
     out = f"{os.path.splitext(os.path.basename(ip))[0]}_norm.parquet"
-    df.write_parquet(out)
+    df.write_parquet(out, compression='snappy')
     
     # Generate inline visualization - before/after comparison
     norm_cols = [f"{c}_norm" for c in col_list]
@@ -33,7 +33,7 @@ def normalize(ip: str, norm_type: str, cols: str) -> str:
             'x_label': ['Sample'],
             'y_label': ['Value']
         })
-        vis_df.write_parquet(out.replace('.parquet', '_vis.parquet'))
+        vis_df.write_parquet(out.replace('.parquet', '_vis.parquet'), compression='snappy')
     
     print(f"[normalizing] Output: {out}")
     return out

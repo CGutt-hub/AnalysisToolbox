@@ -21,10 +21,22 @@ def correl_analyze(ip: str, y_lim: float | None = None) -> str:
         'y_ticks': y_lim, 'plot_weight': 1
     } for i, c1 in enumerate(num_cols) for c2 in num_cols[i+1:]])
     out_file = f"{os.path.splitext(os.path.basename(ip))[0]}_correl.parquet"
-    results.write_parquet(out_file)
-    # Create procedure visualization
+    results.write_parquet(out_file, compression='snappy')
+    # Create procedure visualization: single-row bar chart (all pairs × r values)
+    # The interactive plotter needs: plot_type, x_data (list), y_data (list), y_var (list), x_label, y_label
+    pairs_list   = results['x_data'].to_list()
+    r_list       = results['y_data'].to_list()
+    vis_df = pl.DataFrame({
+        'plot_type': ['bar'],
+        'x_data':    [pairs_list],
+        'y_data':    [r_list],
+        'y_var':     [[0.0] * len(r_list)],
+        'x_label':   ['Signal Pair'],
+        'y_label':   ['Pearson r'],
+        'title':     ['Cross-Modal Correlations'],
+    })
     vis_file = out_file.replace('.parquet', '_vis.parquet')
-    results.write_parquet(vis_file)
+    vis_df.write_parquet(vis_file, compression='snappy')
     print(f"[correl] Output: {out_file} ({len(results)} pairs)")
     print(f"[correl] Created procedure visualization: {vis_file}")
     return out_file
