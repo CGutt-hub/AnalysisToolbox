@@ -19,7 +19,7 @@ def detect_peaks(ip: str, column: str, fs: float, method: str = 'scipy', height:
         if not target: log_error(f"Column not found: {column}"); sys.exit(1)
         column = target
     sig: NDArray[np.float64] = df[column].to_numpy()
-    time_offset = float(df['time'][0]) if 'time' in df.columns else 0.0
+    time_arr: NDArray[np.float64] = df['time'].to_numpy() if 'time' in df.columns else np.arange(len(sig)) / fs
     print(f"[peak_detection] Detecting peaks in {column}: {len(sig)} samples")
     
     peaks: NDArray[np.int64]
@@ -42,7 +42,7 @@ def detect_peaks(ip: str, column: str, fs: float, method: str = 'scipy', height:
         peaks, _ = find_peaks(sig, **kwargs)
         peaks = peaks.astype(np.int64)
     
-    result = pl.DataFrame({'peak_sample': peaks, 'time': time_offset + peaks / fs, 'sfreq': [fs] * len(peaks)})
+    result = pl.DataFrame({'peak_sample': peaks, 'time': time_arr[peaks].tolist(), 'sfreq': [fs] * len(peaks)})
     
     # Quality check: very few peaks detected
     if len(peaks) < 10:
@@ -57,7 +57,7 @@ def detect_peaks(ip: str, column: str, fs: float, method: str = 'scipy', height:
     # Generate inline visualization: interval time series
     if len(peaks) > 1:
         intervals: np.ndarray = np.diff(peaks) / fs * 1000  # Convert to ms
-        interval_times: list[float] = (time_offset + peaks[1:] / fs).tolist()
+        interval_times: list[float] = time_arr[peaks[1:]].tolist()
         intervals_list: list[float] = intervals.tolist()
         if len(intervals_list) > 10000:
             step: int = len(intervals_list) // 10000

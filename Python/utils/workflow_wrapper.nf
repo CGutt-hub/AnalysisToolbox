@@ -22,12 +22,12 @@ def configureGitUser() {
                 git_configured = true
                 
                 // Log to ${params.project_name}.log instead of terminal
-                def pipeline_log = new File("${workflow.launchDir}/${params.output_dir}", "${params.project_name}.log")
+                def pipeline_log = new File("${workflow.launchDir}/${params.output_dir}/.bin", "${params.project_name}.log")
                 def timestamp = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
                 pipeline_log.append("[${timestamp}] [workflow] Git user configured: ${params.git_user_name} <${params.git_user_email}>\n")
             }
         } catch (Exception e) {
-            def pipeline_log = new File("${workflow.launchDir}/${params.output_dir}", "${params.project_name}.log")
+            def pipeline_log = new File("${workflow.launchDir}/${params.output_dir}/.bin", "${params.project_name}.log")
             def timestamp = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
             pipeline_log.append("[${timestamp}] [workflow] Warning: Could not configure git user - ${e.message}\n")
         }
@@ -53,8 +53,10 @@ workflow participant_discovery {
         def output_dirs = output_path.exists() ? output_path.list() as Set : [] as Set
         def new_participants = input_path.list().findAll { it.matches(regex_pattern) }.findAll { !(it in output_dirs) }
         
-        // Create global log file
-        def pipeline_log = new File("${workflow.launchDir}/${params.output_dir}", "${params.project_name}.log")
+        // Create .bin/ infrastructure directory and global log inside it
+        def bin_dir_infra = new File("${workflow.launchDir}/${params.output_dir}", ".bin")
+        bin_dir_infra.mkdirs()
+        def pipeline_log = new File(bin_dir_infra, "${params.project_name}.log")
         if (!pipeline_log.exists()) {
             pipeline_log.text = ""
         }
@@ -95,7 +97,7 @@ workflow participant_discovery {
                 log_file.append("Output: ${participant_dir}\n")
                 log_file.append("\n=== Analysis started for ${safe_id}: ${timestamp} ===\n\n")
                 
-                def global_pipeline_log = new File("${workflow.launchDir}/${params.output_dir}", "${params.project_name}.log")
+                def global_pipeline_log = new File(new File("${workflow.launchDir}/${params.output_dir}", ".bin"), "${params.project_name}.log")
                 global_pipeline_log.append("=== ${safe_id} initialized: ${timestamp} ===\n")
                 global_pipeline_log.append("Workflow: ${workflow.projectDir}\n")
                 global_pipeline_log.append("Session: ${workflow.sessionId}\n")
@@ -104,9 +106,11 @@ workflow participant_discovery {
                 global_pipeline_log.append("\n=== Analysis started for ${safe_id}: ${timestamp} ===\n\n")
             }
             
-            // HTML lives at EV_results/ root (shared across participants)
+            // HTML lives in .bin/ subfolder at the results root (shared across participants)
             def output_root = new File("${workflow.launchDir}/${output_dir}")
-            def html_file = new File(output_root, "${params.project_name}_results.html")
+            def bin_dir_html = new File(output_root, ".bin")
+            bin_dir_html.mkdirs()
+            def html_file = new File(bin_dir_html, "${params.project_name}_results.html")
             if (!html_file.exists()) {
                 def init_cmd = [params.python_exe, '-u',
                     "${workflow.launchDir}/${params.toolbox_dir}/utils/interactive_plotter.py",
@@ -114,7 +118,7 @@ workflow participant_discovery {
                 def proc = init_cmd.execute()
                 proc.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)
                 if (proc.exitValue() != 0) {
-                    new File("${workflow.launchDir}/${params.output_dir}", "${params.project_name}.log").append(
+                    new File(new File("${workflow.launchDir}/${params.output_dir}", ".bin"), "${params.project_name}.log").append(
                         "[${new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())}] [workflow] Warning: Could not initialize HTML archive: ${proc.text}\n"
                     )
                 }
@@ -168,16 +172,16 @@ workflow finalize_participant {
                 log_file?.append("Duration: ${duration}s\n")
                 log_file?.append("\n=== ${pid} finalized: ${timestamp} ===\n\n")
                 
-                // Write finalization to central pipeline log
-                def pipeline_log = new File("${workflow.launchDir}/${params.output_dir}", "${params.project_name}.log")
+                // Write finalization to central pipeline log (inside .bin/)
+                def pipeline_log = new File("${workflow.launchDir}/${params.output_dir}/.bin", "${params.project_name}.log")
                 pipeline_log.parentFile?.mkdirs()
                 if (!pipeline_log.exists()) {
                     try { pipeline_log.text = "" } catch (Exception e) { /* ignore race */ }
                 }
 
                 // Add participant log + global EV.log to interactive HTML archive
-                // HTML lives at the output_dir root, not inside the participant subfolder
-                def procedure_html = new File("${workflow.launchDir}/${params.output_dir}", "${params.project_name}_results.html")
+                // HTML lives in .bin/ subfolder, not at the output_dir root
+                def procedure_html = new File("${workflow.launchDir}/${params.output_dir}/.bin", "${params.project_name}_results.html")
                 if (procedure_html.exists() && log_file.exists()) {
                     try {
                         def add_log_cmd = [params.python_exe, '-u',
@@ -218,8 +222,9 @@ workflow finalize_participant {
                     def pipeline_log_path = git_root.toPath().relativize(pipeline_log.toPath()).toString().replace('\\', '/')
                     // HTML and meta.json sit at the output_dir root (parent of participant subfolder)
                     def output_root_full  = results_full_path.parentFile
-                    def html_full         = new File(output_root_full, "${params.project_name}_results.html")
-                    def meta_full         = new File(output_root_full, "${params.project_name}_meta.json")
+                    def bin_full          = new File(output_root_full, ".bin")
+                    def html_full         = new File(bin_full, "${params.project_name}_results.html")
+                    def meta_full         = new File(bin_full, "${params.project_name}_meta.json")
                     def html_path         = html_full.exists()  ? git_root.toPath().relativize(html_full.toPath()).toString().replace('\\', '/') : null
                     def meta_path         = meta_full.exists()  ? git_root.toPath().relativize(meta_full.toPath()).toString().replace('\\', '/') : null
                     

@@ -50,12 +50,13 @@ def reject_samples(ip: str, columns: list | None = None, criterion: str = 'ampli
             time_data = time_data[::step]
             y_data = [yd[::step] for yd in y_data]
         vis_df = pl.DataFrame({
-            'x_data': [[[time_data] for _ in range(len(signal_cols))]],
-            'y_data': [y_data],
+            'title':   [f'Rejected signal ({len(signal_cols)} channels)'],
+            'x_data':  [[time_data for _ in range(len(signal_cols))]],
+            'y_data':  [y_data],
             'plot_type': ['line'],
-            'labels': [signal_cols],
+            'labels':  [signal_cols],
             'x_label': ['Time (s)'],
-            'y_label': ['Amplitude']
+            'y_label': ['Amplitude'],
         })
         vis_df.write_parquet(out_file.replace('.parquet', '_vis.parquet'), compression='snappy')
     
