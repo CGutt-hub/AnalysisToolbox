@@ -92,7 +92,7 @@ def analyze(ip, param_str, out_prefix):
     
     def extract_data(target_nodes):
         """Extract and aggregate data from nodes. Fails explicitly if structure doesn't match."""
-        fallback_keys = ['be7List', 'ea11List', 'samList', 'panasList', 'bisBasList']
+        fallback_keys = []  # No project-specific fallbacks; x_pos_key must come from params
         n_labels = len(x_labels) if isinstance(x_labels, list) else 0
         conds: dict = {}
         label_map: dict = {}  # pos -> label (for dynamic labels from tree field)

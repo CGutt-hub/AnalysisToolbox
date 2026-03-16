@@ -8,14 +8,16 @@ def log_info(msg): print(f"[connectivity] INFO: {msg}")
 def log_warning(msg): print(f"[connectivity] WARNING: {msg}")
 def log_error(msg): print(f"[connectivity] ERROR: {msg}")
 
-def analyze_connectivity(ip: str, method: str = 'coh', y_lim: float | None = None) -> str:
+def analyze_connectivity(ip: str, method: str = 'coh', y_lim: float | None = None,
+                         duration: float = 30.0, overlap: float = 15.0,
+                         fmin: float = 0.01, fmax: float = 0.1) -> str:
     if not os.path.exists(ip): log_error(f"File not found: {ip}"); sys.exit(1)
     if not ip.endswith('.fif'): log_error("Requires .fif format"); sys.exit(1)
     print(f"[connectivity] Connectivity analysis: {ip}, method={method}")
     
     raw = mne.io.read_raw_fif(ip, preload=True, verbose=False)
-    epochs = mne.make_fixed_length_epochs(raw, duration=30.0, overlap=15.0, verbose=False)
-    conn = spectral_connectivity_epochs(epochs, method=method, fmin=0.01, fmax=0.1, verbose=False)
+    epochs = mne.make_fixed_length_epochs(raw, duration=duration, overlap=overlap, verbose=False)
+    conn = spectral_connectivity_epochs(epochs, method=method, fmin=fmin, fmax=fmax, verbose=False)
     conn_matrix = conn.get_data(output='dense').mean(axis=2)  # Average across frequencies
     
     # Extract upper triangle (avoid duplicates)

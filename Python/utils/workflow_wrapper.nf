@@ -49,8 +49,9 @@ workflow participant_discovery {
         def regex_pattern = participant_pattern.replaceAll(/\*/, '.*').replaceAll(/\?/, '.')
         def input_path = new File("${workflow.launchDir}/${input_dir}")
         def output_path = new File("${workflow.launchDir}/${output_dir}")
-        // Discover already-processed participants by checking per-participant output subfolders
-        def output_dirs = output_path.exists() ? output_path.list() as Set : [] as Set
+        // Discover already-processed participants by checking per-participant output subfolders inside l1/
+        def l1_path    = new File(output_path, "${params.project_name}_l1")
+        def output_dirs = l1_path.exists() ? l1_path.list() as Set : [] as Set
         def new_participants = input_path.list().findAll { it.matches(regex_pattern) }.findAll { !(it in output_dirs) }
         
         // Create .bin/ infrastructure directory and global log inside it
@@ -59,6 +60,15 @@ workflow participant_discovery {
         def pipeline_log = new File(bin_dir_infra, "${params.project_name}.log")
         if (!pipeline_log.exists()) {
             pipeline_log.text = ""
+        }
+
+        // Create l2 folder + log at startup if this workflow contains second-level analyses
+        if (params.l2_analyses) {
+            def l2_dir  = new File("${workflow.launchDir}/${params.output_dir}", "${params.project_name}_l2")
+            def l2_plots_dir = new File(l2_dir, "plots")
+            l2_dir.mkdirs()
+            l2_plots_dir.mkdirs()
+            // l2 log is a .log.parquet written live by IOInterface bash block — no text file needed here
         }
 
         // Clean up any leftover .finalized marker files from old pipeline runs
@@ -76,35 +86,22 @@ workflow participant_discovery {
         def all_participants = Channel.fromList(new_participants).concat(watched_participants)
             .filter { pid ->
                 def safe_id = pid.replaceAll('\r', '').trim().replaceAll('[^A-Za-z0-9._-]', '_')
-                !new File("${workflow.launchDir}/${output_dir}/${safe_id}").exists()
+                !new File("${workflow.launchDir}/${output_dir}/${params.project_name}_l1/${safe_id}").exists()
             }
 
         participant_context = all_participants.map { pid ->
             def safe_id = pid.replaceAll('\r', '').trim().replaceAll('[^A-Za-z0-9._-]', '_')
-            // Per-participant subfolder: EV_results/EV_002/
-            // Contains: plots/ (parquet sidecars), *.pdf (exports)
-            def participant_dir = new File("${workflow.launchDir}/${output_dir}/${safe_id}")
+            // Per-participant subfolder: {output_dir}/{project_name}_l1/{safe_id}/
+            def l1_dir = new File("${workflow.launchDir}/${output_dir}/${params.project_name}_l1")
+            l1_dir.mkdirs()
+            def participant_dir = new File(l1_dir, safe_id)
             participant_dir.mkdirs()
             
-            def log_file = new File(participant_dir, "${safe_id}.log")
+            // Log init happens in the IOInterface bash block on first task run (writes .log.parquet live).
+            // Just append to the global pipeline log here.
             def timestamp = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
-            
-            if (!log_file.exists()) {
-                log_file.text = "=== ${safe_id} initialized: ${timestamp} ===\n"
-                log_file.append("Workflow: ${workflow.projectDir}\n")
-                log_file.append("Session: ${workflow.sessionId}\n")
-                log_file.append("Launch dir: ${workflow.launchDir}\n")
-                log_file.append("Output: ${participant_dir}\n")
-                log_file.append("\n=== Analysis started for ${safe_id}: ${timestamp} ===\n\n")
-                
-                def global_pipeline_log = new File(new File("${workflow.launchDir}/${params.output_dir}", ".bin"), "${params.project_name}.log")
-                global_pipeline_log.append("=== ${safe_id} initialized: ${timestamp} ===\n")
-                global_pipeline_log.append("Workflow: ${workflow.projectDir}\n")
-                global_pipeline_log.append("Session: ${workflow.sessionId}\n")
-                global_pipeline_log.append("Launch dir: ${workflow.launchDir}\n")
-                global_pipeline_log.append("Output: ${participant_dir}\n")
-                global_pipeline_log.append("\n=== Analysis started for ${safe_id}: ${timestamp} ===\n\n")
-            }
+            def global_pipeline_log = new File(new File("${workflow.launchDir}/${params.output_dir}", ".bin"), "${params.project_name}.log")
+            global_pipeline_log.append("=== ${safe_id} initialized: ${timestamp} ===\nOutput: ${participant_dir}\n\n")
             
             // HTML lives in .bin/ subfolder at the results root (shared across participants)
             def output_root = new File("${workflow.launchDir}/${output_dir}")
@@ -124,12 +121,206 @@ workflow participant_discovery {
                 }
             }
             
-            def folder = "${output_dir}/${safe_id}"
+            def folder = "${output_dir}/${params.project_name}_l1/${safe_id}"
             [pid, folder]
         }
 
     emit:
         participant_context
+}
+
+// Extracted from .subscribe to avoid Groovy's maximum callback size limit.
+// Handles per-participant logging, HTML archive update, and git sync.
+def finalizeParticipant(pid, files, folder, finalizedPids) {
+    if (!finalizedPids.add(pid)) return
+
+    Thread.sleep(2000)
+
+    def timestamp  = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
+    def log_file   = new File("${workflow.launchDir}/${folder}/${pid}.log.parquet")
+    def start_time = log_file.exists() ? new Date(log_file.lastModified()) : new Date()
+    def duration   = (new Date().time - start_time.time) / 1000
+
+    // Append finalization summary to the live .log.parquet
+    def finalization_text = """
+=== Analysis completed for ${pid}: ${timestamp} ===
+Modules completed: ${files.size()}
+Session: ${workflow.sessionId}
+Duration: ${duration}s
+=== ${pid} finalized: ${timestamp} ===
+
+"""
+    if (log_file.parentFile?.exists() || log_file.parentFile?.mkdirs()) {
+        try {
+            def append_cmd = [params.python_exe, '-u',
+                "${workflow.launchDir}/${params.toolbox_dir}/utils/log_to_parquet.py",
+                log_file.absolutePath, '--text', finalization_text]
+            append_cmd.execute().waitFor(30, java.util.concurrent.TimeUnit.SECONDS)
+        } catch (Exception e) { /* non-critical */ }
+    }
+
+    // Write finalization to central pipeline log (inside .bin/)
+    def pipeline_log = new File("${workflow.launchDir}/${params.output_dir}/.bin", "${params.project_name}.log")
+    try {
+        pipeline_log.parentFile?.mkdirs()
+        if (!pipeline_log.exists()) pipeline_log.text = ""
+    } catch (Exception e) { /* NAS/SMB can transiently fail */ }
+
+    // Register the live .log.parquet in the interactive HTML archive (meta.json)
+    // add_log_to_archive detects .log.parquet and uses the file at its existing location.
+    def procedure_html = new File("${workflow.launchDir}/${params.output_dir}/.bin", "${params.project_name}_results.html")
+    if (procedure_html.exists() && log_file.exists()) {
+        try {
+            def add_log_cmd = [params.python_exe, '-u',
+                "${workflow.launchDir}/${params.toolbox_dir}/utils/interactive_plotter.py",
+                'add-log', procedure_html.absolutePath, pid, log_file.absolutePath, 'Pipeline Log']
+            def proc = add_log_cmd.execute()
+            proc.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)
+            if (proc.exitValue() != 0) {
+                pipeline_log.append("Warning: Failed to register ${pid} log.parquet in HTML archive\n")
+            }
+        } catch (Exception e) {
+            pipeline_log.append("Warning: Failed to register ${pid} log.parquet in HTML archive: ${e.message}\n")
+        }
+    }
+    // .log.parquet is kept — it is the live-accessible record and is committed to git
+
+    try {
+        pipeline_log.append("\n=== Analysis completed for ${pid}: ${timestamp} ===\n")
+        pipeline_log.append("Modules completed: ${files.size()}\n")
+        pipeline_log.append("Session: ${workflow.sessionId}\n")
+        pipeline_log.append("Duration: ${duration}s\n")
+        pipeline_log.append("\n=== ${pid} finalized: ${timestamp} ===\n\n")
+    } catch (Exception e) { /* .bin/ may not exist yet on NAS — non-critical */ }
+
+    // Git sync
+    git_lock.lock()
+    try {
+        def results_full_path = new File("${workflow.launchDir}/${folder}").getAbsoluteFile()
+        def git_root = results_full_path
+        while (git_root != null && !new File(git_root, ".git").exists()) {
+            git_root = git_root.getParentFile()
+        }
+        if (!git_root) return
+
+        def relative_path     = git_root.toPath().relativize(results_full_path.toPath()).toString().replace('\\', '/')
+        def pipeline_log_path = git_root.toPath().relativize(pipeline_log.toPath()).toString().replace('\\', '/')
+        def output_root_full  = new File("${workflow.launchDir}/${params.output_dir}").getAbsoluteFile()
+        def bin_full          = new File(output_root_full, ".bin")
+        def html_full         = new File(bin_full, "${params.project_name}_results.html")
+        def meta_full         = new File(bin_full, "${params.project_name}_meta.json")
+        def html_path         = html_full.exists() ? git_root.toPath().relativize(html_full.toPath()).toString().replace('\\', '/') : null
+        def meta_path         = meta_full.exists() ? git_root.toPath().relativize(meta_full.toPath()).toString().replace('\\', '/') : null
+
+        def runGit = { cmd, timeout = 10 ->
+            try {
+                def env = ["GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=echo", "SSH_ASKPASS=echo"]
+                def proc = cmd.execute(env, git_root)
+                def out = new StringBuilder()
+                def err = new StringBuilder()
+                // Run waitForProcessOutput in a thread so we can enforce a timeout
+                // without leaving orphaned TextDumper threads that throw on stream close.
+                def reader = Thread.start { proc.waitForProcessOutput(out, err) }
+                reader.join(timeout * 1000L)
+                if (reader.isAlive()) {
+                    proc.destroy()
+                    reader.join(2000L)  // let reader notice the closed stream
+                    out.append(err)
+                    return [exit: -1, out: "timeout: ${out}".toString()]
+                }
+                out.append(err)
+                return [exit: proc.exitValue(), out: out.toString()]
+            } catch (Exception e) {
+                return [exit: -1, out: e.message]
+            }
+        }
+
+        def cleanupRebase = {
+            runGit(["git", "rebase", "--abort"], 2)
+            new File(git_root, ".git/rebase-merge").with { if (exists()) deleteDir() }
+            new File(git_root, ".git/rebase-apply").with { if (exists()) deleteDir() }
+        }
+
+        def logSync = { status, details = "" ->
+            try {
+                def ts = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
+                pipeline_log.append("\n=== Git sync for ${pid}: ${ts} ===\n")
+                pipeline_log.append("Path: ${relative_path}\n")
+                pipeline_log.append("Status: ${status}\n")
+                if (details) pipeline_log.append("${details}\n")
+                pipeline_log.append("=== ${pid} sync complete ===\n\n")
+            } catch (Exception e) { /* non-critical */ }
+        }
+
+        cleanupRebase()
+
+        // Commit 1: participant subfolder + shared HTML + meta.json + {project}_l2/ (if it exists)
+        def addPaths = [relative_path]
+        if (html_path) addPaths << html_path
+        if (meta_path) addPaths << meta_path
+        def group_full = new File(output_root_full, "${params.project_name}_l2")
+        if (group_full.exists()) {
+            def group_path = git_root.toPath().relativize(group_full.toPath()).toString().replace('\\', '/')
+            addPaths << group_path
+        }
+
+        // git add can be slow on NAS/network mounts with many large parquet files — use 120 s.
+        def add = runGit(["git", "add", "-A"] + addPaths, 120)
+        if (add.exit != 0) {
+            runGit(["git", "reset", "HEAD"], 10)
+            logSync("Git add failed", add.out)
+        } else {
+            def status_participant = runGit(["git", "status", "--porcelain", "--cached"] + addPaths, 15)
+            def hasParticipantChanges = status_participant.out?.trim()
+            if (hasParticipantChanges) {
+                def commit = runGit(["git", "commit", "-m", "autosync: ${pid} completed"], 30)
+                if (commit.exit == 0) {
+                    def pull = runGit(["git", "pull", "--rebase", "--autostash"], 60)
+                    if (pull.exit != 0) {
+                        cleanupRebase()
+                        runGit(["git", "reset", "--hard", "HEAD"], 10)
+                        logSync("Git pull failed", pull.out)
+                    } else {
+                        def push = runGit(["git", "push"], 60)
+                        logSync(push.exit == 0 ? "Participant synced" : "Push failed (committed locally)", push.out)
+                    }
+                } else {
+                    logSync("No participant changes to commit", commit.out)
+                    runGit(["git", "pull", "--rebase", "--autostash"], 30)
+                    runGit(["git", "push"], 60)
+                }
+            } else {
+                logSync("No participant changes")
+            }
+        }
+
+        // Commit 2: convert pipeline log -> parquet, delete text file, sync parquet
+        def pipeline_log_parquet      = new File(pipeline_log.parentFile, "${params.project_name}.log.parquet")
+        def pipeline_log_parquet_path = git_root.toPath().relativize(pipeline_log_parquet.toPath()).toString().replace('\\', '/')
+        if (procedure_html.exists() && pipeline_log.exists()) {
+            try {
+                def add_global_cmd = [params.python_exe, '-u',
+                    "${workflow.launchDir}/${params.toolbox_dir}/utils/interactive_plotter.py",
+                    'add-log', procedure_html.absolutePath, 'global', pipeline_log.absolutePath, "${params.project_name}.log"]
+                def proc2 = add_global_cmd.execute()
+                def finished = proc2.waitFor(60, java.util.concurrent.TimeUnit.SECONDS)
+                if (finished && proc2.exitValue() == 0) pipeline_log.delete()
+            } catch (Exception e) { /* non-critical */ }
+        }
+        def analysis_dir      = new File("${workflow.launchDir}").getAbsoluteFile()
+        def analysis_dir_path = git_root.toPath().relativize(analysis_dir.toPath()).toString().replace('\\', '/')
+        def logSyncPath       = pipeline_log_parquet.exists() ? pipeline_log_parquet_path : pipeline_log_path
+        def addLog = runGit(["git", "add", "-A", logSyncPath, analysis_dir_path], 120)
+        if (addLog.exit == 0) {
+            def commitLog = runGit(["git", "commit", "-m", "${params.project_name}.log: ${pid} complete"], 30)
+            if (commitLog.exit == 0) {
+                runGit(["git", "pull", "--rebase"], 60)
+                runGit(["git", "push"], 60)
+            }
+        }
+    } finally {
+        git_lock.unlock()
+    }
 }
 
 // Separate finalization workflow: logging + git sync
@@ -150,191 +341,125 @@ workflow finalize_participant {
                 def pid = file.baseName.toString().split('_')[0..1].join('_')
                 [pid, file]
             }
-            .groupTuple(size: terminal_count)
+            .groupTuple(size: terminal_count, remainder: true)
             .join(participant_context)
             .subscribe { pid, files, folder ->
-                // Deduplicate in-memory (no marker file needed)
-                if (!finalizedPids.add(pid)) {
-                    return
+                finalizeParticipant(pid, files, folder, finalizedPids)
+            }
+}
+
+// Finalize the group-level (l2) folder: append completion entry to EV_l2.log.parquet,
+// register it in the HTML archive, and commit + push the entire EV_l2 folder.
+// Call this after all l2 processes complete (use .collect() on l2 outputs in the pipeline).
+def finalizeL2(files) {
+    def timestamp   = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
+    def l2_name     = "${params.project_name}_l2"
+    def l2_dir      = new File("${workflow.launchDir}/${params.output_dir}/${l2_name}")
+    def log_file    = new File(l2_dir, "${l2_name}.log.parquet")
+    def pipeline_log = new File("${workflow.launchDir}/${params.output_dir}/.bin", "${params.project_name}.log")
+
+    def finalization_text = """
+=== Group-level analysis (${l2_name}) completed: ${timestamp} ===
+Files produced: ${files.size()}
+Session: ${workflow.sessionId}
+=== ${l2_name} finalized: ${timestamp} ===
+
+"""
+    if (log_file.exists()) {
+        try {
+            def append_cmd = [params.python_exe, '-u',
+                "${workflow.launchDir}/${params.toolbox_dir}/utils/log_to_parquet.py",
+                log_file.absolutePath, '--text', finalization_text]
+            append_cmd.execute().waitFor(30, java.util.concurrent.TimeUnit.SECONDS)
+        } catch (Exception e) { /* non-critical */ }
+    }
+
+    // Register the l2 log.parquet in the HTML archive
+    def procedure_html = new File("${workflow.launchDir}/${params.output_dir}/.bin", "${params.project_name}_results.html")
+    if (procedure_html.exists() && log_file.exists()) {
+        try {
+            def add_log_cmd = [params.python_exe, '-u',
+                "${workflow.launchDir}/${params.toolbox_dir}/utils/interactive_plotter.py",
+                'add-log', procedure_html.absolutePath, l2_name, log_file.absolutePath, 'Group Log']
+            add_log_cmd.execute().waitFor(30, java.util.concurrent.TimeUnit.SECONDS)
+        } catch (Exception e) { /* non-critical */ }
+    }
+
+    try {
+        pipeline_log.parentFile?.mkdirs()
+        if (!pipeline_log.exists()) pipeline_log.text = ""
+        pipeline_log.append("\n=== ${l2_name} finalized: ${timestamp} ===\nFiles: ${files.size()}\n\n")
+    } catch (Exception e) { /* .bin/ may not exist yet on NAS */ }
+
+    git_lock.lock()
+    try {
+        def l2_full = l2_dir.getAbsoluteFile()
+        def git_root = l2_full
+        while (git_root != null && !new File(git_root, ".git").exists()) {
+            git_root = git_root.getParentFile()
+        }
+        if (!git_root) return
+
+        def l2_path  = git_root.toPath().relativize(l2_full.toPath()).toString().replace('\\', '/')
+        def bin_full = new File("${workflow.launchDir}/${params.output_dir}/.bin").getAbsoluteFile()
+        def meta_full = new File(bin_full, "${params.project_name}_meta.json")
+        def html_full = new File(bin_full, "${params.project_name}_results.html")
+
+        def runGit = { cmd, timeout = 10 ->
+            try {
+                def env = ["GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=echo", "SSH_ASKPASS=echo"]
+                def proc = cmd.execute(env, git_root)
+                def out = new StringBuilder(); def err = new StringBuilder()
+                def reader = Thread.start { proc.waitForProcessOutput(out, err) }
+                reader.join(timeout * 1000L)
+                if (reader.isAlive()) { proc.destroy(); reader.join(2000L); return [exit: -1, out: "timeout"] }
+                out.append(err)
+                return [exit: proc.exitValue(), out: out.toString()]
+            } catch (Exception e) { return [exit: -1, out: e.message] }
+        }
+
+        def addPaths = [l2_path]
+        if (meta_full.exists()) addPaths << git_root.toPath().relativize(meta_full.toPath()).toString().replace('\\', '/')
+        if (html_full.exists()) addPaths << git_root.toPath().relativize(html_full.toPath()).toString().replace('\\', '/')
+
+        def logMsg = { msg -> try { pipeline_log.append(msg) } catch (Exception ignored) {} }
+
+        def add = runGit(["git", "add", "-A"] + addPaths, 120)
+        if (add.exit == 0) {
+            def status = runGit(["git", "status", "--porcelain", "--cached"] + addPaths, 15)
+            if (status.out?.trim()) {
+                def commit = runGit(["git", "commit", "-m", "autosync: ${l2_name} completed"], 30)
+                if (commit.exit == 0) {
+                    runGit(["git", "pull", "--rebase", "--autostash"], 60)
+                    def push = runGit(["git", "push"], 60)
+                    logMsg("Git sync ${l2_name}: ${push.exit == 0 ? 'pushed' : 'push failed'}\n${push.out}\n")
+                } else {
+                    logMsg("Git sync ${l2_name}: nothing to commit\n")
+                    runGit(["git", "pull", "--rebase", "--autostash"], 60)
+                    runGit(["git", "push"], 60)
                 }
-                
-                Thread.sleep(2000)
-                
-                def timestamp = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
-                def log_file = new File("${workflow.launchDir}/${folder}/${pid}.log")
-                def start_time = log_file.exists() ? new Date(log_file.lastModified()) : new Date()
-                def duration = (new Date().time - start_time.time) / 1000
-                
-                // Write finalization to participant log
-                log_file?.append("\n=== Analysis completed for ${pid}: ${timestamp} ===\n")
-                log_file?.append("Modules completed: ${files.size()}\n")
-                log_file?.append("Session: ${workflow.sessionId}\n")
-                log_file?.append("Duration: ${duration}s\n")
-                log_file?.append("\n=== ${pid} finalized: ${timestamp} ===\n\n")
-                
-                // Write finalization to central pipeline log (inside .bin/)
-                def pipeline_log = new File("${workflow.launchDir}/${params.output_dir}/.bin", "${params.project_name}.log")
-                pipeline_log.parentFile?.mkdirs()
-                if (!pipeline_log.exists()) {
-                    try { pipeline_log.text = "" } catch (Exception e) { /* ignore race */ }
-                }
+            } else {
+                logMsg("Git sync ${l2_name}: no changes\n")
+            }
+        } else {
+            logMsg("Git sync ${l2_name}: git add failed\n${add.out}\n")
+        }
+    } finally {
+        git_lock.unlock()
+    }
+}
 
-                // Add participant log + global EV.log to interactive HTML archive
-                // HTML lives in .bin/ subfolder, not at the output_dir root
-                def procedure_html = new File("${workflow.launchDir}/${params.output_dir}/.bin", "${params.project_name}_results.html")
-                if (procedure_html.exists() && log_file.exists()) {
-                    try {
-                        def add_log_cmd = [params.python_exe, '-u',
-                            "${workflow.launchDir}/${params.toolbox_dir}/utils/interactive_plotter.py",
-                            'add-log', procedure_html.absolutePath, pid, log_file.absolutePath, 'Pipeline Log']
-                        def proc = add_log_cmd.execute()
-                        proc.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)
-                        if (proc.exitValue() != 0) {
-                            pipeline_log.append("Warning: Failed to add ${pid} log to HTML archive\n")
-                        }
-                    } catch (Exception e) {
-                        pipeline_log.append("Warning: Failed to add ${pid} log to HTML archive: ${e.message}\n")
-                    }
-                }
-                // Delete the per-participant log — it is now embedded in the HTML archive
-                if (log_file.exists()) {
-                    log_file.delete()
-                }
+// Finalization workflow for group-level (l2) outputs.
+// Pass all l2 process output channels mixed together; .collect() waits for all of them.
+workflow finalize_l2 {
+    take:
+        l2_outputs
 
-                pipeline_log.append("\n=== Analysis completed for ${pid}: ${timestamp} ===\n")
-                pipeline_log.append("Modules completed: ${files.size()}\n")
-                pipeline_log.append("Session: ${workflow.sessionId}\n")
-                pipeline_log.append("Duration: ${duration}s\n")
-                pipeline_log.append("\n=== ${pid} finalized: ${timestamp} ===\n\n")
-                
-                // Git sync
-                git_lock.lock()
-                try {
-                    def results_full_path = new File("${workflow.launchDir}/${folder}").getAbsoluteFile()
-                    def git_root = results_full_path
-                    while (git_root != null && !new File(git_root, ".git").exists()) {
-                        git_root = git_root.getParentFile()
-                    }
-                    if (!git_root) return
-
-                    // output_dir is now flat — HTML and plots/ live alongside results files
-                    def relative_path     = git_root.toPath().relativize(results_full_path.toPath()).toString().replace('\\', '/')
-                    def pipeline_log_path = git_root.toPath().relativize(pipeline_log.toPath()).toString().replace('\\', '/')
-                    // HTML and meta.json sit at the output_dir root (parent of participant subfolder)
-                    def output_root_full  = results_full_path.parentFile
-                    def bin_full          = new File(output_root_full, ".bin")
-                    def html_full         = new File(bin_full, "${params.project_name}_results.html")
-                    def meta_full         = new File(bin_full, "${params.project_name}_meta.json")
-                    def html_path         = html_full.exists()  ? git_root.toPath().relativize(html_full.toPath()).toString().replace('\\', '/') : null
-                    def meta_path         = meta_full.exists()  ? git_root.toPath().relativize(meta_full.toPath()).toString().replace('\\', '/') : null
-                    
-                    def runGit = { cmd, timeout = 10 ->
-                        try {
-                            def env = ["GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=echo", "SSH_ASKPASS=echo"]
-                            def proc = cmd.execute(env, git_root)
-                            def out = new StringBuilder()
-                            proc.consumeProcessOutput(out, out)
-                            def done = proc.waitFor(timeout, java.util.concurrent.TimeUnit.SECONDS)
-                            if (!done) { proc.destroy(); return [exit: -1, out: "timeout"] }
-                            return [exit: proc.exitValue(), out: out.toString()]
-                        } catch (Exception e) {
-                            return [exit: -1, out: e.message]
-                        }
-                    }
-                    
-                    def cleanupRebase = {
-                        runGit(["git", "rebase", "--abort"], 2)
-                        new File(git_root, ".git/rebase-merge").with { if (exists()) deleteDir() }
-                        new File(git_root, ".git/rebase-apply").with { if (exists()) deleteDir() }
-                    }
-                    
-                    def logSync = { status, details = "" ->
-                        try {
-                            def ts = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
-                            pipeline_log.append("\n=== Git sync for ${pid}: ${ts} ===\n")
-                            pipeline_log.append("Path: ${relative_path}\n")
-                            pipeline_log.append("Status: ${status}\n")
-                            if (details) pipeline_log.append("${details}\n")
-                            pipeline_log.append("=== ${pid} sync complete ===\n\n")
-                        } catch (Exception e) { /* non-critical — log write failed, ignore */ }
-                    }
-                    
-                    cleanupRebase()
-
-                    // --- Commit 1: participant subfolder + shared HTML + meta.json (only if changed) ---
-                    // NOTE: we add first, then check the staging area — NOT the working tree.
-                    // git status --porcelain -uno skips untracked files, which breaks the first
-                    // run after switching from PDF plots to parquet sidecars (all new, untracked).
-                    def addPaths = [relative_path]
-                    if (html_path) addPaths << html_path
-                    if (meta_path) addPaths << meta_path
-
-                    // -A stages additions, modifications AND deletions of tracked files.
-                    // Plain 'git add' skips deletions, which breaks after per-participant logs
-                    // are deleted (they were tracked in older pipeline runs).
-                    def add = runGit(["git", "add", "-A"] + addPaths, 30)
-                    if (add.exit != 0) {
-                        runGit(["git", "reset", "HEAD"], 5)
-                        logSync("Git add failed", add.out)
-                    } else {
-                        // --cached checks the index (what was just staged), not the working tree
-                        def status_participant = runGit(["git", "status", "--porcelain", "--cached"] + addPaths, 5)
-                        def hasParticipantChanges = status_participant.out?.trim()
-                        if (hasParticipantChanges) {
-                            def commit = runGit(["git", "commit", "-m", "autosync: ${pid} completed"], 10)
-                            if (commit.exit == 0) {
-                                def pull = runGit(["git", "pull", "--rebase", "--autostash"], 20)
-                                if (pull.exit != 0) {
-                                    cleanupRebase()
-                                    runGit(["git", "reset", "--hard", "HEAD"], 5)
-                                    logSync("Git pull failed", pull.out)
-                                } else {
-                                    def push = runGit(["git", "push"], 20)
-                                    logSync(push.exit == 0 ? "Participant synced" : "Push failed (committed locally)", push.out)
-                                }
-                            } else {
-                                logSync("No participant changes to commit", commit.out)
-                                runGit(["git", "pull", "--rebase", "--autostash"], 10)
-                                runGit(["git", "push"], 10)
-                            }
-                        } else {
-                            logSync("No participant changes")
-                        }
-                    }
-
-                    // --- Commit 2: convert ${params.project_name}.log → parquet, delete text file, sync parquet ---
-                    def pipeline_log_parquet      = new File(pipeline_log.parentFile, "${params.project_name}.log.parquet")
-                    def pipeline_log_parquet_path = git_root.toPath().relativize(pipeline_log_parquet.toPath()).toString().replace('\\', '/')
-                    if (procedure_html.exists() && pipeline_log.exists()) {
-                        try {
-                            def add_global_cmd = [params.python_exe, '-u',
-                                "${workflow.launchDir}/${params.toolbox_dir}/utils/interactive_plotter.py",
-                                'add-log', procedure_html.absolutePath, 'global', pipeline_log.absolutePath, "${params.project_name}.log"]
-                            def proc2 = add_global_cmd.execute()
-                            def finished = proc2.waitFor(60, java.util.concurrent.TimeUnit.SECONDS)
-                            if (finished && proc2.exitValue() == 0) {
-                                pipeline_log.delete()
-                            }
-                        } catch (Exception e) { /* non-critical */ }
-                    }
-                    // Decide what to sync — resolve AFTER conversion so .exists() reflects the actual outcome
-                    def analysis_dir      = new File("${workflow.launchDir}").getAbsoluteFile()
-                    def analysis_dir_path = git_root.toPath().relativize(analysis_dir.toPath()).toString().replace('\\', '/')
-                    def logSyncPath       = pipeline_log_parquet.exists() ? pipeline_log_parquet_path : pipeline_log_path
-                    def addLog = runGit(["git", "add", "-A", logSyncPath, analysis_dir_path], 30)
-                    if (addLog.exit == 0) {
-                        def commitLog = runGit(["git", "commit", "-m", "${params.project_name}.log: ${pid} complete"], 5)
-                        if (commitLog.exit == 0) {
-                            runGit(["git", "pull", "--rebase"], 10)
-                            runGit(["git", "push"], 10)
-                        }
-                    }
-                    
-                } finally {
-                    git_lock.unlock()
-                }
-
-
+    main:
+        l2_outputs
+            .collect()
+            .subscribe { files ->
+                finalizeL2(files)
             }
 }
 
@@ -363,6 +488,7 @@ process IOInterface {
     
     // Format additional args: smart split that preserves bracketed/braced structures
     def extraArgs = ""
+    def isGroupLog = false
     if (extraParams && extraParams.toString().trim() != "") {
         def paramStr = extraParams.toString().trim()
         
@@ -402,9 +528,35 @@ process IOInterface {
             args.add(currentArg.toString())
         }
         
+        // Strip group_log token — signals group-level context; not forwarded to the underlying script
+        isGroupLog = args.remove('group_log')
         extraArgs = args.collect { "'${escapeArg(it)}'" }.join(' ')
     }
     
+    // L1/L2 naming follows FSL/SPM convention:
+    //   l1 = first-level (per-participant), l2 = second-level (group/cross-participant)
+    // Group folder is derived as {project_name}_l2 — created on-demand when a group-level process runs.
+    def groupFolderName = "${params.project_name}_l2"
+    def groupDir        = "${workflow.launchDir}/${params.output_dir}/${groupFolderName}"
+    def groupLogFile    = "${groupDir}/${groupFolderName}.log.parquet"
+
+    // Resolve log and context-directory paths:
+    // Groovy params are interpolated now; \${PARTICIPANT_ID} stays as a bash variable reference
+    // Logs are written directly as .log.parquet (live, readable by the HTML viewer during the run).
+    def logFilePath    = isGroupLog
+        ? groupLogFile
+        : "${workflow.launchDir}/${params.output_dir}/${params.project_name}_l1/\${PARTICIPANT_ID}/\${PARTICIPANT_ID}.log.parquet"
+    def contextDirPath = isGroupLog
+        ? groupDir
+        : "${workflow.launchDir}/${params.output_dir}/${params.project_name}_l1/\${PARTICIPANT_ID}"
+    // plots/ subfolder mirrors the structure of participant folders (log.parquet sibling to plots/)
+    def contextPlotDir = isGroupLog
+        ? "${groupDir}/plots"
+        : "${workflow.launchDir}/${params.output_dir}/${params.project_name}_l1/\${PARTICIPANT_ID}/plots"
+    def contextCondition = isGroupLog ? "true" : "[ -n \"\$PARTICIPANT_ID\" ]"
+    // Path to the live parquet log writer utility
+    def logWriter = "${workflow.launchDir}/${params.toolbox_dir}/utils/log_to_parquet.py"
+
     // Extract script name for logging
     def scriptName = script.toString().tokenize('/').last().replace('.py', '')
     
@@ -415,46 +567,83 @@ process IOInterface {
     INPUT_FILE=\$(basename "${inputArgs}" | sed "s/'//g")
     PARTICIPANT_ID=\$(echo "\$INPUT_FILE" | grep -oE '^[A-Za-z]+_[0-9]+' | head -1)
     
-    # Run processing with logging
-    if [ -n "\$PARTICIPANT_ID" ]; then
-        LOG_FILE="${workflow.launchDir}/${params.output_dir}/\${PARTICIPANT_ID}/\${PARTICIPANT_ID}.log"
+    # Logs are written directly as .log.parquet so the HTML viewer can read them live
+    # during the run — no text .log file, no end-of-run conversion.
+    LOG_FILE="${logFilePath}"
+    CONTEXT_DIR="${contextDirPath}"
+    CONTEXT_PLOT_DIR="${contextPlotDir}"
+
+    if ${contextCondition}; then
+        mkdir -p "\$CONTEXT_DIR" "\$CONTEXT_PLOT_DIR"
+
+        # Initialize log on first use (write parquet header)
+        if [ ! -f "\$LOG_FILE" ]; then
+            INIT_TMP=\$(mktemp)
+            printf "=== ${params.project_name} log: %s ===\\nWorkflow: ${workflow.projectDir}\\nSession:  ${workflow.sessionId}\\nOutput:   %s\\n\\n" \
+                "\$(date '+%Y-%m-%d %H:%M:%S')" "\$CONTEXT_DIR" > "\$INIT_TMP"
+            ${env_exe} -u "${logWriter}" "\$LOG_FILE" "\$INIT_TMP"
+            rm -f "\$INIT_TMP"
+        fi
+
         TEMP_OUT=\$(mktemp)
+        export VIS_LABEL_MAP='${params.vis_label_map}'
         ${env_exe} -u "${workflow.launchDir}/${script}" ${inputArgs} ${extraArgs} 2>&1 | tee "\$TEMP_OUT"
         EXIT_CODE=\${PIPESTATUS[0]}
-        
-        # Add timestamp to each line before appending to log
+
+        # Prepend timestamps to each output line, then append to .log.parquet live
+        STAMPED_TMP=\$(mktemp)
         while IFS= read -r line; do
-            echo "\$(date '+%Y-%m-%d %H:%M:%S') \$line" >> "\$LOG_FILE"
-        done < "\$TEMP_OUT"
-        rm -f "\$TEMP_OUT"
-        
+            printf "%s %s\\n" "\$(date '+%Y-%m-%d %H:%M:%S')" "\$line"
+        done < "\$TEMP_OUT" > "\$STAMPED_TMP"
+        ${env_exe} -u "${logWriter}" "\$LOG_FILE" "\$STAMPED_TMP"
+        rm -f "\$TEMP_OUT" "\$STAMPED_TMP"
+
         if [ \$EXIT_CODE -ne 0 ]; then
-            echo "" >> "\$LOG_FILE"
-            echo "\$(date '+%Y-%m-%d %H:%M:%S') [ERROR] ${scriptName} exit code \$EXIT_CODE" >> "\$LOG_FILE"
+            ERR_TMP=\$(mktemp)
+            printf "\\n%s [ERROR] ${scriptName} exit code %d\\n" "\$(date '+%Y-%m-%d %H:%M:%S')" \$EXIT_CODE > "\$ERR_TMP"
+            ${env_exe} -u "${logWriter}" "\$LOG_FILE" "\$ERR_TMP"
+            rm -f "\$ERR_TMP"
             exit \$EXIT_CODE
         fi
-        
+
         # Auto-plot any *_vis.parquet files generated by this process (interactive HTML for QC)
         for VIS_FILE in *_vis.parquet; do
             if [ -f "\$VIS_FILE" ]; then
                 PREFIX=\$(basename "\$VIS_FILE" _vis.parquet)
-                # Create directory first, then resolve absolute path
                 mkdir -p "${workflow.launchDir}/${params.output_dir}"
                 PROCEDURE_FOLDER="\$(cd "${workflow.launchDir}/${params.output_dir}" && pwd)"
-                # PDFs land in the participant subfolder
-                PARTICIPANT_DIR="${workflow.launchDir}/${params.output_dir}/\${PARTICIPANT_ID}"
-                mkdir -p "\${PARTICIPANT_DIR}"
                 PROJECT_NAME="${params.project_name}"
-                echo "\$(date '+%Y-%m-%d %H:%M:%S') [autoplot] Creating interactive plot \$VIS_FILE -> \$PROCEDURE_FOLDER/\${PROJECT_NAME}_results.html" >> "\$LOG_FILE"
-                # Use interactive plotter for procedure visualization (project-level HTML)
-                ${env_exe} -u "${workflow.launchDir}/${params.interactive_plotter_script}" "\$VIS_FILE" "\$PROCEDURE_FOLDER" "\$PREFIX" "\$PROJECT_NAME" 2>&1 | while IFS= read -r line; do
-                    echo "\$(date '+%Y-%m-%d %H:%M:%S') \$line" >> "\$LOG_FILE"
-                done
-                # Remove vis file so it doesn't get passed to next stage
-                rm -f "\$VIS_FILE"
+                PLOT_TMP=\$(mktemp)
+                printf "%s [autoplot] %s -> %s/%s_results.html\\n" \
+                    "\$(date '+%Y-%m-%d %H:%M:%S')" "\$VIS_FILE" "\$PROCEDURE_FOLDER" "\$PROJECT_NAME" > "\$PLOT_TMP"
+                ${env_exe} -u "${logWriter}" "\$LOG_FILE" "\$PLOT_TMP"
+                rm -f "\$PLOT_TMP"
+                VIS_TMP=\$(mktemp)
+                # Pass CONTEXT_PLOT_DIR as sidecar_dir so plots land inside EV_l1/<pid>/plots/
+                # instead of the results root (which would create stray root participant folders).
+                ${env_exe} -u "${workflow.launchDir}/${params.interactive_plotter_script}" "\$VIS_FILE" "\$PROCEDURE_FOLDER" "\$PREFIX" "\$PROJECT_NAME" "\$CONTEXT_PLOT_DIR" 2>&1 | \
+                    while IFS= read -r line; do printf "%s %s\\n" "\$(date '+%Y-%m-%d %H:%M:%S')" "\$line"; done > "\$VIS_TMP"
+                ${env_exe} -u "${logWriter}" "\$LOG_FILE" "\$VIS_TMP"
+                rm -f "\$VIS_TMP" "\$VIS_FILE"
             fi
         done
-        
+
+        # Copy output parquets to the context plots/ folder.
+        # l1 processes: all *.parquet outputs; l2 processes: only *condprof* outputs.
+        # (publishDir cannot match aliased process names, so we handle publishing here.)
+        IS_GROUP="${isGroupLog ? 'true' : 'false'}"
+        for OUT_FILE in *.parquet; do
+            [ -f "\$OUT_FILE" ] || continue
+            if [ "\$IS_GROUP" = "true" ] && [[ "\$OUT_FILE" != *condprof* ]]; then
+                continue
+            fi
+            cp "\$OUT_FILE" "\$CONTEXT_PLOT_DIR/\$OUT_FILE"
+            PUB_TMP=\$(mktemp)
+            printf "%s [publish] %s -> %s\\n" "\$(date '+%Y-%m-%d %H:%M:%S')" "\$OUT_FILE" "\$CONTEXT_PLOT_DIR" > "\$PUB_TMP"
+            ${env_exe} -u "${logWriter}" "\$LOG_FILE" "\$PUB_TMP"
+            rm -f "\$PUB_TMP"
+        done
+
         exit 0
     else
         ${env_exe} -u "${workflow.launchDir}/${script}" ${inputArgs} ${extraArgs}

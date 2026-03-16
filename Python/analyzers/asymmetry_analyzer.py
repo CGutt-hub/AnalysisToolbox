@@ -155,9 +155,11 @@ def compute_asymmetry(ip: str, pairs: list[tuple[str,str]], mode: str = 'log',
             
             # Average asymmetry across all pairs for condition-level comparison
             # This allows proper concatenation where x_data = condition names (NEG/NEU/POS)
-            avg_asym = float(np.mean(asym_vals)) if asym_vals else 0.0
+            # Use NaN when no pairs could be computed (missing electrode) so the
+            # downstream plot renders no bar instead of a misleading zero.
+            avg_asym = float(np.mean(asym_vals)) if asym_vals else float('nan')
             # Propagate uncertainty: SE of mean = sqrt(sum(SE^2))/n
-            avg_sem = float(np.sqrt(sum(s**2 for s in asym_sems)) / len(asym_sems)) if asym_sems else 0.0
+            avg_sem = float(np.sqrt(sum(s**2 for s in asym_sems)) / len(asym_sems)) if asym_sems else float('nan')
             
             print(f"[asymmetry] Averaged {len(pairs)} pairs: {avg_asym:.3f} ± {avg_sem:.3f}")
             

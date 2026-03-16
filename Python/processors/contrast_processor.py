@@ -42,18 +42,26 @@ def contrast_process(ip: str, contrasts_str: str, output_suffix: str = 'contrast
                 'tvalue': contrast_t
             })
     
-    result_df = pl.DataFrame(results)
     base, out_file = os.path.splitext(os.path.basename(ip))[0], f"{os.path.splitext(os.path.basename(ip))[0]}_{output_suffix}.parquet"
+    if not results:
+        print(f"[contrast] No results (empty input) — writing empty output: {out_file}")
+        pl.DataFrame(schema={'channel': pl.Utf8, 'contrast': pl.Utf8, 'value': pl.Float64,
+                             'se': pl.Float64, 'tvalue': pl.Float64}).write_parquet(out_file, compression='snappy')
+        pl.DataFrame({'x_data': [[]], 'y_data': [[]], 'y_var': [[]], 'plot_type': ['grid'],
+                      'labels': [[]], 'x_label': ['Channel'], 'y_label': ['Contrast Value']
+                     }).write_parquet(out_file.replace('.parquet', '_vis.parquet'), compression='snappy')
+        return out_file
+    result_df = pl.DataFrame(results)
     result_df.write_parquet(out_file, compression='snappy')
     
     # Generate inline visualization - bar plot of contrast values per channel
-    contrasts = result_df['contrast'].unique().to_list()
+    contrast_names = result_df['contrast'].unique().to_list()
     vis_df = pl.DataFrame({
         'x_data': [result_df['channel'].to_list()],
-        'y_data': [[result_df.filter(pl.col('contrast') == c)['value'].to_list() for c in contrasts]],
-        'y_var': [[result_df.filter(pl.col('contrast') == c)['se'].to_list() for c in contrasts]],
+        'y_data': [[result_df.filter(pl.col('contrast') == c)['value'].to_list() for c in contrast_names]],
+        'y_var': [[result_df.filter(pl.col('contrast') == c)['se'].to_list() for c in contrast_names]],
         'plot_type': ['grid'],
-        'labels': [contrasts],
+        'labels': [contrast_names],
         'x_label': ['Channel'],
         'y_label': ['Contrast Value']
     })

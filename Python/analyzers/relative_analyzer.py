@@ -5,7 +5,7 @@ def log_info(msg): print(f"[relative] INFO: {msg}")
 def log_warning(msg): print(f"[relative] WARNING: {msg}")
 def log_error(msg): print(f"[relative] ERROR: {msg}")
 
-def relative_normalize(ip: str, baseline_cond: str = 'NEU', y_lim: float | None = None) -> str:
+def relative_normalize(ip: str, baseline_cond: str | None = None, y_lim: float | None = None) -> str:
     """Convert concatenated analyzer output to relative change from baseline condition.
     
     Takes output from concatenating_processor which has structure:
@@ -14,11 +14,11 @@ def relative_normalize(ip: str, baseline_cond: str = 'NEU', y_lim: float | None 
     - y_var: list of lists, one per condition (errors/variance)
     
     Converts to relative change (baseline-subtracted) from baseline condition.
-    The baseline condition (NEU) is removed from output since it would be zero.
+    The baseline condition is removed from output since it would be zero.
     
     Args:
         ip: Input parquet file from concatenating_processor
-        baseline_cond: Condition to use as baseline (default: 'NEU')
+        baseline_cond: Condition to use as baseline (first condition if omitted)
         y_lim: Optional Y-axis maximum limit for consistent scaling of relative plots
     
     Output: Parquet with same structure, y_data as relative change from baseline
@@ -33,11 +33,16 @@ def relative_normalize(ip: str, baseline_cond: str = 'NEU', y_lim: float | None 
         log_error(f"No 'labels' field found. Columns: {df.columns}")
         sys.exit(1)
     
-    baseline_idx = next((i for i, l in enumerate(labels) if l == baseline_cond), None)
-    if baseline_idx is None:
-        log_warning(f"Baseline '{baseline_cond}' not found in {labels}, using first condition")
+    if baseline_cond is None:
+        log_info(f"No baseline specified, using first condition: '{labels[0]}'")
         baseline_idx = 0
         baseline_cond = labels[0]
+    else:
+        baseline_idx = next((i for i, l in enumerate(labels) if l == baseline_cond), None)
+        if baseline_idx is None:
+            log_warning(f"Baseline '{baseline_cond}' not found in {labels}, using first condition")
+            baseline_idx = 0
+            baseline_cond = labels[0]
     
     # Get baseline values
     y_data = row.get('y_data', [])
@@ -111,7 +116,7 @@ def relative_normalize(ip: str, baseline_cond: str = 'NEU', y_lim: float | None 
 if __name__ == '__main__':
     (lambda a: relative_normalize(
         a[1], 
-        a[2] if len(a) > 2 and a[2] else 'NEU',
+        a[2] if len(a) > 2 and a[2] else None,
         float(a[3]) if len(a) > 3 and a[3] and a[3].lower() != 'none' else None
     ) if len(a) >= 2 else (
         print('Convert values to relative change from baseline condition. Plot-ready output.'),

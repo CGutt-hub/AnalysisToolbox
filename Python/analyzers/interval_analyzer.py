@@ -84,7 +84,14 @@ def analyze_intervals(ip: str, event_col: str | None = None, y_lim: float | None
                 continue
             
             # Calculate inter-event intervals in milliseconds
-            intervals = np.diff(events) / sfreq * 1000.0
+            # Prefer the time column (absolute timestamps in seconds) over sample indices:
+            # peak_sample indices are into the post-rejection array and are non-contiguous,
+            # so np.diff(peak_sample) gives near-zero deltas across rejection gaps.
+            if 'time' in epoch_df.columns and event_col != 'time':
+                time_events = epoch_df.filter(pl.col('epoch_id') == eid).sort(event_col)['time'].to_numpy()
+                intervals = np.diff(time_events) * 1000.0  # seconds → ms
+            else:
+                intervals = np.diff(events) / sfreq * 1000.0  # samples → ms
             
             if len(intervals) < 2:
                 continue
