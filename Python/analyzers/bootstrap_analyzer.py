@@ -10,8 +10,7 @@ def log_error(msg): print(f"[bootstrap] ERROR: {msg}")
 def bootstrap_analyze(ip: str, group_col: str = 'condition', sample_col: str | None = None,
                      value_col: str | None = None, n_boot: int = 10000, 
                      ci_method: str = 'percentile', alpha: float = 0.05,
-                     y_lim: float | None = None, y_label: str = 'Mean', 
-                     suffix: str = 'bootstrap') -> str:
+                     y_lim: float | None = None, y_label: str = 'Mean') -> str:
     """Generic bootstrap resampling: compute CIs by resampling within groups.
     
     Flexible grouping: Works on any data structure with grouping levels.
@@ -29,11 +28,11 @@ def bootstrap_analyze(ip: str, group_col: str = 'condition', sample_col: str | N
         alpha: Significance level (default 0.05 for 95% CI)
         y_lim: Y-axis limit for plots
         y_label: Y-axis label
-        suffix: Output file suffix
     
     Returns:
         Path to signal file
     """
+    suffix = 'bs'
     print(f"[bootstrap] Bootstrap: {ip}, group={group_col}, n={n_boot}, method={ci_method}")
     df = pl.read_parquet(ip)
     
@@ -186,10 +185,9 @@ if __name__ == '__main__':
                                  a[6] if len(a) > 6 and a[6] != 'None' else 'percentile',
                                  float(a[7]) if len(a) > 7 and a[7] != 'None' else 0.05,
                                  float(a[8]) if len(a) > 8 and a[8] != 'None' else None,
-                                 a[9] if len(a) > 9 else 'Mean',
-                                 a[10] if len(a) > 10 else 'bootstrap') if len(a) >= 2 else (
+                                 a[9] if len(a) > 9 else 'Mean') if len(a) >= 2 else (
         print('Bootstrap resampling for robust confidence intervals on grouped data.'),
-        print('[bootstrap] Usage: python bootstrap_analyzer.py <input.parquet> [group_col] [sample_col] [value_col] [n_boot] [ci_method] [alpha] [y_lim] [y_label] [suffix]'),
+        print('[bootstrap] Usage: python bootstrap_analyzer.py <input.parquet> [group_col] [sample_col] [value_col] [n_boot] [ci_method] [alpha] [y_lim] [y_label]'),
         print('[bootstrap] ci_method: percentile (default), bca, normal'),
-        print('[bootstrap] Example: python bootstrap_analyzer.py eda_epochs.parquet condition epoch_id EDA 10000 percentile 0.05 None "EDA (μS)" bootstrap'),
+        print('[bootstrap] Example: python bootstrap_analyzer.py eda_epochs.parquet condition epoch_id EDA 10000 percentile 0.05 None "EDA (μS)"'),
         sys.exit(1)))(sys.argv)

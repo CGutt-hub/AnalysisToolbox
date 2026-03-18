@@ -6,7 +6,7 @@ def log_warning(msg): print(f"[group] WARNING: {msg}")
 def log_error(msg): print(f"[group] ERROR: {msg}")
 
 def analyze_groups(ip: str, groups_config: str, y_lim: float | None = None, 
-                   x_label: str = 'Group', y_label: str = 'Mean', suffix: str = 'grp',
+                   x_label: str = 'Group', y_label: str = 'Mean',
                    baseline_sec: float = 2.0) -> str:
     """
     Aggregate channels by groups and compute group-level statistics per condition.
@@ -20,12 +20,12 @@ def analyze_groups(ip: str, groups_config: str, y_lim: float | None = None,
         y_lim: Optional Y-axis limit (symmetric around zero)
         x_label: Label for x-axis (e.g., 'ROI', 'Region', 'Group')
         y_label: Label for y-axis (e.g., 'Mean Value', 'Amplitude')
-        suffix: Output file suffix (default 'grp')
         baseline_sec: Seconds at epoch start for baseline correction (default 2.0)
     
     Returns:
         Path to signal file
     """
+    suffix = 'hbc'
     print(f"[group] Group analysis: {ip}")
     
     # Parse groups config
@@ -207,10 +207,9 @@ if __name__ == '__main__':
                                float(a[3]) if len(a) > 3 and a[3] and a[3] != 'None' else None,
                                a[4] if len(a) > 4 else 'Group',
                                a[5] if len(a) > 5 else 'Mean',
-                               a[6] if len(a) > 6 else 'grp',
-                               float(a[7]) if len(a) > 7 and a[7] and a[7] != 'None' else 2.0) if len(a) >= 3 else (
+                               float(a[6]) if len(a) > 6 and a[6] and a[6] != 'None' else 2.0) if len(a) >= 3 else (
         print('Aggregate channels by groups per condition. Plot-ready output with baseline correction.'),
-        print('[group] Usage: python group_analyzer.py <epoched.parquet> <groups_json> [y_lim] [x_label] [y_label] [suffix] [baseline_sec]'),
+        print('[group] Usage: python group_analyzer.py <epoched.parquet> <groups_json> [y_lim] [x_label] [y_label] [baseline_sec]'),
         print('[group] Channel patterns: exact match, glob (*, ?, []), or regex (re:pattern)'),
         print('[group] Example: python group_analyzer.py data.parquet \'{"Left": ["re:^[12]-"], "Right": ["re:^[34]-"]}\''),
         sys.exit(1)))(sys.argv)

@@ -34,7 +34,8 @@ def log_warning(msg): print(f"[condition_profile] WARNING: {msg}")
 def log_error(msg):   print(f"[condition_profile] ERROR: {msg}")
 
 
-def condition_profile_process(files: list[str], sources: list[str], output_suffix: str = 'condition_profile') -> str:
+def condition_profile_process(files: list[str], sources: list[str]) -> str:
+    output_suffix = 'condprof'
     if len(files) != len(sources):
         log_error(f"{len(files)} files but {len(sources)} source names — must match")
         sys.exit(1)
@@ -99,21 +100,16 @@ def condition_profile_process(files: list[str], sources: list[str], output_suffi
 
 if __name__ == '__main__':
     args = sys.argv[1:]
-    if len(args) < 4:
+    if len(args) < 4 or len(args) % 2 != 0:
         print(
             '[condition_profile] Pivot OLS betas from multiple sources into a wide condition×signal table.\n'
-            'Usage: condition_profile_processor.py <file1> [file2 ...] <src1> [src2 ...] [suffix]\n'
-            'Files and source names must be the same count.\n'
-            'If total arg count is odd, the last arg is treated as the output suffix.\n'
-            'Example: condition_profile_processor.py eeg_ols.parquet eda_ols.parquet eeg eda condition_profile'
+            'Usage: condition_profile_processor.py <file1> [file2 ...] <src1> [src2 ...]\n'
+            'Files and source names must be the same count (even total args).\n'
+            'Example: condition_profile_processor.py eeg_ols.parquet eda_ols.parquet eeg eda'
         )
         sys.exit(1)
 
-    # Odd arg count → last arg is suffix
-    has_suffix = (len(args) % 2 == 1)
-    suffix = args[-1] if has_suffix else 'condition_profile'
-    core = args[:-1] if has_suffix else args
-    n_each = len(core) // 2
-    files_arg = core[:n_each]
-    srcs_arg = core[n_each:]
-    condition_profile_process(files_arg, srcs_arg, suffix)
+    n_each = len(args) // 2
+    files_arg = args[:n_each]
+    srcs_arg = args[n_each:]
+    condition_profile_process(files_arg, srcs_arg)

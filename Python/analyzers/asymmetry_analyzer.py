@@ -5,7 +5,7 @@ def log_warning(msg): print(f"[asymmetry] WARNING: {msg}")
 def log_error(msg): print(f"[asymmetry] ERROR: {msg}")
 def compute_asymmetry(ip: str, pairs: list[tuple[str,str]], mode: str = 'log', 
                       band: str | None = None, y_lim: float | None = None, 
-                      y_label: str | None = None, suffix: str = 'asym') -> str:
+                      y_label: str | None = None) -> str:
     """Compute asymmetry between paired regions from raw or plot data.
     
     Input: Parquet with region/channel data or plot-formatted data
@@ -18,10 +18,10 @@ def compute_asymmetry(ip: str, pairs: list[tuple[str,str]], mode: str = 'log',
         band: Filter to specific band (for raw PSD data)
         y_lim: Optional Y-axis limit
         y_label: Optional Y-axis label
-        suffix: Output file suffix
     
     Returns: Path to output parquet with plot-ready asymmetry data
     """
+    suffix = 'fai'
     print(f"[asymmetry] Asymmetry analysis: {ip}, pairs={pairs}, mode={mode}")
     
     df = pl.read_parquet(ip)
@@ -299,10 +299,9 @@ if __name__ == '__main__':
                                   a[3] if len(a) > 3 and a[3] not in ('None', '') else 'log',
                                   a[4] if len(a) > 4 and a[4] not in ('None', '') else None,
                                   float(a[5]) if len(a) > 5 and a[5] not in ('None', '') else None,
-                                  a[6] if len(a) > 6 and a[6] not in ('None', '') else None,
-                                  a[7] if len(a) > 7 else 'asym') if len(a) >= 3 else (
+                                  a[6] if len(a) > 6 and a[6] not in ('None', '') else None) if len(a) >= 3 else (
         print('[asymmetry] Compute asymmetry between paired regions.'),
-        print('Usage: asymmetry_analyzer.py <input.parquet> <pairs> [mode] [band] [y_lim] [y_label] [suffix]'),
+        print('Usage: asymmetry_analyzer.py <input.parquet> <pairs> [mode] [band] [y_lim] [y_label]'),
         print('  pairs: Python list, e.g. "[(\'F3\',\'F4\'),(\'F7\',\'F8\')]"'),
         print('  mode: "log" for ln(R)-ln(L) (default), "diff" for R-L'),
         print('  band: Filter to specific band (for PSD data)'),
