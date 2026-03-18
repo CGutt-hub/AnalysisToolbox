@@ -239,6 +239,7 @@ Duration: ${duration}s
             runGit(["git", "rebase", "--abort"], 2)
             new File(git_root, ".git/rebase-merge").with { if (exists()) deleteDir() }
             new File(git_root, ".git/rebase-apply").with { if (exists()) deleteDir() }
+            new File(git_root, ".git/index.lock").with { if (exists()) delete() }
         }
 
         def logSync = { status, details = "" ->
@@ -275,19 +276,17 @@ Duration: ${duration}s
             if (hasParticipantChanges) {
                 def commit = runGit(["git", "commit", "-m", "autosync: ${pid} completed"], 30)
                 if (commit.exit == 0) {
-                    def pull = runGit(["git", "pull", "--rebase", "--autostash"], 60)
+                    def pull = runGit(["git", "pull", "--rebase", "--autostash"], 300)
                     if (pull.exit != 0) {
                         cleanupRebase()
                         runGit(["git", "reset", "--hard", "HEAD"], 10)
                         logSync("Git pull failed", pull.out)
                     } else {
-                        def push = runGit(["git", "push"], 60)
+                        def push = runGit(["git", "push"], 300)
                         logSync(push.exit == 0 ? "Participant synced" : "Push failed (committed locally)", push.out)
                     }
                 } else {
-                    logSync("No participant changes to commit", commit.out)
-                    runGit(["git", "pull", "--rebase", "--autostash"], 30)
-                    runGit(["git", "push"], 60)
+                    logSync("Commit failed", commit.out)
                 }
             } else {
                 logSync("No participant changes")
@@ -314,8 +313,8 @@ Duration: ${duration}s
         if (addLog.exit == 0) {
             def commitLog = runGit(["git", "commit", "-m", "${params.project_name}.log: ${pid} complete"], 30)
             if (commitLog.exit == 0) {
-                runGit(["git", "pull", "--rebase"], 60)
-                runGit(["git", "push"], 60)
+                runGit(["git", "pull", "--rebase"], 300)
+                runGit(["git", "push"], 300)
             }
         }
     } finally {
@@ -424,26 +423,34 @@ Session: ${workflow.sessionId}
 
         def logMsg = { msg -> try { pipeline_log.append(msg) } catch (Exception ignored) {} }
 
+        // Clean up stale git state
+        new File(git_root, ".git/index.lock").with { if (exists()) delete() }
+        new File(git_root, ".git/rebase-merge").with { if (exists()) deleteDir() }
+        new File(git_root, ".git/rebase-apply").with { if (exists()) deleteDir() }
+
         def add = runGit(["git", "add", "-A"] + addPaths, 120)
         if (add.exit == 0) {
             def status = runGit(["git", "status", "--porcelain", "--cached"] + addPaths, 15)
             if (status.out?.trim()) {
                 def commit = runGit(["git", "commit", "-m", "autosync: ${l2_name} completed"], 30)
-                if (commit.exit == 0) {
-                    runGit(["git", "pull", "--rebase", "--autostash"], 60)
-                    def push = runGit(["git", "push"], 60)
-                    logMsg("Git sync ${l2_name}: ${push.exit == 0 ? 'pushed' : 'push failed'}\n${push.out}\n")
-                } else {
-                    logMsg("Git sync ${l2_name}: nothing to commit\n")
-                    runGit(["git", "pull", "--rebase", "--autostash"], 60)
-                    runGit(["git", "push"], 60)
+                if (commit.exit != 0) {
+                    logMsg("Git sync ${l2_name}: commit failed\n${commit.out}\n")
                 }
-            } else {
-                logMsg("Git sync ${l2_name}: no changes\n")
             }
         } else {
             logMsg("Git sync ${l2_name}: git add failed\n${add.out}\n")
         }
+
+        // Push L2 results (participant commits already pushed individually)
+        def pull = runGit(["git", "pull", "--rebase", "--autostash"], 300)
+        if (pull.exit != 0) {
+            new File(git_root, ".git/index.lock").with { if (exists()) delete() }
+            runGit(["git", "rebase", "--abort"], 5)
+            logMsg("Git sync: pull --rebase failed, retrying with merge\n${pull.out}\n")
+            pull = runGit(["git", "pull"], 300)
+        }
+        def push = runGit(["git", "push"], 300)
+        logMsg("Git sync L2 push: ${push.exit == 0 ? 'success' : 'failed'}\n${push.out}\n")
     } finally {
         git_lock.unlock()
     }
