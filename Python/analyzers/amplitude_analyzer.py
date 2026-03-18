@@ -5,7 +5,7 @@ def log_info(msg): print(f"[amplitude] INFO: {msg}")
 def log_warning(msg): print(f"[amplitude] WARNING: {msg}")
 def log_error(msg): print(f"[amplitude] ERROR: {msg}")
 
-def analyze_amplitude(ip: str, method: str = 'peak_baseline', y_lim: float | None = None, y_label: str = 'Amplitude', suffix: str = 'amp') -> str:
+def analyze_amplitude(ip: str, method: str = 'peak_baseline', y_lim: float | None = None, y_label: str = 'Amplitude') -> str:
     """Analyze amplitude per condition: epoch-level or aggregated (mean ± SEM) output.
     Generic amplitude analyzer - works on any signal.
     
@@ -14,13 +14,13 @@ def analyze_amplitude(ip: str, method: str = 'peak_baseline', y_lim: float | Non
         method: 'peak_baseline' (max - baseline), 'mean' (mean amplitude), 'peak' (max amplitude)
         y_lim: Optional Y-axis maximum (None = output epoch-level data for bootstrap)
         y_label: Label for y-axis (e.g., 'Conductance Change (μS)', 'Amplitude (mV)')
-        suffix: Output file suffix (default 'amp', use 'eda' for EDA compatibility)
     
     Returns:
         Path to signal file
     
     Note: If y_lim is None, outputs epoch-level data for bootstrap; else outputs mean ± SEM
     """
+    suffix = 'amp'
     print(f"[amplitude] Amplitude analysis: {ip}, method={method}, mode={'epoch-level' if y_lim is None else 'aggregated'}")
     df = pl.read_parquet(ip)
     
@@ -192,6 +192,5 @@ def analyze_amplitude(ip: str, method: str = 'peak_baseline', y_lim: float | Non
 if __name__ == '__main__':
     (lambda a: analyze_amplitude(a[1], a[2] if len(a) > 2 else 'peak_baseline', 
                                   float(a[3]) if len(a) > 3 and a[3] and a[3] != 'None' else None,
-                                  a[4] if len(a) > 4 else 'Amplitude',
-                                  a[5] if len(a) > 5 else 'amp') if len(a) >= 2 else (
-        print('[amplitude] Compute amplitude metrics (peak_baseline, mean, peak) per condition. Plot-ready output.\nUsage: amplitude_analyzer.py <epochs.parquet> [method=peak_baseline] [y_lim] [y_label] [suffix]'), sys.exit(1)))(sys.argv)
+                                  a[4] if len(a) > 4 else 'Amplitude') if len(a) >= 2 else (
+        print('[amplitude] Compute amplitude metrics (peak_baseline, mean, peak) per condition. Plot-ready output.\nUsage: amplitude_analyzer.py <epochs.parquet> [method=peak_baseline] [y_lim] [y_label]'), sys.exit(1)))(sys.argv)

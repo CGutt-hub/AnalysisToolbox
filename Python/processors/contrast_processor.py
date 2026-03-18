@@ -3,7 +3,7 @@ Input: parquet with [channel, condition, beta, se, ...]
 Output: parquet with [channel, contrast, value, se, tvalue]"""
 import polars as pl, numpy as np, sys, os, ast
 
-def contrast_process(ip: str, contrasts_str: str, output_suffix: str = 'contrast') -> str:
+def contrast_process(ip: str, contrasts_str: str) -> str:
     if not os.path.exists(ip): print(f"[contrast] File not found: {ip}"); sys.exit(1)
     print(f"[contrast] Contrast computation: {ip}")
     df = pl.read_parquet(ip)
@@ -42,7 +42,7 @@ def contrast_process(ip: str, contrasts_str: str, output_suffix: str = 'contrast
                 'tvalue': contrast_t
             })
     
-    base, out_file = os.path.splitext(os.path.basename(ip))[0], f"{os.path.splitext(os.path.basename(ip))[0]}_{output_suffix}.parquet"
+    base, out_file = os.path.splitext(os.path.basename(ip))[0], f"{os.path.splitext(os.path.basename(ip))[0]}_contrast.parquet"
     if not results:
         print(f"[contrast] No results (empty input) — writing empty output: {out_file}")
         pl.DataFrame(schema={'channel': pl.Utf8, 'contrast': pl.Utf8, 'value': pl.Float64,
@@ -51,6 +51,7 @@ def contrast_process(ip: str, contrasts_str: str, output_suffix: str = 'contrast
                       'labels': [[]], 'x_label': ['Channel'], 'y_label': ['Contrast Value']
                      }).write_parquet(out_file.replace('.parquet', '_vis.parquet'), compression='snappy')
         return out_file
+    result_df = pl.DataFrame(results)
     result_df = pl.DataFrame(results)
     result_df.write_parquet(out_file, compression='snappy')
     
@@ -70,4 +71,4 @@ def contrast_process(ip: str, contrasts_str: str, output_suffix: str = 'contrast
     print(f"[contrast] Output: {out_file} ({len(results)} rows)")
     return out_file
 
-if __name__ == '__main__': (lambda a: contrast_process(a[1], a[2], a[3] if len(a) > 3 else 'contrast') if len(a) >= 3 else (print("[contrast] Compute linear contrasts (weighted sums) from OLS betas.\nUsage: contrast_processor.py <ols.parquet> <contrasts_dict> [suffix=contrast]\nExample: contrast_processor.py data_ols.parquet \"{'A-B': {'A': 1, 'B': -1}}\""), sys.exit(1)))(sys.argv)
+if __name__ == '__main__': (lambda a: contrast_process(a[1], a[2]) if len(a) >= 3 else (print("[contrast] Compute linear contrasts (weighted sums) from OLS betas.\nUsage: contrast_processor.py <ols.parquet> <contrasts_dict>\nExample: contrast_processor.py data_ols.parquet \"{'A-B': {'A': 1, 'B': -1}}\""), sys.exit(1)))(sys.argv)

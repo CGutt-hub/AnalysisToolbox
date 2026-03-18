@@ -33,12 +33,12 @@ def _empty(base: str, suffix: str) -> str:
                  ).write_parquet(out.replace('.parquet', '_vis.parquet'), compression='snappy')
     print(f"[ols] Empty output (no upstream data): {out}"); return out
 
-def ols_process(ip: str, output_suffix: str = 'ols') -> str:
+def ols_process(ip: str) -> str:
     if not os.path.exists(ip): print(f"[ols] File not found: {ip}"); sys.exit(1)
     print(f"[ols] OLS regression: {ip}")
     df = _resolve(pl.read_parquet(ip))
     base = os.path.splitext(os.path.basename(ip))[0]
-    if df is None or len(df) == 0: return _empty(base, output_suffix)
+    if df is None or len(df) == 0: return _empty(base, 'ols')
 
     # Numeric cols = channels; non-numeric non-meta cols = grouping dims (e.g. 'region')
     num_cols = [c for c in df.columns if c not in _META and df[c].dtype.is_numeric()]
@@ -69,7 +69,7 @@ def ols_process(ip: str, output_suffix: str = 'ols') -> str:
                                 'pvalue': float(model.pvalues[i]), 'se': float(model.bse[i])})
 
     result_df = pl.DataFrame(results)
-    out_file = f"{base}_{output_suffix}.parquet"
+    out_file = f"{base}_ols.parquet"
     result_df.write_parquet(out_file, compression='snappy')
 
     channels = result_df.filter(pl.col('condition') == conditions[0])['channel'].to_list()
@@ -84,4 +84,4 @@ def ols_process(ip: str, output_suffix: str = 'ols') -> str:
     print(f"[ols] Output: {out_file} ({len(results)} rows)")
     return out_file
 
-if __name__ == '__main__': (lambda a: ols_process(a[1], a[2] if len(a) > 2 else 'ols') if len(a) >= 2 else (print('[ols] Fit OLS regression per channel on epoched data. Outputs condition betas.\nUsage: ols_processor.py <epochs.parquet> [suffix=ols]'), sys.exit(1)))(sys.argv)
+if __name__ == '__main__': (lambda a: ols_process(a[1]) if len(a) >= 2 else (print('[ols] Fit OLS regression per channel on epoched data. Outputs condition betas.\nUsage: ols_processor.py <epochs.parquet>'), sys.exit(1)))(sys.argv)

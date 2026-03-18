@@ -6,7 +6,7 @@ def log_warning(msg): print(f"[interval] WARNING: {msg}")
 def log_error(msg): print(f"[interval] ERROR: {msg}")
 
 def analyze_intervals(ip: str, event_col: str | None = None, y_lim: float | None = None, 
-                      y_label: str = 'Value (ms)', suffix: str = 'interval',
+                      y_label: str = 'Value (ms)',
                       metrics_mode: str = 'auto') -> str:
     """
     Analyze inter-event intervals (SDNN, RMSSD) per condition: epoch-level or aggregated output.
@@ -17,7 +17,6 @@ def analyze_intervals(ip: str, event_col: str | None = None, y_lim: float | None
         event_col: Column containing event samples/times (auto-detected if None)
         y_lim: Optional Y-axis maximum (None = output epoch-level data for bootstrap)
         y_label: Label for y-axis (e.g., 'Value (ms)', 'IBI (ms)')
-        suffix: Output file suffix (default 'interval', use 'hrv' for HRV compatibility)
         metrics_mode: 'auto' (both SDNN+RMSSD), 'SDNN', or 'RMSSD' for single metric
     
     Returns:
@@ -25,6 +24,7 @@ def analyze_intervals(ip: str, event_col: str | None = None, y_lim: float | None
     
     Note: If y_lim is None, outputs epoch-level data for bootstrap; else outputs mean ± SEM
     """
+    suffix = 'intv'
     print(f"[interval] Interval analysis: {ip}, mode={'epoch-level' if y_lim is None else 'aggregated'}")
     df = pl.read_parquet(ip)
     
@@ -205,10 +205,9 @@ if __name__ == '__main__':
                                   a[2] if len(a) > 2 and a[2] and a[2] != 'None' else None,
                                   float(a[3]) if len(a) > 3 and a[3] and a[3] != 'None' else None,
                                   a[4] if len(a) > 4 else 'Value (ms)',
-                                  a[5] if len(a) > 5 else 'interval',
-                                  a[6] if len(a) > 6 else 'auto') if len(a) >= 2 else (
+                                  a[5] if len(a) > 5 else 'auto') if len(a) >= 2 else (
         print('Compute interval statistics (SDNN, RMSSD). Plot-ready output.'),
-        print('[interval] Usage: python interval_analyzer.py <epochs.parquet> [event_col] [y_lim] [y_label] [suffix] [metrics_mode]'),
+        print('[interval] Usage: python interval_analyzer.py <epochs.parquet> [event_col] [y_lim] [y_label] [metrics_mode]'),
         print('[interval] metrics_mode: auto (both SDNN+RMSSD), SDNN, or RMSSD'),
-        print('[interval] Example: python interval_analyzer.py ecg_epochs.parquet R_Peak_Sample None "IBI (ms)" hrv auto'),
+        print('[interval] Example: python interval_analyzer.py ecg_epochs.parquet R_Peak_Sample None "IBI (ms)" RMSSD'),
         sys.exit(1)))(sys.argv)

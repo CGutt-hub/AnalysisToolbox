@@ -19,7 +19,7 @@ def analyze_ica(ip: str, n_components: float = 0.99, y_lim: float | None = None)
     base = os.path.splitext(os.path.basename(ip))[0]
     out_folder = os.path.join(os.getcwd(), f"{base}_ica")
     os.makedirs(out_folder, exist_ok=True)
-    cleaned_fif = os.path.join(out_folder, f"{base}_ica_cleaned.fif")
+    cleaned_fif = os.path.join(out_folder, f"{base}_ica.fif")
     cleaned_raw.save(cleaned_fif, overwrite=True, verbose=False)
     print(f"[ic] Cleaned: {os.path.basename(cleaned_fif)}")
     variance_data = pl.DataFrame({

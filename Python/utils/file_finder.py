@@ -80,13 +80,11 @@ def find_in_subdir(signal_file, pattern):
         print(f"[file_finder] Warning: No files matching '{pattern}' in {folder_path}", file=sys.stderr)
     return matches
 
-def copy_and_output(matches, signal_file, pattern):
+def copy_and_output(matches, signal_file, pattern, append_suffix):
     if not matches:
         # No files found — upstream produced an empty folder (graceful passthrough chain).
-        # Emit a proper signal file with folder_path so downstream modules can still resolve it.
         base = os.path.splitext(os.path.basename(os.path.realpath(signal_file)))[0]
-        suffix = re.sub(r'[*?]', '', pattern).lstrip('._')        # strip glob chars
-        suffix = os.path.splitext(suffix)[0] or 'pass'
+        suffix = append_suffix
         out_folder = os.path.abspath(f"{base}_{suffix}")
         os.makedirs(out_folder, exist_ok=True)
         out_name = f"{base}_{suffix}.parquet"
@@ -95,12 +93,33 @@ def copy_and_output(matches, signal_file, pattern):
         print(f"[file_finder] No matches for '{pattern}' — emitting passthrough signal: {out_name}", file=sys.stderr)
         print(os.path.abspath(out_name))
         return 0
-    for f in matches: shutil.copy2(f, b := os.path.basename(f)); print(os.path.abspath(b))
+    for f in matches:
+        original_name = os.path.basename(f)
+        # Append the chosen suffix to the original filename
+        # e.g. EV_002_psd1.parquet + suffix=eda -> EV_002_psd1_eda.parquet
+        stem = os.path.splitext(original_name)[0]
+        ext = os.path.splitext(original_name)[1]
+        out_name = f"{stem}_{append_suffix}{ext}"
+        print(f"[file_finder] Appended suffix: {original_name} -> {out_name}", file=sys.stderr)
+        shutil.copy2(f, out_name)
+        print(os.path.abspath(out_name))
     return 0
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3: print("Usage: python file_finder.py <signal_file> <pattern>", file=sys.stderr); sys.exit(1)
-    matches = find_in_subdir(sys.argv[1], sys.argv[2])
-    sys.exit(copy_and_output(matches, sys.argv[1], sys.argv[2]))
+    if len(sys.argv) == 3:
+        # Single combined arg: "<pattern> <suffix>"
+        parts = sys.argv[2].strip().split(None, 1)
+        if len(parts) != 2:
+            print(f"Error: Expected '<pattern> <append_suffix>', got: '{sys.argv[2]}'", file=sys.stderr)
+            sys.exit(1)
+        pattern, append_suffix = parts
+    elif len(sys.argv) == 4:
+        # IOInterface splits into separate args: <pattern> <suffix>
+        pattern, append_suffix = sys.argv[2].strip(), sys.argv[3].strip()
+    else:
+        print("Usage: python file_finder.py <signal_file> <pattern> <append_suffix>", file=sys.stderr)
+        sys.exit(1)
+    matches = find_in_subdir(sys.argv[1], pattern)
+    sys.exit(copy_and_output(matches, sys.argv[1], pattern, append_suffix))
 
 
