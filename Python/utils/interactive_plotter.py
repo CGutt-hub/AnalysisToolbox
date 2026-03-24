@@ -168,7 +168,10 @@ if __name__ == '__main__':
     sh = (
         '#!/bin/bash\n'
         'cd "$(dirname "$0")"\n'
-        f'python3 ".bin/{serve_name}" > ".bin/{base}_results_serve.log" 2>&1 &\n'
+        '# Resolve python: prefer python3, fall back to python\n'
+        'PY=$(command -v python3 2>/dev/null || command -v python 2>/dev/null)\n'
+        'if [ -z "$PY" ]; then echo "ERROR: python not found"; exit 1; fi\n'
+        f'"$PY" ".bin/{serve_name}" > ".bin/{base}_results_serve.log" 2>&1 &\n'
         'SERVER_PID=$!\n'
         'sleep 1\n'
         f'URL="http://localhost:8080/.bin/{html_name}"\n'
@@ -213,9 +216,12 @@ if __name__ == '__main__':
                             capture_output=True, cwd=_git_root)
         except Exception:
             pass
-        # Remove any stale files that old generator versions may have left
+        # Remove any stale files that old generator versions may have left.
+        # serve_name is only cleaned from root_dir (old location); bin_dir has
+        # the freshly written copy that must be kept.
         for stale_name in [serve_name, f'{base}_results.bat', f'{base}_results.desktop']:
-            for stale_dir in [bin_dir, root_dir]:
+            stale_dirs = [root_dir] if stale_name == serve_name else [bin_dir, root_dir]
+            for stale_dir in stale_dirs:
                 stale = os.path.join(stale_dir, stale_name)
                 if os.path.isfile(stale):
                     try:
@@ -1739,7 +1745,9 @@ if __name__ == '__main__':
         if not os.path.exists(html_path):
             with open(html_path, 'w', encoding='utf-8') as f:
                 f.write(create_archive_html(proj))
-            _write_launcher_sidecar(html_path)
+        # Always (re)generate the launcher sidecar — it may have been
+        # deleted independently of the HTML (e.g. by a cleanup or recycle).
+        _write_launcher_sidecar(html_path)
         print(f'[interactive_plotter] Initialized: {html_path}')
 
     elif cmd == 'add-log':

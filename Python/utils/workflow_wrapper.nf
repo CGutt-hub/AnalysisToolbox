@@ -108,7 +108,8 @@ workflow participant_discovery {
             def bin_dir_html = new File(output_root, ".bin")
             bin_dir_html.mkdirs()
             def html_file = new File(bin_dir_html, "${params.project_name}_results.html")
-            if (!html_file.exists()) {
+            def serve_file = new File(bin_dir_html, "${params.project_name}_results_serve.py")
+            if (!html_file.exists() || !serve_file.exists()) {
                 def init_cmd = [params.python_exe, '-u',
                     "${workflow.launchDir}/${params.toolbox_dir}/utils/interactive_plotter.py",
                     'init', html_file.absolutePath]
