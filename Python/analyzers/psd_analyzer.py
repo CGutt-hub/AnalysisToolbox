@@ -21,6 +21,10 @@ def compute_psd(ip: str, bands: dict, channels: list | None = None, regions: dic
     print(f"[psd] Loading: {ip}")
     df = pl.read_parquet(ip)
     
+    if len(df) == 0:
+        log_error("Empty input DataFrame — no epochs to compute PSD, halting branch.")
+        sys.exit(1)
+    
     ch_names = [c for c in df.columns if c not in ['condition', 'epoch_id', 'time']]
     
     # Regional mode: average channels within regions
@@ -210,20 +214,6 @@ def compute_psd(ip: str, bands: dict, channels: list | None = None, regions: dic
             }).write_parquet(os.path.join(out_folder, f"{base}_psd{idx+1}_plot.parquet"))
         
         print(f"[psd]   {cond}: {len(cond_data['epoch_id'].unique())} epochs")
-    
-    # Create procedure visualization file (aggregate all conditions for interactive plot)
-    vis_files = [os.path.join(out_folder, f"{base}_psd{idx+1}_plot.parquet") for idx in range(len(conds))]
-    if all(os.path.exists(f) for f in vis_files):
-        try:
-            all_plots = [pl.read_parquet(f) for f in vis_files]
-            # Concatenate conditions
-            combined = pl.concat(all_plots)
-            # Aggregate into single vis file for procedure HTML
-            vis_path = os.path.join(os.getcwd(), f"{base}_psd_vis.parquet")
-            combined.write_parquet(vis_path, compression='snappy')
-            print(f"[psd] Created procedure visualization: {vis_path}")
-        except Exception as e:
-            print(f"[psd] WARNING: Could not create procedure visualization: {e}")
     
     signal_path = os.path.join(os.getcwd(), f"{base}_psd.parquet")
     pl.DataFrame({

@@ -30,7 +30,7 @@ def _resolve_signal(df: pl.DataFrame, original_path: str) -> pl.DataFrame:
     candidates = sorted([
         os.path.join(folder, fn)
         for fn in os.listdir(folder)
-        if fn.endswith('.parquet') and not fn.endswith('_vis.parquet')
+        if fn.endswith('.parquet')
     ])
     if not candidates:
         log_warning(f"No parquet files in signal folder: {folder}")
@@ -168,10 +168,7 @@ if __name__ == '__main__': (lambda a:
             (lambda pid, out_path: (
                 (lambda result: (
                     result.write_parquet(out_path, compression='snappy'),
-                    # Only create _vis.parquet if data is plot-ready (has x_data, y_data)
-                    result.write_parquet(out_path.replace('.parquet', '_vis.parquet'), compression='snappy') if 'x_data' in result.columns and 'y_data' in result.columns else None,
                     print(f"[concatenating] Concatenated {len(files)} files -> {out_path}"),
-                    print(f"[concatenating] {'Created _vis.parquet (plot-ready data)' if 'x_data' in result.columns and 'y_data' in result.columns else 'Skipped _vis.parquet (raw data, not plot-ready)'}"),
                     print(out_path)
                 ))(concat_generic(files, labels))
             ))(extract_pid(files[0]) if files else '', 

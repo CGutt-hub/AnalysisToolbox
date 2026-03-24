@@ -2,20 +2,10 @@
 Input: parquet with [condition, epoch_id, channel_cols...] or signal pointer to per-condition folder
 Output: parquet with [channel, condition, beta, tvalue, pvalue, se]
 Note: non-numeric non-meta columns (e.g. 'region') become grouping dims → compound channel names."""
-import polars as pl, numpy as np, sys, os, glob, itertools, json
+import polars as pl, numpy as np, sys, os, glob, itertools
 import statsmodels.api as sm
 
 _META = {'condition', 'epoch_id', 'time', 'sfreq'}
-
-# Label map loaded once from VIS_LABEL_MAP env var (set by Nextflow from params.vis_label_map)
-_VIS_MAP: dict[str, str] = json.loads(os.environ.get('VIS_LABEL_MAP', '{}'))
-_VIS_MAP_LOWER = {k.lower(): v for k, v in _VIS_MAP.items()}
-
-def _prettify(name: str) -> str:
-    """Convert snake_case column names to human-readable labels using VIS_LABEL_MAP."""
-    parts = name.split('_')
-    parts = [_VIS_MAP_LOWER.get(p.lower(), p.capitalize()) for p in parts]
-    return ' '.join(parts)
 
 def _resolve(df: pl.DataFrame) -> pl.DataFrame | None:
     if 'folder_path' not in df.columns: return df
@@ -28,9 +18,6 @@ def _empty(base: str, suffix: str) -> str:
     pl.DataFrame(schema={'channel': pl.Utf8, 'condition': pl.Utf8, 'beta': pl.Float64,
                          'tvalue': pl.Float64, 'pvalue': pl.Float64, 'se': pl.Float64}
                  ).write_parquet(out, compression='snappy')
-    pl.DataFrame({'x_data': [[]], 'y_data': [[]], 'y_var': [[]], 'plot_type': ['grid'],
-                  'labels': [[]], 'x_label': ['Channel'], 'y_label': ['Beta Coefficient']}
-                 ).write_parquet(out.replace('.parquet', '_vis.parquet'), compression='snappy')
     print(f"[ols] Empty output (no upstream data): {out}"); return out
 
 def ols_process(ip: str) -> str:
@@ -71,15 +58,6 @@ def ols_process(ip: str) -> str:
     result_df = pl.DataFrame(results)
     out_file = f"{base}_ols.parquet"
     result_df.write_parquet(out_file, compression='snappy')
-
-    channels = result_df.filter(pl.col('condition') == conditions[0])['channel'].to_list()
-    vis_channels = [_prettify(ch) for ch in channels]
-    pl.DataFrame({
-        'x_data': [vis_channels],
-        'y_data': [[result_df.filter(pl.col('condition') == c)['beta'].to_list() for c in conditions]],
-        'y_var': [[result_df.filter(pl.col('condition') == c)['se'].to_list() for c in conditions]],
-        'plot_type': ['grid'], 'labels': [conditions], 'x_label': ['Channel'], 'y_label': ['Beta Coefficient']
-    }).write_parquet(out_file.replace('.parquet', '_vis.parquet'), compression='snappy')
 
     print(f"[ols] Output: {out_file} ({len(results)} rows)")
     return out_file

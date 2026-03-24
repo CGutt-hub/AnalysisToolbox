@@ -35,7 +35,7 @@ def compute_asymmetry(ip: str, pairs: list[tuple[str,str]], mode: str = 'log',
             parquets = sorted([
                 os.path.join(folder, fn)
                 for fn in os.listdir(folder)
-                if fn.endswith('.parquet') and not fn.endswith('_vis.parquet')
+                if fn.endswith('.parquet')
             ])
             if parquets:
                 print(f"[asymmetry] Resolved signal pointer: loaded {len(parquets)} file(s) from {os.path.basename(folder)}")
@@ -213,7 +213,6 @@ def compute_asymmetry(ip: str, pairs: list[tuple[str,str]], mode: str = 'log',
                 'y_label': [y_label or 'Asymmetry']
             })
             plot_df.write_parquet(out_path, compression='snappy')
-            plot_df.write_parquet(out_path.replace('.parquet', '_vis.parquet'), compression='snappy')
             print(f"[asymmetry] Output: {out_path}")
             return out_path
         
@@ -289,9 +288,7 @@ def compute_asymmetry(ip: str, pairs: list[tuple[str,str]], mode: str = 'log',
                 'title': [f"{base} - Asymmetry"]
             })
             plot_df.write_parquet(out_path, compression='snappy')
-            plot_df.write_parquet(out_path.replace('.parquet', '_vis.parquet'), compression='snappy')
     print(f"[asymmetry] Output: {out_path}")
-    print(f"[asymmetry] Created procedure visualization: {out_path.replace('.parquet', '_vis.parquet')}")
     return out_path
 
 if __name__ == '__main__':

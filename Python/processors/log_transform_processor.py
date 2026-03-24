@@ -25,22 +25,6 @@ def log_transform_process(ip: str, baseline_sec: str = '5.0', out: str | None = 
     base = os.path.splitext(os.path.basename(ip))[0]
     out_file = out or f"{base}_log.fif"
     raw_out.save(out_file, overwrite=True, verbose=False)
-    # Generate inline visualization
-    time_data: list[float] = raw.times.tolist()
-    y_data: list[list[float]] = [transformed[i].tolist() for i in range(len(raw.ch_names))]
-    if len(time_data) > 10000:
-        step: int = len(time_data) // 10000
-        time_data = time_data[::step]
-        y_data = [yd[::step] for yd in y_data]
-    vis_df = pl.DataFrame({
-        'x_data': [[[time_data] for _ in range(len(raw.ch_names))]],
-        'y_data': [y_data],
-        'plot_type': ['line'],
-        'labels': [raw.ch_names],
-        'x_label': ['Time (s)'],
-        'y_label': ['Optical Density (OD)']
-    })
-    vis_df.write_parquet(out_file.replace('.fif', '_vis.parquet'))
     print(f"[log_transform] Output: {out_file}")
     return out_file
 

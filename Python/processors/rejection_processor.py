@@ -39,27 +39,6 @@ def reject_samples(ip: str, columns: list | None = None, criterion: str = 'ampli
     df_clean = df.filter(mask)
     df_clean.write_parquet(out_file, compression='snappy')
     print(f"[rejection] Output: {out_file}")
-    
-    # Generate inline visualization
-    signal_cols: list[str] = [c for c in df_clean.columns if c not in ['time', 'sfreq']]
-    if 'time' in df_clean.columns and signal_cols:
-        time_data: list[float] = df_clean['time'].to_list()
-        y_data: list[list[float]] = [df_clean[col].to_list() for col in signal_cols]
-        if len(time_data) > 10000:
-            step: int = len(time_data) // 10000
-            time_data = time_data[::step]
-            y_data = [yd[::step] for yd in y_data]
-        vis_df = pl.DataFrame({
-            'title':   [f'Rejected signal ({len(signal_cols)} channels)'],
-            'x_data':  [[time_data for _ in range(len(signal_cols))]],
-            'y_data':  [y_data],
-            'plot_type': ['line'],
-            'labels':  [signal_cols],
-            'x_label': ['Time (s)'],
-            'y_label': ['Amplitude'],
-        })
-        vis_df.write_parquet(out_file.replace('.parquet', '_vis.parquet'), compression='snappy')
-    
     return out_file
 
 if __name__ == '__main__': (lambda a: reject_samples(a[1], ast.literal_eval(a[2]) if len(a) > 2 and a[2] not in ('', 'None') else None, a[3] if len(a) > 3 else 'amplitude', float(a[4]) if len(a) > 4 else 100e-6) if len(a) >= 2 else (print('[rejection] Reject samples by amplitude, gradient, or flatline threshold.\nUsage: rejection_processor.py <input.parquet> [columns] [criterion=amplitude] [threshold=100e-6]'), sys.exit(1)))(sys.argv)

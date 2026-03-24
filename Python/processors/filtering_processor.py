@@ -57,24 +57,6 @@ def filter_signal(ip: str, col: str | None, lf: str, hf: str, fs: float = 1000.0
     out_file = f"{base}_filt.parquet"
     result.write_parquet(out_file, compression='snappy')
     print(f"[filtering] Output: {out_file}")
-    
-    # Generate inline visualization
-    time_data: list[float] = result['time'].to_list()
-    signal_data: list[float] = result[target.lower()].to_list()
-    if len(time_data) > 10000:
-        step: int = len(time_data) // 10000
-        time_data = time_data[::step]
-        signal_data = signal_data[::step]
-    vis_df = pl.DataFrame({
-        'x_data': [[time_data]],
-        'y_data': [[signal_data]],
-        'plot_type': ['line'],
-        'labels': [[target.lower()]],
-        'x_label': ['Time (s)'],
-        'y_label': ['Amplitude']
-    })
-    vis_df.write_parquet(out_file.replace('.parquet', '_vis.parquet'), compression='snappy')
-    
     return out_file
 
 if __name__ == '__main__': 

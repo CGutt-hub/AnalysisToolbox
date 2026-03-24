@@ -7,6 +7,7 @@ def log_error(msg): print(f"[group] ERROR: {msg}")
 
 def analyze_groups(ip: str, groups_config: str, y_lim: float | None = None, 
                    x_label: str = 'Group', y_label: str = 'Mean',
+                   suffix: str = 'hbc',
                    baseline_sec: float = 2.0) -> str:
     """
     Aggregate channels by groups and compute group-level statistics per condition.
@@ -20,12 +21,12 @@ def analyze_groups(ip: str, groups_config: str, y_lim: float | None = None,
         y_lim: Optional Y-axis limit (symmetric around zero)
         x_label: Label for x-axis (e.g., 'ROI', 'Region', 'Group')
         y_label: Label for y-axis (e.g., 'Mean Value', 'Amplitude')
+        suffix: Output file suffix (default 'hbc')
         baseline_sec: Seconds at epoch start for baseline correction (default 2.0)
     
     Returns:
         Path to signal file
     """
-    suffix = 'hbc'
     print(f"[group] Group analysis: {ip}")
     
     # Parse groups config
@@ -151,18 +152,6 @@ def analyze_groups(ip: str, groups_config: str, y_lim: float | None = None,
         
         print(f"[group]   {cond}: {len(epochs)} epochs, {len(group_names)} groups")
     
-    # Create procedure visualization file (aggregate all conditions for interactive plot)
-    plot_files = [os.path.join(out_folder, f"{base}_{suffix}{idx+1}_plot.parquet") for idx in range(len(conditions))]
-    if all(os.path.exists(f) for f in plot_files):
-        try:
-            all_plots = [pl.read_parquet(f) for f in plot_files]
-            combined = pl.concat(all_plots)
-            vis_path = os.path.join(os.getcwd(), f"{base}_{suffix}_vis.parquet")
-            combined.write_parquet(vis_path, compression='snappy')
-            print(f"[group] Created procedure visualization: {vis_path}")
-        except Exception as e:
-            print(f"[group] WARNING: Could not create procedure visualization: {e}")
-    
     signal_path = os.path.join(os.getcwd(), f"{base}_{suffix}.parquet")
     pl.DataFrame({
         'signal': [1],
@@ -207,7 +196,8 @@ if __name__ == '__main__':
                                float(a[3]) if len(a) > 3 and a[3] and a[3] != 'None' else None,
                                a[4] if len(a) > 4 else 'Group',
                                a[5] if len(a) > 5 else 'Mean',
-                               float(a[6]) if len(a) > 6 and a[6] and a[6] != 'None' else 2.0) if len(a) >= 3 else (
+                               a[6] if len(a) > 6 else 'hbc',
+                               float(a[7]) if len(a) > 7 and a[7] and a[7] != 'None' else 2.0) if len(a) >= 3 else (
         print('Aggregate channels by groups per condition. Plot-ready output with baseline correction.'),
         print('[group] Usage: python group_analyzer.py <epoched.parquet> <groups_json> [y_lim] [x_label] [y_label] [baseline_sec]'),
         print('[group] Channel patterns: exact match, glob (*, ?, []), or regex (re:pattern)'),

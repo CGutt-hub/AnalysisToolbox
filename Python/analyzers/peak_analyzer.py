@@ -116,18 +116,6 @@ def analyze_peaks(ip: str, method: str = 'max_abs', time_window: str | None = No
         detail_path = os.path.join(out_folder, f"{base}_{suffix}{idx+1}_detail.parquet")
         pl.DataFrame(peak_results).write_parquet(detail_path, compression='snappy')
     
-    # Create procedure visualization file
-    plot_files = [os.path.join(out_folder, f"{base}_{suffix}{idx+1}.parquet") for idx in range(len(conditions))]
-    if all(os.path.exists(f) for f in plot_files):
-        try:
-            all_plots = [pl.read_parquet(f) for f in plot_files]
-            combined = pl.concat(all_plots)
-            vis_path = os.path.join(os.getcwd(), f"{base}_{suffix}_vis.parquet")
-            combined.write_parquet(vis_path, compression='snappy')
-            print(f"[peak] Created procedure visualization: {vis_path}")
-        except Exception as e:
-            print(f"[peak] WARNING: Could not create procedure visualization: {e}")
-    
     signal_path = os.path.join(os.getcwd(), f"{base}_{suffix}.parquet")
     pl.DataFrame({
         'signal': [1],

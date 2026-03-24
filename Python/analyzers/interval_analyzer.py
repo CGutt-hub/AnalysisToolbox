@@ -24,7 +24,7 @@ def analyze_intervals(ip: str, event_col: str | None = None, y_lim: float | None
     
     Note: If y_lim is None, outputs epoch-level data for bootstrap; else outputs mean ± SEM
     """
-    suffix = 'intv'
+    suffix = 'interv'
     print(f"[interval] Interval analysis: {ip}, mode={'epoch-level' if y_lim is None else 'aggregated'}")
     df = pl.read_parquet(ip)
     
@@ -47,13 +47,8 @@ def analyze_intervals(ip: str, event_col: str | None = None, y_lim: float | None
     
     # Handle empty DataFrame (no epochs to analyze)
     if len(df) == 0:
-        log_warning("Empty input - no epochs to analyze")
-        base = os.path.splitext(os.path.basename(ip))[0]
-        out_folder = os.path.join(os.getcwd(), f"{base}_{suffix}")
-        os.makedirs(out_folder, exist_ok=True)
-        signal_path = os.path.join(os.getcwd(), f"{base}_{suffix}.parquet")
-        pl.DataFrame({'signal': [1], 'source': [os.path.basename(ip)], 'conditions': [0], 'folder_path': [os.path.abspath(out_folder)]}).write_parquet(signal_path, compression='snappy')
-        return signal_path
+        log_warning("Empty input — no epochs to analyze, halting branch.")
+        sys.exit(1)
     
     base = os.path.splitext(os.path.basename(ip))[0]
     out_folder = os.path.join(os.getcwd(), f"{base}_{suffix}")
@@ -176,18 +171,6 @@ def analyze_intervals(ip: str, event_col: str | None = None, y_lim: float | None
             out_path = os.path.join(out_folder, f"{base}_{suffix}{idx+1}.parquet")
             output.write_parquet(out_path, compression='snappy')
             print(f"[interval]   {cond}: SDNN={sdnn_mean:.2f}±{sdnn_sem:.2f}, RMSSD={rmssd_mean:.2f}±{rmssd_sem:.2f} ({len(sdnn_vals)} epochs)")
-    
-    # Create procedure visualization file
-    plot_files = [os.path.join(out_folder, f"{base}_{suffix}{idx+1}.parquet") for idx in range(len(conditions))]
-    if all(os.path.exists(f) for f in plot_files):
-        try:
-            all_plots = [pl.read_parquet(f) for f in plot_files]
-            combined = pl.concat(all_plots)
-            vis_path = os.path.join(os.getcwd(), f"{base}_{suffix}_vis.parquet")
-            combined.write_parquet(vis_path, compression='snappy')
-            print(f"[interval] Created procedure visualization: {vis_path}")
-        except Exception as e:
-            print(f"[interval] WARNING: Could not create procedure visualization: {e}")
     
     signal_path = os.path.join(os.getcwd(), f"{base}_{suffix}.parquet")
     pl.DataFrame({

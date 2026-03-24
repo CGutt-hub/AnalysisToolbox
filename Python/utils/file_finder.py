@@ -82,17 +82,10 @@ def find_in_subdir(signal_file, pattern):
 
 def copy_and_output(matches, signal_file, pattern, append_suffix):
     if not matches:
-        # No files found — upstream produced an empty folder (graceful passthrough chain).
-        base = os.path.splitext(os.path.basename(os.path.realpath(signal_file)))[0]
-        suffix = append_suffix
-        out_folder = os.path.abspath(f"{base}_{suffix}")
-        os.makedirs(out_folder, exist_ok=True)
-        out_name = f"{base}_{suffix}.parquet"
-        pl.DataFrame({'signal': [1], 'source': [base], 'conditions': [0],
-                      'folder_path': [out_folder]}).write_parquet(out_name, compression='snappy')
-        print(f"[file_finder] No matches for '{pattern}' — emitting passthrough signal: {out_name}", file=sys.stderr)
-        print(os.path.abspath(out_name))
-        return 0
+        # No files found — fail so Nextflow's errorStrategy='ignore' kills this branch.
+        # Downstream processes won't receive input and won't fire.
+        print(f"[file_finder] ERROR: No files matching '{pattern}' — halting branch.", file=sys.stderr)
+        return 1
     for f in matches:
         original_name = os.path.basename(f)
         # Append the chosen suffix to the original filename
@@ -105,19 +98,30 @@ def copy_and_output(matches, signal_file, pattern, append_suffix):
         print(os.path.abspath(out_name))
     return 0
 
+def derive_suffix(pattern):
+    """Derive append_suffix from the glob pattern when not explicitly provided.
+    E.g. '*sam1.parquet' -> 'sam1', '*extr1.parquet' -> 'extr1', 'type:EEG.fif' -> 'found'."""
+    import re as _re
+    stem = os.path.splitext(os.path.basename(pattern))[0]  # strip extension
+    stem = stem.lstrip('*')  # strip leading glob chars
+    stem = _re.sub(r'^(type|name):', '', stem)  # strip type:/name: prefix
+    return stem if stem else 'found'
+
 if __name__ == "__main__":
     if len(sys.argv) == 3:
-        # Single combined arg: "<pattern> <suffix>"
+        # Could be "<pattern> <suffix>" or just "<pattern>"
         parts = sys.argv[2].strip().split(None, 1)
-        if len(parts) != 2:
-            print(f"Error: Expected '<pattern> <append_suffix>', got: '{sys.argv[2]}'", file=sys.stderr)
-            sys.exit(1)
-        pattern, append_suffix = parts
+        if len(parts) == 2:
+            pattern, append_suffix = parts
+        else:
+            pattern = parts[0]
+            append_suffix = derive_suffix(pattern)
+            print(f"[file_finder] No suffix provided, derived '{append_suffix}' from pattern '{pattern}'", file=sys.stderr)
     elif len(sys.argv) == 4:
         # IOInterface splits into separate args: <pattern> <suffix>
         pattern, append_suffix = sys.argv[2].strip(), sys.argv[3].strip()
     else:
-        print("Usage: python file_finder.py <signal_file> <pattern> <append_suffix>", file=sys.stderr)
+        print("Usage: python file_finder.py <signal_file> <pattern> [<append_suffix>]", file=sys.stderr)
         sys.exit(1)
     matches = find_in_subdir(sys.argv[1], pattern)
     sys.exit(copy_and_output(matches, sys.argv[1], pattern, append_suffix))

@@ -55,11 +55,6 @@ def analyze_connectivity(ip: str, method: str = 'coh', y_lim: float | None = Non
     if mean_conn < 0.1:
         log_warning(f"Very weak mean connectivity ({mean_conn:.3f}), check signal quality or frequency band")
     
-    # Create procedure visualization
-    vis_path = os.path.join(workspace_root, f"{base}_connectivity_vis.parquet")
-    out.write_parquet(vis_path, compression='snappy')
-    print(f"[connectivity] Created procedure visualization: {vis_path}")
-    
     signal_path = os.path.join(workspace_root, f"{base}_connectivity.parquet")
     pl.DataFrame({'signal': [1], 'source': [os.path.basename(ip)], 'conditions': [1], 'folder_path': [os.path.abspath(out_folder)]}).write_parquet(signal_path, compression='snappy')
     print(f"[connectivity] Output: {signal_path}")

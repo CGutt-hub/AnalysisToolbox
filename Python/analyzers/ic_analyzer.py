@@ -27,10 +27,6 @@ def analyze_ica(ip: str, n_components: float = 0.99, y_lim: float | None = None)
         'plot_type': ['bar'], 'x_label': ['Independent Component'], 'y_label': ['Explained Variance (%)'],
         'y_ticks': [y_lim] if y_lim is not None else [None]})
     variance_data.write_parquet(os.path.join(out_folder, f"{base}_ica1.parquet"))
-    # Create procedure visualization
-    vis_path = os.path.join(os.getcwd(), f"{base}_ica_vis.parquet")
-    variance_data.write_parquet(vis_path, compression='snappy')
-    print(f"[ic] Created procedure visualization: {vis_path}")
     signal_path = os.path.join(os.getcwd(), f"{base}_ica.parquet")
     pl.DataFrame({'signal': [1], 'source': [os.path.basename(ip)], 'n_components': [n_ics], 'cleaned_fif': [cleaned_fif], 'folder_path': [os.path.abspath(out_folder)]}).write_parquet(signal_path, compression='snappy')
     print(f"[ic] Output: {signal_path}")

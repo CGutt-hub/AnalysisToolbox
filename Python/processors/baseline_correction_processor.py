@@ -26,25 +26,6 @@ def baseline_correct(ip: str, baseline_sec: float = 5.0, sfreq: float | None = N
     result = df.with_columns([(pl.col(c) - pl.col(c).head(n_baseline).mean()).alias(c) for c in data_cols])
     out_file = ip.replace('.parquet', '_bl.parquet')
     result.write_parquet(out_file, compression='snappy')
-    
-    # Generate inline visualization
-    if 'time' in result.columns and data_cols:
-        time_data: list[float] = result['time'].to_list()
-        y_data: list[list[float]] = [result[col].to_list() for col in data_cols]
-        if len(time_data) > 10000:
-            step: int = len(time_data) // 10000
-            time_data = time_data[::step]
-            y_data = [yd[::step] for yd in y_data]
-        vis_df = pl.DataFrame({
-            'x_data': [[[time_data] for _ in range(len(data_cols))]],
-            'y_data': [y_data],
-            'plot_type': ['line'],
-            'labels': [data_cols],
-            'x_label': ['Time (s)'],
-            'y_label': ['Amplitude']
-        })
-        vis_df.write_parquet(out_file.replace('.parquet', '_vis.parquet'), compression='snappy')
-    
     print(f"[baseline_correction] Output: {out_file}")
     return out_file
 

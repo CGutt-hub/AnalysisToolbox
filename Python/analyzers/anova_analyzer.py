@@ -21,11 +21,7 @@ def anova_analyze(ip: str, dv: str, between: str, participant_id: str, apply_fdr
         pl.lit(y_lim).alias("y_ticks"), pl.lit(1).alias("plot_weight")])
     out_file = f"{os.path.splitext(os.path.basename(ip))[0]}_anova.parquet"
     results.write_parquet(out_file, compression='snappy')
-    # Create procedure visualization
-    vis_file = out_file.replace('.parquet', '_vis.parquet')
-    results.write_parquet(vis_file, compression='snappy')
     print(f"[anova] Output: {out_file}")
-    print(f"[anova] Created procedure visualization: {vis_file}")
     return out_file
 
 if __name__ == '__main__': (lambda a: anova_analyze(a[1], a[2], a[3], a[4], len(a) > 5 and a[5].lower() in ['1','true','yes'], float(a[6]) if len(a) > 6 and a[6] else None) if len(a) >= 5 else (print('[anova] Perform ANOVA with optional FDR correction. Plot-ready output.\nUsage: anova_analyzer.py <input.parquet> <dv> <between> <participant_id> [apply_fdr=false] [y_lim]'), sys.exit(1)))(sys.argv)

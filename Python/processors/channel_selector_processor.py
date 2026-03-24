@@ -46,28 +46,6 @@ def select_channels(ip: str, selector: str = '.*', mode: str = 'regex') -> str:
     base = os.path.splitext(os.path.basename(ip))[0]
     out_file = f"{base}_sel.fif"
     raw.save(out_file, overwrite=True, verbose=False)
-    
-    # Generate inline visualization
-    time_data: list[float] = raw.times.tolist()
-    ch_data = cast(np.ndarray, raw.get_data())
-    y_data: list[list[float]] = []
-    for i in range(len(raw.ch_names)):
-        channel_data: list[float] = ch_data[i, :].tolist()
-        y_data.append(channel_data)
-    if len(time_data) > 10000:
-        step: int = len(time_data) // 10000
-        time_data = time_data[::step]
-        y_data = [yd[::step] for yd in y_data]
-    vis_df = pl.DataFrame({
-        'x_data': [[[time_data] for _ in range(len(raw.ch_names))]],
-        'y_data': [y_data],
-        'plot_type': ['line'],
-        'labels': [raw.ch_names],
-        'x_label': ['Time (s)'],
-        'y_label': ['Amplitude']
-    })
-    vis_df.write_parquet(out_file.replace('.fif', '_vis.parquet'), compression='snappy')
-    
     print(f"[channel_selector] Output: {out_file}")
     return out_file
 

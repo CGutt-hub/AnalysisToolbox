@@ -74,18 +74,6 @@ def analyze_waveform(ip: str, y_lim: float | None = None, y_label: str = 'Mean a
         output.write_parquet(out_path, compression='snappy')
         print(f"[waveform]   {cond}: {len(result)} points -> {os.path.basename(out_path)}")
     
-    # Create procedure visualization file (aggregate all conditions)
-    plot_files = [os.path.join(out_folder, f"{base}_{suffix}{idx+1}.parquet") for idx in range(len(conditions))]
-    if all(os.path.exists(f) for f in plot_files):
-        try:
-            all_plots = [pl.read_parquet(f) for f in plot_files]
-            combined = pl.concat(all_plots)
-            vis_path = os.path.join(os.getcwd(), f"{base}_{suffix}_vis.parquet")
-            combined.write_parquet(vis_path, compression='snappy')
-            print(f"[waveform] Created procedure visualization: {vis_path}")
-        except Exception as e:
-            print(f"[waveform] WARNING: Could not create procedure visualization: {e}")
-    
     signal_path = os.path.join(os.getcwd(), f"{base}_{suffix}.parquet")
     pl.DataFrame({
         'signal': [1],

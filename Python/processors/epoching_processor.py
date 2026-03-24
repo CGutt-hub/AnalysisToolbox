@@ -320,28 +320,6 @@ def epoch_and_flatten(data_path: str, events_path: str, orig_path: str | None = 
     else:
         result_df = pl.concat(dfs)
     result_df.write_parquet(out, compression='snappy')
-    # Generate inline visualization - show example epochs from first few conditions
-    if dfs and len(result_df) > 0:
-        signal_cols: list[str] = [c for c in result_df.columns if c not in [time_col, 'condition', 'epoch_id', 'sfreq']]
-        if signal_cols:
-            # Sample first few epochs from first few conditions
-            vis_conds: list[str] = result_df['condition'].unique().to_list()[:3]
-            vis_sample = result_df.filter(pl.col('condition').is_in(vis_conds)).head(1000)
-            time_data: list[float] = vis_sample[time_col].to_list()
-            y_data: list[list[float]] = [vis_sample[col].to_list() for col in signal_cols[:5]]  # Max 5 channels
-            if len(time_data) > 5000:
-                step: int = len(time_data) // 5000
-                time_data = time_data[::step]
-                y_data = [yd[::step] for yd in y_data]
-            vis_df = pl.DataFrame({
-                'x_data': [[[time_data] for _ in range(len(y_data))]],
-                'y_data': [y_data],
-                'plot_type': ['line'],
-                'labels': [signal_cols[:5]],
-                'x_label': ['Time (s)'],
-                'y_label': ['Amplitude']
-            })
-            vis_df.write_parquet(out.replace('.parquet', '_vis.parquet'), compression='snappy')
     print(f"[epoching] Output: {out} ({len(result_df) if dfs else 0} rows)")
     return out
 

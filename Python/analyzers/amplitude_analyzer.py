@@ -157,26 +157,6 @@ def analyze_amplitude(ip: str, method: str = 'peak_baseline', y_lim: float | Non
             plot_df.write_parquet(os.path.join(out_folder, f"{base}_{suffix}{idx+1}.parquet"))
             all_plot_data.append(plot_df)
             print(f"[amplitude]   {cond}: {mean_val:.3f} ± {sem_val:.3f} ({len(cond_vals)} epochs)")
-        
-        # Create procedure visualization file (single file with all conditions for interactive plot)
-        if all_plot_data:
-            vis_df = pl.concat(all_plot_data)
-            # Aggregate into single plot-ready format
-            vis_output = pl.DataFrame({
-                'condition': ['all'],
-                'x_data': [conditions],
-                'y_data': [[row['y_data'][0][0] for row in vis_df.to_dicts()]],
-                'y_var': [[row['y_var'][0][0] for row in vis_df.to_dicts()]],
-                'plot_type': ['bar'],
-                'x_label': ['Condition'],
-                'y_label': [y_label],
-                'y_ticks': [y_lim],
-                'labels': [conditions],
-                'title': [f"{base} - {y_label}"]
-            })
-            vis_path = os.path.join(os.getcwd(), f"{base}_{suffix}_vis.parquet")
-            vis_output.write_parquet(vis_path, compression='snappy')
-            print(f"[amplitude] Created procedure visualization: {vis_path}")
     
     signal_path = os.path.join(os.getcwd(), f"{base}_{suffix}.parquet")
     pl.DataFrame({

@@ -51,8 +51,8 @@ def parse_filename_to_tree_path(filename, participant_id):
         EV_002_xdf4_extr1_filt, EV_002 -> ['EV_002', 'xdf4_extr1_filt']
         EV_003_xdf3_log_tddr, EV_003   -> ['EV_003', 'xdf3_log_tddr']
     """
-    # Remove participant ID, extension, and _vis suffix
-    base = os.path.basename(filename).replace('.html', '').replace('_vis', '')
+    # Remove participant ID and extension
+    base = os.path.basename(filename).replace('.html', '')
     parts = base.split('_')
     if len(parts) >= 2:
         # Skip participant ID (e.g., EV_002)
@@ -778,8 +778,8 @@ def create_archive_html(project_name='procedure'):
             const cx = xR.length > 0 && Array.isArray(xR[0]);
             const n  = cy ? yR.length : (cx ? xR.length : 0);
 
-            // ── LINE / LINE_GRID ──────────────────────────────────────────────────
-            if (plotType === 'line' || plotType === 'line_grid') {{
+            // ── LINE / LINE_GRID / LINE_OVERLAY ───────────────────────────────────
+            if (plotType === 'line' || plotType === 'line_grid' || plotType === 'line_overlay') {{
                 if (n > 0) {{
                     const seriesL = labels.length ? labels : Array.from({{ length: n }}, (_, i) => String(i + 1));
                     const ch = Array.from({{ length: n }}, (_, i) => {{
@@ -790,6 +790,14 @@ def create_archive_html(project_name='procedure'):
                     if (ch.length === 1) {{
                         return {{ data: [{{ type: 'scatter', mode: 'lines', x: ch[0].xd, y: ch[0].yd,
                             name: ch[0].lbl, line: {{ color: 'dimgray', width: 1.5 }} }}], layout: base, title }};
+                    }}
+                    // line_overlay: true overlay (no stagger) for group comparison
+                    if (plotType === 'line_overlay') {{
+                        const data = ch.map(({{ xd, yd, lbl }}, i) => ({{
+                            type: 'scatter', mode: 'lines', x: xd, y: yd,
+                            name: lbl, line: {{ color: grayN(i, ch.length), width: 1.5 }}, opacity: 0.9
+                        }}));
+                        return {{ data, layout: base, title }};
                     }}
                     const allY = ch.flatMap(c => c.yd);
                     const yRange = allY.length ? Math.max(...allY) - Math.min(...allY) : 1;
@@ -1657,23 +1665,19 @@ def add_log_to_archive(archive_path, participant_id, log_path, log_name):
             pass
 
 def run(inp, out_dir, pre, project_name='procedure', sidecar_dir=None):
-    """Copy _vis.parquet sidecar and register it in the HTML archive.
+    """Copy an output parquet to plots/ and register it in the HTML archive.
+
+    Called by the IOInterface publish loop for every output parquet that
+    passes the size guard.  The browser reads the parquet directly via
+    hyparquet (no server-side rendering).
 
     Args:
-        sidecar_dir: Directory for the sidecar parquet (required).
+        inp: Input parquet file (any schema).
+        out_dir: Output directory (archive root, used to locate .bin/).
+        pre: Prefix for the output file (e.g. EV_002_xdf4_extr1_filt).
+        project_name: Project name used for the HTML filename.
+        sidecar_dir: Directory for the published parquet (required).
                      Passed as CONTEXT_PLOT_DIR from the IOInterface bash block.
-
-    The browser reads the .parquet directly via hyparquet (no server-side
-    Plotly rendering). This keeps Python out of the figure-building loop.
-
-    Args:
-        inp: Input _vis.parquet file
-        out_dir: Output directory (archive root, used to locate .bin/)
-        pre: Prefix for output file (e.g. EV_002_xdf4_extr1_filt_vis)
-        project_name: Project name used for the HTML filename
-        sidecar_dir: Explicit directory for the sidecar parquet. Overrides the
-                     default <out_dir>/<pid>/plots/ so callers can place sidecars
-                     in EV_l1/<pid>/plots/ without changing out_dir.
     """
     import shutil
     print(f"[interactive_plotter] Input: {inp}")

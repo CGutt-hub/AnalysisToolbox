@@ -131,26 +131,6 @@ def determine_needed_channels(sels: list[str], all_channels: list[str]) -> list[
 def save_fif(od: pl.DataFrame, pp: str, fp: str, chs: list[str], t: np.ndarray | None, sf: float, ch_types: dict[str, str] | None) -> None:
     od.write_parquet(pp, compression='snappy')
     print(f"[extracting] {os.path.basename(pp)} cols={od.columns}")
-    # Generate inline visualization (downsample BEFORE converting to lists to save memory)
-    if chs and 'time' in od.columns:
-        if len(od) > 10000:
-            step: int = len(od) // 10000
-            od_vis = od[::step]
-        else:
-            od_vis = od
-        time_data: list[float] = od_vis['time'].to_list()
-        y_data: list[list[float]] = [od_vis[col].to_list() for col in chs]
-        del od_vis  # Free memory immediately
-        vis_df = pl.DataFrame({
-            'x_data': [[[time_data] for _ in range(len(chs))]],
-            'y_data': [y_data],
-            'plot_type': ['line'],
-            'labels': [chs],
-            'x_label': ['Time (s)'],
-            'y_label': ['Amplitude']
-        })
-        vis_df.write_parquet(pp.replace('.parquet', '_vis.parquet'), compression='snappy')
-        del time_data, y_data, vis_df  # Free memory
     if not chs:
         mne.io.RawArray(np.array([[0.0]]), mne.create_info(['empty'], 1.0, ch_types='misc'), verbose=False).save(fp, overwrite=True, verbose=False)
     else:

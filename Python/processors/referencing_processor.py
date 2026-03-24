@@ -32,39 +32,6 @@ def apply_reference(ip: str, ref: str = 'average') -> str:
         print(f"[referencing] ERROR: Failed to save {out_file}: {e}")
         sys.exit(1)
     
-    # Generate inline visualization
-    try:
-        time_data_raw = raw.times.tolist()
-        ch_data = cast(np.ndarray, raw.get_data())
-        y_data_raw: list[list[float]] = []
-        for i in range(len(raw.ch_names)):
-            channel_data: list[float] = ch_data[i, :].tolist()
-            y_data_raw.append(channel_data)
-        
-        if len(time_data_raw) > 10000:
-            step: int = len(time_data_raw) // 10000
-            time_data: list[float] = time_data_raw[::step]
-            y_data: list[list[float]] = []
-            for yd in y_data_raw:
-                downsampled: list[float] = yd[::step]
-                y_data.append(downsampled)
-        else:
-            time_data: list[float] = time_data_raw
-            y_data: list[list[float]] = y_data_raw
-        
-        vis_df = pl.DataFrame({
-            'x_data': [[[time_data] for _ in range(len(raw.ch_names))]],
-            'y_data': [y_data],
-            'plot_type': ['line'],
-            'labels': [raw.ch_names],
-            'x_label': ['Time (s)'],
-            'y_label': ['Amplitude (µV)']
-        })
-        vis_df.write_parquet(out_file.replace('.fif', '_vis.parquet'), compression='snappy')
-    except Exception as e:
-        print(f"[referencing] WARNING: Failed to create visualization: {e}")
-        # Don't fail the whole process if visualization fails
-    
     print(f"[referencing] Output: {out_file}")
     return out_file
 

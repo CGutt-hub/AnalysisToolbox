@@ -84,22 +84,6 @@ def linear_transform_process(ip: str, matrix_spec: str = '[[1,0],[0,1]]', param:
     raw_out = mne.io.RawArray(out_data, raw.info, verbose=False)
     out_file = f"{os.path.splitext(os.path.basename(ip))[0]}_lin.fif"
     raw_out.save(out_file, overwrite=True, verbose=False)
-    # Generate inline visualization
-    time_data: list[float] = raw.times.tolist()
-    y_data: list[list[float]] = [out_data[i].tolist() for i in range(len(raw.ch_names))]
-    if len(time_data) > 10000:
-        step: int = len(time_data) // 10000
-        time_data = time_data[::step]
-        y_data = [yd[::step] for yd in y_data]
-    vis_df = pl.DataFrame({
-        'x_data': [[[time_data] for _ in range(len(raw.ch_names))]],
-        'y_data': [y_data],
-        'plot_type': ['line'],
-        'labels': [raw.ch_names],
-        'x_label': ['Time (s)'],
-        'y_label': ['Concentration (µM)']
-    })
-    vis_df.write_parquet(out_file.replace('.fif', '_vis.parquet'), compression='snappy')
     print(f"[linear_transform] Output: {out_file} ({n_ch} channels)")
     return out_file
 
