@@ -126,6 +126,9 @@ workflow participant_discovery {
                 new File(git_root, ".git/rebase-merge").with { if (exists()) deleteDir() }
                 new File(git_root, ".git/rebase-apply").with { if (exists()) deleteDir() }
 
+                // Ensure Git LFS is initialized in this repo (needed for large parquet files)
+                runBootGit(["git", "lfs", "install", "--local"], 10)
+
                 // Ensure Nextflow trace file is never tracked —
                 // it's held open the entire run and causes rebase failures.
                 def binIgnore = new File(bin_dir_infra, ".gitignore")
@@ -362,8 +365,7 @@ Duration: ${duration}s
             }
         }
 
-        // Helper: commit a set of paths, push (pull --rebase only if push rejected).
-        // Returns true on success.
+        // Helper: commit a list of paths and push.
         def commitAndPush = { List paths, String msg ->
             if (!paths) return true
             def addResult = runGit(["git", "add", "-A"] + paths, 120)
@@ -379,55 +381,70 @@ Duration: ${duration}s
                 logSync("Commit failed (${msg})", commitResult.out)
                 return false
             }
-            // Try push first — usually succeeds since bootstrap synced origin at start
-            def push = runGit(["git", "push"], 900)
+            def push = runGit(["git", "push"], 600)
             if (push.exit == 0) return true
-            // Push rejected → pull --rebase then retry
-            def pull = runGit(["git", "pull", "--rebase", "--autostash"], 600)
+            // Push rejected → pull --rebase then retry once
+            def pull = runGit(["git", "pull", "--rebase", "--autostash"], 120)
             if (pull.exit != 0) {
                 cleanupRebase()
-                logSync("Git pull failed (${msg})", pull.out)
-                return false
+                logSync("Pull --rebase failed (${msg}) — committed locally", pull.out)
+                return true
             }
-            push = runGit(["git", "push"], 900)
+            push = runGit(["git", "push"], 600)
             if (push.exit != 0) {
                 logSync("Push failed (${msg}) — committed locally", push.out)
-                return false
             }
             return true
         }
 
-        // Chunk 1: participant small files + shared paths + L2 small files
+        // Helper: LFS-track a single large file, commit it + .gitattributes, and push.
+        def lfsCommitAndPush = { String largePath, String msg ->
+            // Tell LFS to track this specific file path
+            def track = runGit(["git", "lfs", "track", "--", largePath], 30)
+            if (track.exit != 0) {
+                logSync("LFS track failed (${msg})", track.out)
+                return false
+            }
+            // Stage .gitattributes (updated by lfs track) and the large file itself
+            def addResult = runGit(["git", "add", "-A", ".gitattributes", largePath], 120)
+            if (addResult.exit != 0) {
+                logSync("Git add failed (${msg})", addResult.out)
+                runGit(["git", "reset", "HEAD"], 10)
+                return false
+            }
+            def st = runGit(["git", "status", "--porcelain", "--cached"], 15)
+            if (!st.out?.trim()) return true
+            def commitResult = runGit(["git", "commit", "-m", msg], 30)
+            if (commitResult.exit != 0) {
+                logSync("Commit failed (${msg})", commitResult.out)
+                return false
+            }
+            def push = runGit(["git", "push"], 900)
+            if (push.exit == 0) return true
+            def pull = runGit(["git", "pull", "--rebase", "--autostash"], 120)
+            if (pull.exit != 0) {
+                cleanupRebase()
+                logSync("Pull --rebase failed (${msg}) — committed locally", pull.out)
+                return true
+            }
+            push = runGit(["git", "push"], 900)
+            if (push.exit != 0) {
+                logSync("LFS push failed (${msg}) — committed locally", push.out)
+            }
+            return true
+        }
+
+        // Chunk 1: participant small files + shared paths + L2 small files → bulk commit & push
         def smallChunkPaths = smallRelPaths + sharedPaths + l2SmallPaths
-        def ok = commitAndPush(smallChunkPaths, "autosync: ${pid} completed")
+        commitAndPush(smallChunkPaths, "autosync: ${pid} completed")
 
-        // Chunks 2..N: each large participant file individually
-        if (ok) {
-            largeRelPaths.eachWithIndex { largePath, idx ->
-                def chunkOk = commitAndPush([largePath], "autosync: ${pid} large file ${idx + 1}/${largeRelPaths.size()}")
-                if (!chunkOk) {
-                    logSync("Stopped chunked push at large file ${idx + 1}", largePath)
-                    ok = false
-                    return
-                }
+        // Large files (>= 100 MB): each one individually LFS-tracked, committed, and pushed
+        def allLargePaths = largeRelPaths + l2LargePaths
+        allLargePaths.eachWithIndex { largePath, idx ->
+            def chunkOk = lfsCommitAndPush(largePath, "autosync: ${pid} large file ${idx + 1}/${allLargePaths.size()}")
+            if (!chunkOk) {
+                logSync("Stopped LFS push at large file ${idx + 1}", largePath)
             }
-        }
-
-        // Chunks N+1..: each large L2 file individually
-        if (ok && l2LargePaths) {
-            l2LargePaths.eachWithIndex { largePath, idx ->
-                def chunkOk = commitAndPush([largePath], "autosync: L2 large file ${idx + 1}/${l2LargePaths.size()}")
-                if (!chunkOk) {
-                    logSync("Stopped chunked push at L2 large file ${idx + 1}", largePath)
-                    ok = false
-                    return
-                }
-            }
-        }
-
-        def totalLarge = largeRelPaths.size() + l2LargePaths.size()
-        if (ok) {
-            logSync("Participant + L2 synced (${totalLarge} large files pushed individually)")
         }
 
         // Commit 2: convert pipeline log -> parquet, delete text file, sync parquet
@@ -445,17 +462,8 @@ Duration: ${duration}s
         }
         def logSyncPath       = pipeline_log_parquet.exists() ? pipeline_log_parquet_path : pipeline_log_path
         def binRel = git_root.toPath().relativize(bin_full.toPath()).toString().replace('\\', '/')
-        def addLog = runGit(["git", "add", "-A", logSyncPath, binRel], 120)
-        if (addLog.exit == 0) {
-            def commitLog = runGit(["git", "commit", "-m", "${params.project_name}.log: ${pid} complete"], 30)
-            if (commitLog.exit == 0) {
-                def pushLog = runGit(["git", "push"], 900)
-                if (pushLog.exit != 0) {
-                    runGit(["git", "pull", "--rebase", "--autostash"], 600)
-                    runGit(["git", "push"], 900)
-                }
-            }
-        }
+        // Use commitAndPush for the log parquet (small file, safe to push)
+        commitAndPush([logSyncPath, binRel], "${params.project_name}.log: ${pid} complete")
     } finally {
         git_lock.unlock()
     }
@@ -590,7 +598,7 @@ Session: ${workflow.sessionId}
         if (meta_full.exists()) sharedPaths << git_root.toPath().relativize(meta_full.toPath()).toString().replace('\\', '/')
         if (html_full.exists()) sharedPaths << git_root.toPath().relativize(html_full.toPath()).toString().replace('\\', '/')
 
-        // Helper: commit a set of paths, push (pull --rebase only if push rejected).
+        // Helper: commit a list of paths and push.
         def commitAndPush = { List paths, String msg ->
             if (!paths) return true
             def addResult = runGit(["git", "add", "-A"] + paths, 120)
@@ -600,46 +608,75 @@ Session: ${workflow.sessionId}
                 return false
             }
             def st = runGit(["git", "status", "--porcelain", "--cached"], 15)
-            if (!st.out?.trim()) return true  // nothing to commit
+            if (!st.out?.trim()) return true
             def commitResult = runGit(["git", "commit", "-m", msg], 30)
             if (commitResult.exit != 0) {
                 logMsg("Git sync L2: commit failed (${msg})\n${commitResult.out}\n")
                 return false
             }
-            // Try push first — usually succeeds since bootstrap synced origin
-            def push = runGit(["git", "push"], 900)
+            def push = runGit(["git", "push"], 600)
             if (push.exit == 0) return true
-            // Push rejected → pull --rebase then retry
-            def pull = runGit(["git", "pull", "--rebase", "--autostash"], 600)
+            def pull = runGit(["git", "pull", "--rebase", "--autostash"], 120)
             if (pull.exit != 0) {
                 cleanupRebase()
-                logMsg("Git sync L2: pull failed (${msg})\n${pull.out}\n")
-                return false
+                logMsg("Git sync L2: pull failed (${msg}) — committed locally\n${pull.out}\n")
+                return true
             }
-            push = runGit(["git", "push"], 900)
+            push = runGit(["git", "push"], 600)
             if (push.exit != 0) {
                 logMsg("Git sync L2: push failed (${msg}) — committed locally\n${push.out}\n")
-                return false
             }
             return true
         }
 
-        // Chunk 1: all small L2 files + shared paths (HTML, meta)
-        def smallChunkPaths = smallRelPaths + sharedPaths
-        def ok = commitAndPush(smallChunkPaths, "autosync: ${l2_name} completed")
+        // Helper: LFS-track a single large file, commit + push.
+        def lfsCommitAndPush = { String largePath, String msg ->
+            def track = runGit(["git", "lfs", "track", "--", largePath], 30)
+            if (track.exit != 0) {
+                logMsg("Git sync L2: LFS track failed (${msg})\n${track.out}\n")
+                return false
+            }
+            def addResult = runGit(["git", "add", "-A", ".gitattributes", largePath], 120)
+            if (addResult.exit != 0) {
+                logMsg("Git sync L2: add failed (${msg})\n${addResult.out}\n")
+                runGit(["git", "reset", "HEAD"], 10)
+                return false
+            }
+            def st = runGit(["git", "status", "--porcelain", "--cached"], 15)
+            if (!st.out?.trim()) return true
+            def commitResult = runGit(["git", "commit", "-m", msg], 30)
+            if (commitResult.exit != 0) {
+                logMsg("Git sync L2: commit failed (${msg})\n${commitResult.out}\n")
+                return false
+            }
+            def push = runGit(["git", "push"], 900)
+            if (push.exit == 0) return true
+            def pull = runGit(["git", "pull", "--rebase", "--autostash"], 120)
+            if (pull.exit != 0) {
+                cleanupRebase()
+                logMsg("Git sync L2: pull failed (${msg}) — committed locally\n${pull.out}\n")
+                return true
+            }
+            push = runGit(["git", "push"], 900)
+            if (push.exit != 0) {
+                logMsg("Git sync L2: LFS push failed (${msg}) — committed locally\n${push.out}\n")
+            }
+            return true
+        }
 
-        // Chunks 2..N: each large file individually
-        if (ok) {
-            largeRelPaths.eachWithIndex { largePath, idx ->
-                def chunkOk = commitAndPush([largePath], "autosync: ${l2_name} large file ${idx + 1}/${largeRelPaths.size()}")
-                if (!chunkOk) {
-                    logMsg("Git sync L2: stopped at large file ${idx + 1}\n${largePath}\n")
-                    return
-                }
+        // Chunk 1: all small L2 files + shared paths (HTML, meta) → bulk commit & push
+        def smallChunkPaths = smallRelPaths + sharedPaths
+        commitAndPush(smallChunkPaths, "autosync: ${l2_name} completed")
+
+        // Large files (>= 100 MB): each one individually LFS-tracked, committed, and pushed
+        largeRelPaths.eachWithIndex { largePath, idx ->
+            def chunkOk = lfsCommitAndPush(largePath, "autosync: ${l2_name} large file ${idx + 1}/${largeRelPaths.size()}")
+            if (!chunkOk) {
+                logMsg("Git sync L2: stopped LFS push at large file ${idx + 1}\n${largePath}\n")
             }
         }
 
-        logMsg("Git sync L2: ${ok ? 'success' : 'failed'} (${smallRelPaths.size()} small, ${largeRelPaths.size()} large)\n")
+        logMsg("Git sync L2: done (${smallRelPaths.size()} small pushed, ${largeRelPaths.size()} large via LFS)\n")
     } finally {
         git_lock.unlock()
     }
