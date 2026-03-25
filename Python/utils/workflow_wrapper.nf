@@ -446,7 +446,6 @@ Session: ${workflow.sessionId}
         }
         if (!git_root) return
 
-        def l2_path  = git_root.toPath().relativize(l2_full.toPath()).toString().replace('\\', '/')
         def bin_full = new File("${workflow.launchDir}/${params.output_dir}/.bin").getAbsoluteFile()
         def meta_full = new File(bin_full, "${params.project_name}_meta.json")
         def html_full = new File(bin_full, "${params.project_name}_results.html")
@@ -464,40 +463,88 @@ Session: ${workflow.sessionId}
             } catch (Exception e) { return [exit: -1, out: e.message] }
         }
 
-        def addPaths = [l2_path]
-        if (meta_full.exists()) addPaths << git_root.toPath().relativize(meta_full.toPath()).toString().replace('\\', '/')
-        if (html_full.exists()) addPaths << git_root.toPath().relativize(html_full.toPath()).toString().replace('\\', '/')
-
         def logMsg = { msg -> try { pipeline_log.append(msg) } catch (Exception ignored) {} }
 
         // Clean up stale git state
-        new File(git_root, ".git/index.lock").with { if (exists()) delete() }
-        new File(git_root, ".git/rebase-merge").with { if (exists()) deleteDir() }
-        new File(git_root, ".git/rebase-apply").with { if (exists()) deleteDir() }
+        def cleanupRebase = {
+            runGit(["git", "rebase", "--abort"], 2)
+            new File(git_root, ".git/rebase-merge").with { if (exists()) deleteDir() }
+            new File(git_root, ".git/rebase-apply").with { if (exists()) deleteDir() }
+            new File(git_root, ".git/index.lock").with { if (exists()) delete() }
+        }
+        cleanupRebase()
 
-        def add = runGit(["git", "add", "-A"] + addPaths, 120)
-        if (add.exit == 0) {
-            def status = runGit(["git", "status", "--porcelain", "--cached"] + addPaths, 15)
-            if (status.out?.trim()) {
-                def commit = runGit(["git", "commit", "-m", "autosync: ${l2_name} completed"], 30)
-                if (commit.exit != 0) {
-                    logMsg("Git sync ${l2_name}: commit failed\n${commit.out}\n")
+        // GitHub rejects packs > 2 GiB.  Split L2 files into
+        // "small" (commit together) and "large" (commit+push individually).
+        long LARGE_FILE_BYTES = 100L * 1024L * 1024L  // 100 MB
+
+        def smallRelPaths = []
+        def largeRelPaths = []
+        if (l2_full.isDirectory()) {
+            l2_full.eachFileRecurse { f ->
+                if (f.isFile()) {
+                    def rel = git_root.toPath().relativize(f.toPath()).toString().replace('\\', '/')
+                    if (f.length() >= LARGE_FILE_BYTES) {
+                        largeRelPaths << rel
+                    } else {
+                        smallRelPaths << rel
+                    }
                 }
             }
-        } else {
-            logMsg("Git sync ${l2_name}: git add failed\n${add.out}\n")
         }
 
-        // Push L2 results (participant commits already pushed individually)
-        def pull = runGit(["git", "pull", "--rebase", "--autostash"], 600)
-        if (pull.exit != 0) {
-            new File(git_root, ".git/index.lock").with { if (exists()) delete() }
-            runGit(["git", "rebase", "--abort"], 5)
-            logMsg("Git sync: pull --rebase failed, retrying with merge\n${pull.out}\n")
-            pull = runGit(["git", "pull"], 600)
+        // Shared paths: HTML, meta.json
+        def sharedPaths = []
+        if (meta_full.exists()) sharedPaths << git_root.toPath().relativize(meta_full.toPath()).toString().replace('\\', '/')
+        if (html_full.exists()) sharedPaths << git_root.toPath().relativize(html_full.toPath()).toString().replace('\\', '/')
+
+        // Helper: commit a set of paths, pull --rebase, push.
+        def commitAndPush = { List paths, String msg ->
+            if (!paths) return true
+            def addResult = runGit(["git", "add", "-A"] + paths, 120)
+            if (addResult.exit != 0) {
+                logMsg("Git sync L2: add failed (${msg})\n${addResult.out}\n")
+                runGit(["git", "reset", "HEAD"], 10)
+                return false
+            }
+            def st = runGit(["git", "status", "--porcelain", "--cached"], 15)
+            if (!st.out?.trim()) return true  // nothing to commit
+            def commitResult = runGit(["git", "commit", "-m", msg], 30)
+            if (commitResult.exit != 0) {
+                logMsg("Git sync L2: commit failed (${msg})\n${commitResult.out}\n")
+                return false
+            }
+            def pull = runGit(["git", "pull", "--rebase", "--autostash"], 600)
+            if (pull.exit != 0) {
+                cleanupRebase()
+                runGit(["git", "reset", "--hard", "HEAD"], 10)
+                logMsg("Git sync L2: pull failed (${msg})\n${pull.out}\n")
+                return false
+            }
+            def push = runGit(["git", "push"], 900)
+            if (push.exit != 0) {
+                logMsg("Git sync L2: push failed (${msg}) — committed locally\n${push.out}\n")
+                return false
+            }
+            return true
         }
-        def push = runGit(["git", "push"], 900)
-        logMsg("Git sync L2 push: ${push.exit == 0 ? 'success' : 'failed'}\n${push.out}\n")
+
+        // Chunk 1: all small L2 files + shared paths (HTML, meta)
+        def smallChunkPaths = smallRelPaths + sharedPaths
+        def ok = commitAndPush(smallChunkPaths, "autosync: ${l2_name} completed")
+
+        // Chunks 2..N: each large file individually
+        if (ok) {
+            largeRelPaths.eachWithIndex { largePath, idx ->
+                def chunkOk = commitAndPush([largePath], "autosync: ${l2_name} large file ${idx + 1}/${largeRelPaths.size()}")
+                if (!chunkOk) {
+                    logMsg("Git sync L2: stopped at large file ${idx + 1}\n${largePath}\n")
+                    return
+                }
+            }
+        }
+
+        logMsg("Git sync L2: ${ok ? 'success' : 'failed'} (${smallRelPaths.size()} small, ${largeRelPaths.size()} large)\n")
     } finally {
         git_lock.unlock()
     }
