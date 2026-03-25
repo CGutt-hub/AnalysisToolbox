@@ -71,14 +71,38 @@ workflow participant_discovery {
             // l2 log is a .log.parquet written live by IOInterface bash block — no text file needed here
         }
 
+        // Create l1 parent folder
+        def l1_dir_scaffold = new File("${workflow.launchDir}/${params.output_dir}", "${params.project_name}_l1")
+        l1_dir_scaffold.mkdirs()
+
+        // Initialize HTML archive + serve script + launcher (shared across participants)
+        def html_file_scaffold = new File(bin_dir_infra, "${params.project_name}_results.html")
+        def serve_file_scaffold = new File(bin_dir_infra, "${params.project_name}_results_serve.py")
+        if (!html_file_scaffold.exists() || !serve_file_scaffold.exists()) {
+            try {
+                def init_cmd = [params.python_exe, '-u',
+                    "${workflow.launchDir}/${params.toolbox_dir}/utils/interactive_plotter.py",
+                    'init', html_file_scaffold.absolutePath]
+                def proc = init_cmd.execute()
+                proc.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)
+                if (proc.exitValue() != 0) {
+                    pipeline_log.append(
+                        "[${new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())}] [workflow] Warning: Could not initialize HTML archive: ${proc.text}\n"
+                    )
+                }
+            } catch (Exception e) {
+                pipeline_log.append("[${new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())}] [workflow] HTML init error: ${e.message}\n")
+            }
+        }
+
         // Clean up any leftover .finalized marker files from old pipeline runs
         output_path.eachDirRecurse { dir ->
             def marker = new File(dir, ".finalized")
             if (marker.exists()) marker.delete()
         }
 
-        // Bootstrap push: commit & push ALL current changes before analyses start,
-        // so the remote is fully up-to-date (scaffold, .tex, configs, etc.).
+        // Bootstrap push: commit & push ALL current changes after scaffold creation
+        // so the remote is fully up-to-date before analyses start.
         try {
             def git_root = new File(workflow.launchDir.toString())
             while (git_root != null && !new File(git_root, ".git").exists()) {
@@ -137,9 +161,7 @@ workflow participant_discovery {
         participant_context = all_participants.map { pid ->
             def safe_id = pid.replaceAll('\r', '').trim().replaceAll('[^A-Za-z0-9._-]', '_')
             // Per-participant subfolder: {output_dir}/{project_name}_l1/{safe_id}/
-            def l1_dir = new File("${workflow.launchDir}/${output_dir}/${params.project_name}_l1")
-            l1_dir.mkdirs()
-            def participant_dir = new File(l1_dir, safe_id)
+            def participant_dir = new File(l1_dir_scaffold, safe_id)
             participant_dir.mkdirs()
             
             // Log init happens in the IOInterface bash block on first task run (writes .log.parquet live).
@@ -147,25 +169,6 @@ workflow participant_discovery {
             def timestamp = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
             def global_pipeline_log = new File(new File("${workflow.launchDir}/${params.output_dir}", ".bin"), "${params.project_name}.log")
             global_pipeline_log.append("=== ${safe_id} initialized: ${timestamp} ===\nOutput: ${participant_dir}\n\n")
-            
-            // HTML lives in .bin/ subfolder at the results root (shared across participants)
-            def output_root = new File("${workflow.launchDir}/${output_dir}")
-            def bin_dir_html = new File(output_root, ".bin")
-            bin_dir_html.mkdirs()
-            def html_file = new File(bin_dir_html, "${params.project_name}_results.html")
-            def serve_file = new File(bin_dir_html, "${params.project_name}_results_serve.py")
-            if (!html_file.exists() || !serve_file.exists()) {
-                def init_cmd = [params.python_exe, '-u',
-                    "${workflow.launchDir}/${params.toolbox_dir}/utils/interactive_plotter.py",
-                    'init', html_file.absolutePath]
-                def proc = init_cmd.execute()
-                proc.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)
-                if (proc.exitValue() != 0) {
-                    new File(new File("${workflow.launchDir}/${params.output_dir}", ".bin"), "${params.project_name}.log").append(
-                        "[${new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())}] [workflow] Warning: Could not initialize HTML archive: ${proc.text}\n"
-                    )
-                }
-            }
             
             def folder = "${output_dir}/${params.project_name}_l1/${safe_id}"
             [pid, folder]
