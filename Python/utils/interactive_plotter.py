@@ -1427,8 +1427,8 @@ def create_archive_html(project_name='procedure'):
         async function discoverFromDirectory() {{
             const meta = {{}};
             try {{
-                // Primary: meta.json
-                const metaResp = await fetch('{project_name}_meta.json?_=' + Date.now()).catch(() => null);
+                // Primary: meta.json (../ because HTML lives inside .bin/)
+                const metaResp = await fetch('../{project_name}_meta.json?_=' + Date.now()).catch(() => null);
                 if (metaResp?.ok) {{
                     const loaded = await metaResp.json().catch(() => null);
                     if (loaded && typeof loaded === 'object') {{
@@ -1449,7 +1449,7 @@ def create_archive_html(project_name='procedure'):
                 const pids = [...new Set(pidMatches.map(m => m[1]))];
                 for (const pid of pids) {{
                     const logFile = pid + '/' + pid + '.log.parquet';
-                    const logHead = await fetch(logFile, {{ method: 'HEAD' }}).catch(() => null);
+                    const logHead = await fetch('/' + logFile, {{ method: 'HEAD' }}).catch(() => null);
                     if (logHead?.ok)
                         meta[pid + '_log'] = {{ title: pid + ' Log', path: [pid, 'log'], type: 'log', file: logFile }};
                     const plotsResp = await fetch('/' + pid + '/plots/?_=' + Date.now()).catch(() => null);
