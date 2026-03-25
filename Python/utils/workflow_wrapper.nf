@@ -126,6 +126,17 @@ workflow participant_discovery {
                 new File(git_root, ".git/rebase-merge").with { if (exists()) deleteDir() }
                 new File(git_root, ".git/rebase-apply").with { if (exists()) deleteDir() }
 
+                // Ensure Nextflow trace file is never tracked —
+                // it's held open the entire run and causes rebase failures.
+                def binIgnore = new File(bin_dir_infra, ".gitignore")
+                if (!binIgnore.exists() || !binIgnore.text.contains("pipeline_trace")) {
+                    binIgnore.append("pipeline_trace.txt\n")
+                }
+                def traceRel = git_root.toPath().relativize(
+                    new File(bin_dir_infra, "pipeline_trace.txt").toPath().toAbsolutePath()
+                ).toString().replace('\\', '/')
+                runBootGit(["git", "rm", "--cached", "--ignore-unmatch", "--", traceRel], 10)
+
                 def addAll = runBootGit(["git", "add", "-A"], 120)
                 if (addAll.exit == 0) {
                     def st = runBootGit(["git", "status", "--porcelain", "--cached"], 15)
@@ -332,12 +343,15 @@ Duration: ${duration}s
 
         // Scan L2 folder for updated group-level results (gets new data
         // after each participant).  Split into small / large like participant files.
+        // Skip files modified within the last 3 seconds — they may still be
+        // written by a concurrently running L2 process.
         def l2SmallPaths = []
         def l2LargePaths = []
+        def l2Now = System.currentTimeMillis()
         def group_full = new File(output_root_full, "${params.project_name}_l2")
         if (group_full.exists() && group_full.isDirectory()) {
             group_full.eachFileRecurse { f ->
-                if (f.isFile()) {
+                if (f.isFile() && (l2Now - f.lastModified() > 3000)) {
                     def rel = git_root.toPath().relativize(f.toPath()).toString().replace('\\', '/')
                     if (f.length() >= LARGE_FILE_BYTES) {
                         l2LargePaths << rel
@@ -348,7 +362,7 @@ Duration: ${duration}s
             }
         }
 
-        // Helper: commit a set of paths, pull --rebase, push.
+        // Helper: commit a set of paths, push (pull --rebase only if push rejected).
         // Returns true on success.
         def commitAndPush = { List paths, String msg ->
             if (!paths) return true
@@ -365,14 +379,17 @@ Duration: ${duration}s
                 logSync("Commit failed (${msg})", commitResult.out)
                 return false
             }
+            // Try push first — usually succeeds since bootstrap synced origin at start
+            def push = runGit(["git", "push"], 900)
+            if (push.exit == 0) return true
+            // Push rejected → pull --rebase then retry
             def pull = runGit(["git", "pull", "--rebase", "--autostash"], 600)
             if (pull.exit != 0) {
                 cleanupRebase()
-                runGit(["git", "reset", "--hard", "HEAD"], 10)
                 logSync("Git pull failed (${msg})", pull.out)
                 return false
             }
-            def push = runGit(["git", "push"], 900)
+            push = runGit(["git", "push"], 900)
             if (push.exit != 0) {
                 logSync("Push failed (${msg}) — committed locally", push.out)
                 return false
@@ -426,15 +443,17 @@ Duration: ${duration}s
                 if (finished && proc2.exitValue() == 0) pipeline_log.delete()
             } catch (Exception e) { /* non-critical */ }
         }
-        def analysis_dir      = new File("${workflow.launchDir}").getAbsoluteFile()
-        def analysis_dir_path = git_root.toPath().relativize(analysis_dir.toPath()).toString().replace('\\', '/')
         def logSyncPath       = pipeline_log_parquet.exists() ? pipeline_log_parquet_path : pipeline_log_path
-        def addLog = runGit(["git", "add", "-A", logSyncPath, analysis_dir_path], 120)
+        def binRel = git_root.toPath().relativize(bin_full.toPath()).toString().replace('\\', '/')
+        def addLog = runGit(["git", "add", "-A", logSyncPath, binRel], 120)
         if (addLog.exit == 0) {
             def commitLog = runGit(["git", "commit", "-m", "${params.project_name}.log: ${pid} complete"], 30)
             if (commitLog.exit == 0) {
-                runGit(["git", "pull", "--rebase"], 600)
-                runGit(["git", "push"], 900)
+                def pushLog = runGit(["git", "push"], 900)
+                if (pushLog.exit != 0) {
+                    runGit(["git", "pull", "--rebase", "--autostash"], 600)
+                    runGit(["git", "push"], 900)
+                }
             }
         }
     } finally {
@@ -571,7 +590,7 @@ Session: ${workflow.sessionId}
         if (meta_full.exists()) sharedPaths << git_root.toPath().relativize(meta_full.toPath()).toString().replace('\\', '/')
         if (html_full.exists()) sharedPaths << git_root.toPath().relativize(html_full.toPath()).toString().replace('\\', '/')
 
-        // Helper: commit a set of paths, pull --rebase, push.
+        // Helper: commit a set of paths, push (pull --rebase only if push rejected).
         def commitAndPush = { List paths, String msg ->
             if (!paths) return true
             def addResult = runGit(["git", "add", "-A"] + paths, 120)
@@ -587,14 +606,17 @@ Session: ${workflow.sessionId}
                 logMsg("Git sync L2: commit failed (${msg})\n${commitResult.out}\n")
                 return false
             }
+            // Try push first — usually succeeds since bootstrap synced origin
+            def push = runGit(["git", "push"], 900)
+            if (push.exit == 0) return true
+            // Push rejected → pull --rebase then retry
             def pull = runGit(["git", "pull", "--rebase", "--autostash"], 600)
             if (pull.exit != 0) {
                 cleanupRebase()
-                runGit(["git", "reset", "--hard", "HEAD"], 10)
                 logMsg("Git sync L2: pull failed (${msg})\n${pull.out}\n")
                 return false
             }
-            def push = runGit(["git", "push"], 900)
+            push = runGit(["git", "push"], 900)
             if (push.exit != 0) {
                 logMsg("Git sync L2: push failed (${msg}) — committed locally\n${push.out}\n")
                 return false
