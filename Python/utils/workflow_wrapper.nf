@@ -77,6 +77,51 @@ workflow participant_discovery {
             if (marker.exists()) marker.delete()
         }
 
+        // Bootstrap push: commit & push ALL current changes before analyses start,
+        // so the remote is fully up-to-date (scaffold, .tex, configs, etc.).
+        try {
+            def git_root = new File(workflow.launchDir.toString())
+            while (git_root != null && !new File(git_root, ".git").exists()) {
+                git_root = git_root.getParentFile()
+            }
+            if (git_root) {
+                def runBootGit = { cmd, timeout = 10 ->
+                    try {
+                        def env = ["GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=echo", "SSH_ASKPASS=echo"]
+                        def proc = cmd.execute(env, git_root)
+                        def out = new StringBuilder(); def err = new StringBuilder()
+                        def reader = Thread.start { proc.waitForProcessOutput(out, err) }
+                        reader.join(timeout * 1000L)
+                        if (reader.isAlive()) { proc.destroy(); reader.join(2000L); return [exit: -1, out: "timeout"] }
+                        out.append(err)
+                        return [exit: proc.exitValue(), out: out.toString()]
+                    } catch (Exception e) { return [exit: -1, out: e.message] }
+                }
+                // Clean up stale lock / rebase state
+                new File(git_root, ".git/index.lock").with { if (exists()) delete() }
+                new File(git_root, ".git/rebase-merge").with { if (exists()) deleteDir() }
+                new File(git_root, ".git/rebase-apply").with { if (exists()) deleteDir() }
+
+                def addAll = runBootGit(["git", "add", "-A"], 120)
+                if (addAll.exit == 0) {
+                    def st = runBootGit(["git", "status", "--porcelain", "--cached"], 15)
+                    if (st.out?.trim()) {
+                        def ts = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
+                        runBootGit(["git", "commit", "-m", "autosync: bootstrap push before analysis (${ts})"], 30)
+                        def pull = runBootGit(["git", "pull", "--rebase", "--autostash"], 600)
+                        if (pull.exit != 0) {
+                            runBootGit(["git", "rebase", "--abort"], 5)
+                            new File(git_root, ".git/index.lock").with { if (exists()) delete() }
+                        }
+                        runBootGit(["git", "push"], 900)
+                    }
+                }
+                pipeline_log.append("[${new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())}] [workflow] Bootstrap push completed\n")
+            }
+        } catch (Exception e) {
+            pipeline_log.append("[${new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())}] [workflow] Bootstrap push failed: ${e.message}\n")
+        }
+
         def watched_participants = Channel
             .watchPath("${workflow.launchDir}/${input_dir}/*", 'create,modify')
             .map { path -> path.getName() }
