@@ -277,14 +277,27 @@ Duration: ${duration}s
             }
         }
 
-        // Shared paths: HTML, meta.json, l2 folder
+        // Shared paths: HTML, meta.json
         def sharedPaths = []
         if (html_path) sharedPaths << html_path
         if (meta_path) sharedPaths << meta_path
+
+        // Scan L2 folder for updated group-level results (gets new data
+        // after each participant).  Split into small / large like participant files.
+        def l2SmallPaths = []
+        def l2LargePaths = []
         def group_full = new File(output_root_full, "${params.project_name}_l2")
-        if (group_full.exists()) {
-            def group_path = git_root.toPath().relativize(group_full.toPath()).toString().replace('\\', '/')
-            sharedPaths << group_path
+        if (group_full.exists() && group_full.isDirectory()) {
+            group_full.eachFileRecurse { f ->
+                if (f.isFile()) {
+                    def rel = git_root.toPath().relativize(f.toPath()).toString().replace('\\', '/')
+                    if (f.length() >= LARGE_FILE_BYTES) {
+                        l2LargePaths << rel
+                    } else {
+                        l2SmallPaths << rel
+                    }
+                }
+            }
         }
 
         // Helper: commit a set of paths, pull --rebase, push.
@@ -319,25 +332,37 @@ Duration: ${duration}s
             return true
         }
 
-        // Chunk 1: all small files + shared paths (well under 2 GB)
-        def smallChunkPaths = smallRelPaths + sharedPaths
+        // Chunk 1: participant small files + shared paths + L2 small files
+        def smallChunkPaths = smallRelPaths + sharedPaths + l2SmallPaths
         def ok = commitAndPush(smallChunkPaths, "autosync: ${pid} completed")
 
-        // Chunks 2..N: each large file individually (each < 800 MB typically)
+        // Chunks 2..N: each large participant file individually
         if (ok) {
             largeRelPaths.eachWithIndex { largePath, idx ->
                 def chunkOk = commitAndPush([largePath], "autosync: ${pid} large file ${idx + 1}/${largeRelPaths.size()}")
                 if (!chunkOk) {
                     logSync("Stopped chunked push at large file ${idx + 1}", largePath)
-                    return  // breaks out of eachWithIndex
+                    ok = false
+                    return
                 }
             }
         }
 
-        if (ok && largeRelPaths.isEmpty()) {
-            logSync("Participant synced (no large files)")
-        } else if (ok) {
-            logSync("Participant synced (${largeRelPaths.size()} large files pushed individually)")
+        // Chunks N+1..: each large L2 file individually
+        if (ok && l2LargePaths) {
+            l2LargePaths.eachWithIndex { largePath, idx ->
+                def chunkOk = commitAndPush([largePath], "autosync: L2 large file ${idx + 1}/${l2LargePaths.size()}")
+                if (!chunkOk) {
+                    logSync("Stopped chunked push at L2 large file ${idx + 1}", largePath)
+                    ok = false
+                    return
+                }
+            }
+        }
+
+        def totalLarge = largeRelPaths.size() + l2LargePaths.size()
+        if (ok) {
+            logSync("Participant + L2 synced (${totalLarge} large files pushed individually)")
         }
 
         // Commit 2: convert pipeline log -> parquet, delete text file, sync parquet
