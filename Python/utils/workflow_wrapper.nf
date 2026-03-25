@@ -256,42 +256,88 @@ Duration: ${duration}s
 
         cleanupRebase()
 
-        // Commit 1: participant subfolder + shared HTML + meta.json + {project}_l2/ (if it exists)
-        def addPaths = [relative_path]
-        if (html_path) addPaths << html_path
-        if (meta_path) addPaths << meta_path
+        // GitHub rejects packs > 2 GiB.  Split participant files into
+        // "small" (commit together) and "large" (commit+push individually).
+        long LARGE_FILE_BYTES = 100L * 1024L * 1024L  // 100 MB
+
+        // Collect all files under the participant folder
+        def participantDir = results_full_path
+        def smallRelPaths = []
+        def largeRelPaths = []
+        if (participantDir.isDirectory()) {
+            participantDir.eachFileRecurse { f ->
+                if (f.isFile()) {
+                    def rel = git_root.toPath().relativize(f.toPath()).toString().replace('\\', '/')
+                    if (f.length() >= LARGE_FILE_BYTES) {
+                        largeRelPaths << rel
+                    } else {
+                        smallRelPaths << rel
+                    }
+                }
+            }
+        }
+
+        // Shared paths: HTML, meta.json, l2 folder
+        def sharedPaths = []
+        if (html_path) sharedPaths << html_path
+        if (meta_path) sharedPaths << meta_path
         def group_full = new File(output_root_full, "${params.project_name}_l2")
         if (group_full.exists()) {
             def group_path = git_root.toPath().relativize(group_full.toPath()).toString().replace('\\', '/')
-            addPaths << group_path
+            sharedPaths << group_path
         }
 
-        // git add can be slow on NAS/network mounts with many large parquet files — use 120 s.
-        def add = runGit(["git", "add", "-A"] + addPaths, 120)
-        if (add.exit != 0) {
-            runGit(["git", "reset", "HEAD"], 10)
-            logSync("Git add failed", add.out)
-        } else {
-            def status_participant = runGit(["git", "status", "--porcelain", "--cached"] + addPaths, 15)
-            def hasParticipantChanges = status_participant.out?.trim()
-            if (hasParticipantChanges) {
-                def commit = runGit(["git", "commit", "-m", "autosync: ${pid} completed"], 30)
-                if (commit.exit == 0) {
-                    def pull = runGit(["git", "pull", "--rebase", "--autostash"], 600)
-                    if (pull.exit != 0) {
-                        cleanupRebase()
-                        runGit(["git", "reset", "--hard", "HEAD"], 10)
-                        logSync("Git pull failed", pull.out)
-                    } else {
-                        def push = runGit(["git", "push"], 900)
-                        logSync(push.exit == 0 ? "Participant synced" : "Push failed (committed locally)", push.out)
-                    }
-                } else {
-                    logSync("Commit failed", commit.out)
-                }
-            } else {
-                logSync("No participant changes")
+        // Helper: commit a set of paths, pull --rebase, push.
+        // Returns true on success.
+        def commitAndPush = { List paths, String msg ->
+            if (!paths) return true
+            def addResult = runGit(["git", "add", "-A"] + paths, 120)
+            if (addResult.exit != 0) {
+                logSync("Git add failed (${msg})", addResult.out)
+                runGit(["git", "reset", "HEAD"], 10)
+                return false
             }
+            def st = runGit(["git", "status", "--porcelain", "--cached"], 15)
+            if (!st.out?.trim()) return true  // nothing to commit
+            def commitResult = runGit(["git", "commit", "-m", msg], 30)
+            if (commitResult.exit != 0) {
+                logSync("Commit failed (${msg})", commitResult.out)
+                return false
+            }
+            def pull = runGit(["git", "pull", "--rebase", "--autostash"], 600)
+            if (pull.exit != 0) {
+                cleanupRebase()
+                runGit(["git", "reset", "--hard", "HEAD"], 10)
+                logSync("Git pull failed (${msg})", pull.out)
+                return false
+            }
+            def push = runGit(["git", "push"], 900)
+            if (push.exit != 0) {
+                logSync("Push failed (${msg}) — committed locally", push.out)
+                return false
+            }
+            return true
+        }
+
+        // Chunk 1: all small files + shared paths (well under 2 GB)
+        def smallChunkPaths = smallRelPaths + sharedPaths
+        def ok = commitAndPush(smallChunkPaths, "autosync: ${pid} completed")
+
+        // Chunks 2..N: each large file individually (each < 800 MB typically)
+        if (ok) {
+            largeRelPaths.eachWithIndex { largePath, idx ->
+                def chunkOk = commitAndPush([largePath], "autosync: ${pid} large file ${idx + 1}/${largeRelPaths.size()}")
+                if (!chunkOk) {
+                    logSync("Stopped chunked push at large file ${idx + 1}", largePath)
+                    return  // breaks out of eachWithIndex
+                }
+            }
+        }
+
+        if (ok && largeRelPaths.isEmpty()) {
+            logSync("Participant synced (no large files)")
+        } else if (ok) {
+            logSync("Participant synced (${largeRelPaths.size()} large files pushed individually)")
         }
 
         // Commit 2: convert pipeline log -> parquet, delete text file, sync parquet
