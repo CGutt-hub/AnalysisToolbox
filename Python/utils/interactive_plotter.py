@@ -1625,15 +1625,10 @@ def add_log_to_archive(archive_path, participant_id, log_path, log_name):
             relative_file = f'{participant_id}/{log_filename}'
         os.makedirs(sidecar_dir, exist_ok=True)
         sidecar_path = os.path.join(sidecar_dir, log_filename)
-        # For the global log: append to existing parquet content so each participant's
-        # finalization adds to the running log rather than overwriting it.
-        if participant_id == 'global' and os.path.exists(sidecar_path):
-            try:
-                existing = pl.read_parquet(sidecar_path)
-                existing_content = existing['content'][0] if len(existing) > 0 else ''
-                log_content = (existing_content or '') + log_content
-            except Exception:
-                pass  # start fresh if existing parquet is unreadable
+        # Global log: the text file already contains the full running log
+        # (each participant's finalization appends to EV.log before calling
+        # add-log), so we just overwrite the parquet with the current snapshot.
+        # Non-global text logs are rare (legacy) — also overwrite to be safe.
         pl.DataFrame({'content': [log_content]}).write_parquet(sidecar_path, compression='snappy')
 
     # Lock lives next to HTML
