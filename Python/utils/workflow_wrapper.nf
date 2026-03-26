@@ -692,7 +692,6 @@ Session: ${workflow.sessionId}
                 commitAndPush(largeRelPaths, "autosync: ${l2_name} large files (no LFS)")
             }
         }
-        }
 
         logMsg("Git sync L2: done (${smallRelPaths.size()} small pushed, ${largeRelPaths.size()} large via LFS)\n")
     } finally {
