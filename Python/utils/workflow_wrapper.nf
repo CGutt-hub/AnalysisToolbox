@@ -271,7 +271,7 @@ Duration: ${duration}s
         def output_root_full  = new File("${workflow.launchDir}/${params.output_dir}").getAbsoluteFile()
         def bin_full          = new File(output_root_full, ".bin")
         def html_full         = new File(bin_full, "${params.project_name}_results.html")
-        def meta_full         = new File(bin_full, "${params.project_name}_meta.json")
+        def meta_full         = new File(output_root_full, "${params.project_name}_meta.json")
         def html_path         = html_full.exists() ? git_root.toPath().relativize(html_full.toPath()).toString().replace('\\', '/') : null
         def meta_path         = meta_full.exists() ? git_root.toPath().relativize(meta_full.toPath()).toString().replace('\\', '/') : null
 
@@ -438,12 +438,20 @@ Duration: ${duration}s
         def smallChunkPaths = smallRelPaths + sharedPaths + l2SmallPaths
         commitAndPush(smallChunkPaths, "autosync: ${pid} completed")
 
-        // Large files (>= 100 MB): each one individually LFS-tracked, committed, and pushed
+        // Large files (>= 100 MB): try LFS if available, else commit normally (push will fail for >100 MB on GitHub)
         def allLargePaths = largeRelPaths + l2LargePaths
-        allLargePaths.eachWithIndex { largePath, idx ->
-            def chunkOk = lfsCommitAndPush(largePath, "autosync: ${pid} large file ${idx + 1}/${allLargePaths.size()}")
-            if (!chunkOk) {
-                logSync("Stopped LFS push at large file ${idx + 1}", largePath)
+        if (allLargePaths) {
+            def lfsCheck = runGit(["git", "lfs", "version"], 5)
+            if (lfsCheck.exit == 0) {
+                allLargePaths.eachWithIndex { largePath, idx ->
+                    def chunkOk = lfsCommitAndPush(largePath, "autosync: ${pid} large file ${idx + 1}/${allLargePaths.size()}")
+                    if (!chunkOk) {
+                        logSync("Stopped LFS push at large file ${idx + 1}", largePath)
+                    }
+                }
+            } else {
+                logSync("git-lfs not available — committing ${allLargePaths.size()} large file(s) without LFS", "")
+                commitAndPush(allLargePaths, "autosync: ${pid} large files (no LFS)")
             }
         }
 
@@ -457,7 +465,7 @@ Duration: ${duration}s
                     'add-log', procedure_html.absolutePath, 'global', pipeline_log.absolutePath, "${params.project_name}.log"]
                 def proc2 = add_global_cmd.execute()
                 def finished = proc2.waitFor(60, java.util.concurrent.TimeUnit.SECONDS)
-                if (finished && proc2.exitValue() == 0) pipeline_log.delete()
+                // Keep the text log so it accumulates across participants
             } catch (Exception e) { /* non-critical */ }
         }
         def logSyncPath       = pipeline_log_parquet.exists() ? pipeline_log_parquet_path : pipeline_log_path
@@ -546,8 +554,9 @@ Session: ${workflow.sessionId}
         }
         if (!git_root) return
 
-        def bin_full = new File("${workflow.launchDir}/${params.output_dir}/.bin").getAbsoluteFile()
-        def meta_full = new File(bin_full, "${params.project_name}_meta.json")
+        def output_root_full = new File("${workflow.launchDir}/${params.output_dir}").getAbsoluteFile()
+        def bin_full = new File(output_root_full, ".bin")
+        def meta_full = new File(output_root_full, "${params.project_name}_meta.json")
         def html_full = new File(bin_full, "${params.project_name}_results.html")
 
         def runGit = { cmd, timeout = 10 ->
@@ -668,12 +677,21 @@ Session: ${workflow.sessionId}
         def smallChunkPaths = smallRelPaths + sharedPaths
         commitAndPush(smallChunkPaths, "autosync: ${l2_name} completed")
 
-        // Large files (>= 100 MB): each one individually LFS-tracked, committed, and pushed
-        largeRelPaths.eachWithIndex { largePath, idx ->
-            def chunkOk = lfsCommitAndPush(largePath, "autosync: ${l2_name} large file ${idx + 1}/${largeRelPaths.size()}")
-            if (!chunkOk) {
-                logMsg("Git sync L2: stopped LFS push at large file ${idx + 1}\n${largePath}\n")
+        // Large files (>= 100 MB): try LFS if available, else commit normally
+        if (largeRelPaths) {
+            def lfsCheck = runGit(["git", "lfs", "version"], 5)
+            if (lfsCheck.exit == 0) {
+                largeRelPaths.eachWithIndex { largePath, idx ->
+                    def chunkOk = lfsCommitAndPush(largePath, "autosync: ${l2_name} large file ${idx + 1}/${largeRelPaths.size()}")
+                    if (!chunkOk) {
+                        logMsg("Git sync L2: stopped LFS push at large file ${idx + 1}\n${largePath}\n")
+                    }
+                }
+            } else {
+                logMsg("Git sync L2: git-lfs not available — committing ${largeRelPaths.size()} large file(s) without LFS\n")
+                commitAndPush(largeRelPaths, "autosync: ${l2_name} large files (no LFS)")
             }
+        }
         }
 
         logMsg("Git sync L2: done (${smallRelPaths.size()} small pushed, ${largeRelPaths.size()} large via LFS)\n")

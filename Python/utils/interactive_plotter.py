@@ -234,9 +234,16 @@ if __name__ == '__main__':
 def load_or_create_archive(archive_path):
     """Load existing archive metadata from {project}_meta.json at the archive root."""
     archive_dir = os.path.dirname(os.path.abspath(archive_path))
-    meta_path = os.path.join(archive_dir, _meta_filename(archive_path))
+    # meta.json lives at the results root (parent of .bin/), not inside .bin/
+    archive_root = os.path.dirname(archive_dir) if os.path.basename(archive_dir) == '.bin' else archive_dir
+    meta_path = os.path.join(archive_root, _meta_filename(archive_path))
     if os.path.exists(meta_path):
         with open(meta_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    # Migration: check old location inside .bin/
+    old_meta = os.path.join(archive_dir, _meta_filename(archive_path))
+    if old_meta != meta_path and os.path.exists(old_meta):
+        with open(old_meta, 'r', encoding='utf-8') as f:
             return json.load(f)
     return {}
 
@@ -1527,6 +1534,7 @@ def update_archive(archive_path, participant_id, plot_id, plot_title, tree_path,
     """
     archive_path = os.path.abspath(archive_path)
     archive_dir = os.path.dirname(archive_path)
+    archive_root = os.path.dirname(archive_dir) if os.path.basename(archive_dir) == '.bin' else archive_dir
     os.makedirs(archive_dir, exist_ok=True)
     
     # Lock lives next to the HTML — always accessible
@@ -1557,8 +1565,8 @@ def update_archive(archive_path, participant_id, plot_id, plot_title, tree_path,
             'type': 'plot',
             'file': relative_file or f'{participant_id}/plots/{plot_id}.parquet'
         }
-        # Write {project}_meta.json (polled by open browser tabs for live updates)
-        _write_meta_json(archive_dir, existing_meta, _meta_filename(archive_path))
+        # Write {project}_meta.json at results root (polled by open browser tabs for live updates)
+        _write_meta_json(archive_root, existing_meta, _meta_filename(archive_path))
         # Create HTML shell once — never needs to be regenerated
         if not os.path.exists(archive_path):
             _pn = _meta_filename(archive_path).replace('_meta.json', '')
@@ -1654,7 +1662,7 @@ def add_log_to_archive(archive_path, participant_id, log_path, log_name):
             'file': relative_file   # relative path from archive root for JS fetch
         }
 
-        _write_meta_json(archive_dir, existing_meta, _meta_filename(archive_path))
+        _write_meta_json(archive_root, existing_meta, _meta_filename(archive_path))
         # Create HTML shell once — never needs to be regenerated
         if not os.path.exists(archive_path):
             _pn = _meta_filename(archive_path).replace('_meta.json', '')
