@@ -281,13 +281,17 @@ Duration: ${duration}s
                 def proc = cmd.execute(env, git_root)
                 def out = new StringBuilder()
                 def err = new StringBuilder()
-                // Run waitForProcessOutput in a thread so we can enforce a timeout
-                // without leaving orphaned TextDumper threads that throw on stream close.
                 def reader = Thread.start { proc.waitForProcessOutput(out, err) }
                 reader.join(timeout * 1000L)
                 if (reader.isAlive()) {
-                    proc.destroy()
-                    reader.join(2000L)  // let reader notice the closed stream
+                    // Kill the process tree — proc.destroy() only signals the parent;
+                    // child processes (ssh, git-remote-https, git-lfs) survive on NFS.
+                    try {
+                        def pid_val = proc.pid()           // Java 9+
+                        ["pkill", "-9", "-P", "${pid_val}"].execute().waitFor(3, java.util.concurrent.TimeUnit.SECONDS)
+                    } catch (Exception ignored) {}
+                    try { proc.destroyForcibly() } catch (Exception ignored) { proc.destroy() }
+                    reader.join(3000L)
                     out.append(err)
                     return [exit: -1, out: "timeout: ${out}".toString()]
                 }
@@ -298,11 +302,31 @@ Duration: ${duration}s
             }
         }
 
+        // Aggressively remove index.lock — on NFS a simple delete() can fail
+        // when an orphaned git child still holds the file descriptor open.
+        def nukeIndexLock = {
+            def lockFile = new File(git_root, ".git/index.lock")
+            if (!lockFile.exists()) return
+            // Attempt 1: plain delete
+            lockFile.delete()
+            if (!lockFile.exists()) return
+            // Attempt 2: kill anything holding it via fuser, then retry
+            try {
+                ["fuser", "-k", lockFile.absolutePath].execute().waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
+                Thread.sleep(500)
+            } catch (Exception ignored) {}
+            lockFile.delete()
+            if (!lockFile.exists()) return
+            // Attempt 3: wait a bit for NFS to release, then force
+            Thread.sleep(2000)
+            lockFile.delete()
+        }
+
         def cleanupRebase = {
             runGit(["git", "rebase", "--abort"], 2)
             new File(git_root, ".git/rebase-merge").with { if (exists()) deleteDir() }
             new File(git_root, ".git/rebase-apply").with { if (exists()) deleteDir() }
-            new File(git_root, ".git/index.lock").with { if (exists()) delete() }
+            nukeIndexLock()
         }
 
         def logSync = { status, details = "" ->
@@ -339,10 +363,14 @@ Duration: ${duration}s
             }
         }
 
-        // Shared paths: HTML, meta.json
-        def sharedPaths = []
-        if (html_path) sharedPaths << html_path
-        if (meta_path) sharedPaths << meta_path
+        // Shared paths: entire .bin/ directory (HTML, meta.json, serve.py, .gitignore, …)
+        // plus the .sh launcher which lives one level up.
+        def binRel = git_root.toPath().relativize(bin_full.toPath()).toString().replace('\\', '/')
+        def sharedPaths = [binRel]
+        def shLauncher = new File(output_root_full, "${params.project_name}_results.sh")
+        if (shLauncher.exists()) {
+            sharedPaths << git_root.toPath().relativize(shLauncher.toPath()).toString().replace('\\', '/')
+        }
 
         // Scan L2 folder for updated group-level results (gets new data
         // after each participant).  Split into small / large like participant files.
@@ -368,7 +396,7 @@ Duration: ${duration}s
         // Helper: commit a list of paths and push.
         def commitAndPush = { List paths, String msg ->
             if (!paths) return true
-            new File(git_root, ".git/index.lock").with { if (exists()) delete() }
+            nukeIndexLock()
             def addResult = runGit(["git", "add", "-A"] + paths, 120)
             if (addResult.exit != 0) {
                 logSync("Git add failed (${msg})", addResult.out)
@@ -400,9 +428,7 @@ Duration: ${duration}s
 
         // Helper: LFS-track a single large file, commit it + .gitattributes, and push.
         def lfsCommitAndPush = { String largePath, String msg ->
-            // Clean stale index.lock before each operation — NFS proc.destroy()
-            // does not reliably kill child git/LFS processes.
-            new File(git_root, ".git/index.lock").with { if (exists()) delete() }
+            nukeIndexLock()
             // Tell LFS to track this specific file path
             def track = runGit(["git", "lfs", "track", "--", largePath], 30)
             if (track.exit != 0) {
@@ -473,8 +499,7 @@ Duration: ${duration}s
             } catch (Exception e) { /* non-critical */ }
         }
         def logSyncPath       = pipeline_log_parquet.exists() ? pipeline_log_parquet_path : pipeline_log_path
-        def binRel = git_root.toPath().relativize(bin_full.toPath()).toString().replace('\\', '/')
-        // Use commitAndPush for the log parquet (small file, safe to push)
+        // Use commitAndPush for the log parquet + full .bin/ dir
         commitAndPush([logSyncPath, binRel], "${params.project_name}.log: ${pid} complete")
     } finally {
         git_lock.unlock()
@@ -570,7 +595,16 @@ Session: ${workflow.sessionId}
                 def out = new StringBuilder(); def err = new StringBuilder()
                 def reader = Thread.start { proc.waitForProcessOutput(out, err) }
                 reader.join(timeout * 1000L)
-                if (reader.isAlive()) { proc.destroy(); reader.join(2000L); return [exit: -1, out: "timeout"] }
+                if (reader.isAlive()) {
+                    try {
+                        def pid_val = proc.pid()
+                        ["pkill", "-9", "-P", "${pid_val}"].execute().waitFor(3, java.util.concurrent.TimeUnit.SECONDS)
+                    } catch (Exception ignored) {}
+                    try { proc.destroyForcibly() } catch (Exception ignored) { proc.destroy() }
+                    reader.join(3000L)
+                    out.append(err)
+                    return [exit: -1, out: "timeout: ${out}".toString()]
+                }
                 out.append(err)
                 return [exit: proc.exitValue(), out: out.toString()]
             } catch (Exception e) { return [exit: -1, out: e.message] }
@@ -578,12 +612,27 @@ Session: ${workflow.sessionId}
 
         def logMsg = { msg -> try { pipeline_log.append(msg) } catch (Exception ignored) {} }
 
+        def nukeIndexLock = {
+            def lockFile = new File(git_root, ".git/index.lock")
+            if (!lockFile.exists()) return
+            lockFile.delete()
+            if (!lockFile.exists()) return
+            try {
+                ["fuser", "-k", lockFile.absolutePath].execute().waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
+                Thread.sleep(500)
+            } catch (Exception ignored) {}
+            lockFile.delete()
+            if (!lockFile.exists()) return
+            Thread.sleep(2000)
+            lockFile.delete()
+        }
+
         // Clean up stale git state
         def cleanupRebase = {
             runGit(["git", "rebase", "--abort"], 2)
             new File(git_root, ".git/rebase-merge").with { if (exists()) deleteDir() }
             new File(git_root, ".git/rebase-apply").with { if (exists()) deleteDir() }
-            new File(git_root, ".git/index.lock").with { if (exists()) delete() }
+            nukeIndexLock()
         }
         cleanupRebase()
 
@@ -606,15 +655,18 @@ Session: ${workflow.sessionId}
             }
         }
 
-        // Shared paths: HTML, meta.json
-        def sharedPaths = []
-        if (meta_full.exists()) sharedPaths << git_root.toPath().relativize(meta_full.toPath()).toString().replace('\\', '/')
-        if (html_full.exists()) sharedPaths << git_root.toPath().relativize(html_full.toPath()).toString().replace('\\', '/')
+        // Shared paths: entire .bin/ directory (HTML, meta.json, serve.py, …) + .sh launcher
+        def binRel = git_root.toPath().relativize(bin_full.toPath()).toString().replace('\\', '/')
+        def sharedPaths = [binRel]
+        def shLauncher = new File(output_root_full, "${params.project_name}_results.sh")
+        if (shLauncher.exists()) {
+            sharedPaths << git_root.toPath().relativize(shLauncher.toPath()).toString().replace('\\', '/')
+        }
 
         // Helper: commit a list of paths and push.
         def commitAndPush = { List paths, String msg ->
             if (!paths) return true
-            new File(git_root, ".git/index.lock").with { if (exists()) delete() }
+            nukeIndexLock()
             def addResult = runGit(["git", "add", "-A"] + paths, 120)
             if (addResult.exit != 0) {
                 logMsg("Git sync L2: add failed (${msg})\n${addResult.out}\n")
@@ -645,9 +697,7 @@ Session: ${workflow.sessionId}
 
         // Helper: LFS-track a single large file, commit + push.
         def lfsCommitAndPush = { String largePath, String msg ->
-            // Clean stale index.lock before each operation — NFS proc.destroy()
-            // does not reliably kill child git/LFS processes.
-            new File(git_root, ".git/index.lock").with { if (exists()) delete() }
+            nukeIndexLock()
             def track = runGit(["git", "lfs", "track", "--", largePath], 30)
             if (track.exit != 0) {
                 logMsg("Git sync L2: LFS track failed (${msg})\n${track.out}\n")
