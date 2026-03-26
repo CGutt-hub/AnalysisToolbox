@@ -271,7 +271,7 @@ Duration: ${duration}s
         def output_root_full  = new File("${workflow.launchDir}/${params.output_dir}").getAbsoluteFile()
         def bin_full          = new File(output_root_full, ".bin")
         def html_full         = new File(bin_full, "${params.project_name}_results.html")
-        def meta_full         = new File(output_root_full, "${params.project_name}_meta.json")
+        def meta_full         = new File(bin_full, "${params.project_name}_meta.json")
         def html_path         = html_full.exists() ? git_root.toPath().relativize(html_full.toPath()).toString().replace('\\', '/') : null
         def meta_path         = meta_full.exists() ? git_root.toPath().relativize(meta_full.toPath()).toString().replace('\\', '/') : null
 
@@ -368,6 +368,7 @@ Duration: ${duration}s
         // Helper: commit a list of paths and push.
         def commitAndPush = { List paths, String msg ->
             if (!paths) return true
+            new File(git_root, ".git/index.lock").with { if (exists()) delete() }
             def addResult = runGit(["git", "add", "-A"] + paths, 120)
             if (addResult.exit != 0) {
                 logSync("Git add failed (${msg})", addResult.out)
@@ -399,6 +400,9 @@ Duration: ${duration}s
 
         // Helper: LFS-track a single large file, commit it + .gitattributes, and push.
         def lfsCommitAndPush = { String largePath, String msg ->
+            // Clean stale index.lock before each operation — NFS proc.destroy()
+            // does not reliably kill child git/LFS processes.
+            new File(git_root, ".git/index.lock").with { if (exists()) delete() }
             // Tell LFS to track this specific file path
             def track = runGit(["git", "lfs", "track", "--", largePath], 30)
             if (track.exit != 0) {
@@ -556,7 +560,7 @@ Session: ${workflow.sessionId}
 
         def output_root_full = new File("${workflow.launchDir}/${params.output_dir}").getAbsoluteFile()
         def bin_full = new File(output_root_full, ".bin")
-        def meta_full = new File(output_root_full, "${params.project_name}_meta.json")
+        def meta_full = new File(bin_full, "${params.project_name}_meta.json")
         def html_full = new File(bin_full, "${params.project_name}_results.html")
 
         def runGit = { cmd, timeout = 10 ->
@@ -610,6 +614,7 @@ Session: ${workflow.sessionId}
         // Helper: commit a list of paths and push.
         def commitAndPush = { List paths, String msg ->
             if (!paths) return true
+            new File(git_root, ".git/index.lock").with { if (exists()) delete() }
             def addResult = runGit(["git", "add", "-A"] + paths, 120)
             if (addResult.exit != 0) {
                 logMsg("Git sync L2: add failed (${msg})\n${addResult.out}\n")
@@ -640,6 +645,9 @@ Session: ${workflow.sessionId}
 
         // Helper: LFS-track a single large file, commit + push.
         def lfsCommitAndPush = { String largePath, String msg ->
+            // Clean stale index.lock before each operation — NFS proc.destroy()
+            // does not reliably kill child git/LFS processes.
+            new File(git_root, ".git/index.lock").with { if (exists()) delete() }
             def track = runGit(["git", "lfs", "track", "--", largePath], 30)
             if (track.exit != 0) {
                 logMsg("Git sync L2: LFS track failed (${msg})\n${track.out}\n")
