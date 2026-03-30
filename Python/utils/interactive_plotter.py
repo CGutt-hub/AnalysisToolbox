@@ -757,6 +757,25 @@ def create_archive_html(project_name='procedure'):
         function buildFigureFromTable(rows, fallbackId) {{
             if (!rows || !rows.length) return {{ data: [], layout: {{ title: 'No data' }}, title: 'No data' }};
             const first = rows[0];
+            // If no plot_type, treat as raw table: render as a generic table in the viewer
+            if (!('plot_type' in first)) {{
+                // Render a table using the first 20 rows and all columns
+                const columns = Object.keys(first);
+                const maxRows = Math.min(rows.length, 20);
+                const tableHtml = `
+                    <div class="plot-title">${fallbackId || 'Raw Table'}</div>
+                    <div class="empty-state"><b>Raw Table Preview</b><br/>
+                    <table style="margin:12px 0; border-collapse:collapse; font-size:12px;">
+                        <thead><tr>${columns.map(c => `<th style='border:1px solid #444;padding:2px 6px;'>${c}</th>`).join('')}</tr></thead>
+                        <tbody>
+                            ${rows.slice(0, maxRows).map(r => `<tr>${columns.map(c => `<td style='border:1px solid #444;padding:2px 6px;'>${String(r[c])}</td>`).join('')}</tr>`).join('')}
+                        </tbody>
+                    </table>
+                    <div style="color:#888; font-size:11px;">Showing ${maxRows} of ${rows.length} rows.</div>
+                    </div>
+                `;
+                return { data: [], layout: { title: 'Raw Table' }, title: fallbackId || 'Raw Table', html: tableHtml };
+            }}
             const plotType = String(first.plot_type || 'line');
             const title   = String(first.title || fallbackId || '');
             const xLabel  = String(first.x_label || '');
@@ -1629,7 +1648,7 @@ def add_log_to_archive(archive_path, participant_id, log_path, log_name):
         # (each participant's finalization appends to EV.log before calling
         # add-log), so we just overwrite the parquet with the current snapshot.
         # Non-global text logs are rare (legacy) — also overwrite to be safe.
-        pl.DataFrame({'content': [log_content]}).write_parquet(sidecar_path, compression='snappy')
+        pl.DataFrame({'content': log_content.splitlines()}).write_parquet(sidecar_path, compression='snappy')
 
     # Lock lives next to HTML
     import hashlib, time

@@ -307,19 +307,51 @@ Duration: ${duration}s
         def nukeIndexLock = {
             def lockFile = new File(git_root, ".git/index.lock")
             if (!lockFile.exists()) return
-            // Attempt 1: plain delete
-            lockFile.delete()
-            if (!lockFile.exists()) return
-            // Attempt 2: kill anything holding it via fuser, then retry
-            try {
-                ["fuser", "-k", lockFile.absolutePath].execute().waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
-                Thread.sleep(500)
-            } catch (Exception ignored) {}
-            lockFile.delete()
-            if (!lockFile.exists()) return
-            // Attempt 3: wait a bit for NFS to release, then force
-            Thread.sleep(2000)
-            lockFile.delete()
+            def maxTries = 8
+            def delays = [0, 500, 2000, 5000, 10000, 15000, 20000, 30000] // ms
+            def attempt = 0
+            while (lockFile.exists() && attempt < maxTries) {
+                def msg = "[autosync] index.lock present (attempt ${attempt + 1}/${maxTries})"
+                pipeline_log.append("${msg}\n")
+                // Try plain delete
+                lockFile.delete()
+                if (!lockFile.exists()) {
+                    pipeline_log.append("[autosync] index.lock removed by delete()\n")
+                    return
+                }
+                // Try fuser kill (if available)
+                try {
+                    ["fuser", "-k", lockFile.absolutePath].execute().waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
+                    Thread.sleep(500)
+                } catch (Exception ignored) {}
+                lockFile.delete()
+                if (!lockFile.exists()) {
+                    pipeline_log.append("[autosync] index.lock removed after fuser\n")
+                    return
+                }
+                // Try killing git processes (if on Linux/Mac)
+                try {
+                    ["pkill", "-9", "git"].execute().waitFor(3, java.util.concurrent.TimeUnit.SECONDS)
+                } catch (Exception ignored) {}
+                lockFile.delete()
+                if (!lockFile.exists()) {
+                    pipeline_log.append("[autosync] index.lock removed after pkill git\n")
+                    return
+                }
+                // Wait longer for NFS to release
+                def waitMs = delays[Math.min(attempt, delays.size() - 1)]
+                if (waitMs > 0) {
+                    pipeline_log.append("[autosync] Waiting ${waitMs} ms for NFS lock release\n")
+                    Thread.sleep(waitMs)
+                }
+                lockFile.delete()
+                attempt++
+            }
+            if (lockFile.exists()) {
+                pipeline_log.append("[autosync] ERROR: index.lock could not be removed after ${maxTries} attempts. Autosync aborted.\n")
+                throw new RuntimeException("index.lock could not be removed after ${maxTries} attempts")
+            }
+            pipeline_log.append("[autosync] index.lock removed after ${attempt} attempts\n")
         }
 
         def cleanupRebase = {
@@ -370,6 +402,12 @@ Duration: ${duration}s
         def shLauncher = new File(output_root_full, "${params.project_name}_results.sh")
         if (shLauncher.exists()) {
             sharedPaths << git_root.toPath().relativize(shLauncher.toPath()).toString().replace('\\', '/')
+        }
+        // Always include all EV_* result folders (EV_l1, EV_ls, EV_l2, etc.)
+        output_root_full.listFiles()?.findAll { f ->
+            f.isDirectory() && f.name ==~ /${params.project_name}_.+/ 
+        }?.each { f ->
+            sharedPaths << git_root.toPath().relativize(f.toPath()).toString().replace('\\', '/')
         }
 
         // Scan L2 folder for updated group-level results (gets new data
@@ -464,28 +502,23 @@ Duration: ${duration}s
             return true
         }
 
-        // Chunk 1: participant small files + shared paths + L2 small files → bulk commit & push
-        def smallChunkPaths = smallRelPaths + sharedPaths + l2SmallPaths
-        commitAndPush(smallChunkPaths, "autosync: ${pid} completed")
+        // Only push the participant folder, .bin, and l2 (if present), using parameterized names
+        // 1. Commit and push participant folder (small + large files)
+        def participantPaths = smallRelPaths + largeRelPaths
+        commitAndPush(participantPaths, "autosync: ${pid} participant folder")
 
-        // Large files (>= 100 MB): try LFS if available, else commit normally (push will fail for >100 MB on GitHub)
-        def allLargePaths = largeRelPaths + l2LargePaths
-        if (allLargePaths) {
-            def lfsCheck = runGit(["git", "lfs", "version"], 5)
-            if (lfsCheck.exit == 0) {
-                allLargePaths.eachWithIndex { largePath, idx ->
-                    def chunkOk = lfsCommitAndPush(largePath, "autosync: ${pid} large file ${idx + 1}/${allLargePaths.size()}")
-                    if (!chunkOk) {
-                        logSync("Stopped LFS push at large file ${idx + 1}", largePath)
-                    }
-                }
-            } else {
-                logSync("git-lfs not available — committing ${allLargePaths.size()} large file(s) without LFS", "")
-                commitAndPush(allLargePaths, "autosync: ${pid} large files (no LFS)")
-            }
+        // 2. Commit and push .bin (always, since it changes with every participant)
+        commitAndPush([binRel], "autosync: ${pid} .bin update")
+
+        // 3. Commit and push l2 (always, since it may change with every participant)
+        def l2_folder_name = params.l2_folder ?: "${params.project_name}_l2"
+        def l2_full_dir = new File(output_root_full, l2_folder_name)
+        if (l2_full_dir.exists() && l2_full_dir.isDirectory()) {
+            def l2Rel = git_root.toPath().relativize(l2_full_dir.toPath()).toString().replace('\\', '/')
+            commitAndPush([l2Rel], "autosync: ${pid} l2 update")
         }
 
-        // Commit 2: convert pipeline log -> parquet, delete text file, sync parquet
+        // 4. Commit 2: convert pipeline log -> parquet, delete text file, sync parquet
         def pipeline_log_parquet      = new File(pipeline_log.parentFile, "${params.project_name}.log.parquet")
         def pipeline_log_parquet_path = git_root.toPath().relativize(pipeline_log_parquet.toPath()).toString().replace('\\', '/')
         if (procedure_html.exists() && pipeline_log.exists()) {
