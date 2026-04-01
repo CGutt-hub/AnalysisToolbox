@@ -762,19 +762,19 @@ def create_archive_html(project_name='procedure'):
                 // Render a table using the first 20 rows and all columns
                 const columns = Object.keys(first);
                 const maxRows = Math.min(rows.length, 20);
-                const tableHtml = `
-                    <div class="plot-title">${fallbackId || 'Raw Table'}</div>
-                    <div class="empty-state"><b>Raw Table Preview</b><br/>
-                    <table style="margin:12px 0; border-collapse:collapse; font-size:12px;">
-                        <thead><tr>${columns.map(c => `<th style='border:1px solid #444;padding:2px 6px;'>${c}</th>`).join('')}</tr></thead>
-                        <tbody>
-                            ${rows.slice(0, maxRows).map(r => `<tr>${columns.map(c => `<td style='border:1px solid #444;padding:2px 6px;'>${String(r[c])}</td>`).join('')}</tr>`).join('')}
-                        </tbody>
-                    </table>
-                    <div style="color:#888; font-size:11px;">Showing ${maxRows} of ${rows.length} rows.</div>
-                    </div>
-                `;
-                return { data: [], layout: { title: 'Raw Table' }, title: fallbackId || 'Raw Table', html: tableHtml };
+                const hdr = columns.map(function(c) {{ return '<th style="border:1px solid #444;padding:2px 6px;">' + c + '</th>'; }}).join('');
+                const bodyRows = rows.slice(0, maxRows).map(function(r) {{
+                    return '<tr>' + columns.map(function(c) {{ return '<td style="border:1px solid #444;padding:2px 6px;">' + String(r[c]) + '</td>'; }}).join('') + '</tr>';
+                }}).join('');
+                const tableHtml = '<div class="plot-title">' + (fallbackId || 'Raw Table') + '</div>'
+                    + '<div class="empty-state"><b>Raw Table Preview</b><br/>'
+                    + '<table style="margin:12px 0; border-collapse:collapse; font-size:12px;">'
+                    + '<thead><tr>' + hdr + '</tr></thead>'
+                    + '<tbody>' + bodyRows + '</tbody>'
+                    + '</table>'
+                    + '<div style="color:#888; font-size:11px;">Showing ' + maxRows + ' of ' + rows.length + ' rows.</div>'
+                    + '</div>';
+                return {{ data: [], layout: {{ title: 'Raw Table' }}, title: fallbackId || 'Raw Table', html: tableHtml }};
             }}
             const plotType = String(first.plot_type || 'line');
             const title   = String(first.title || fallbackId || '');
