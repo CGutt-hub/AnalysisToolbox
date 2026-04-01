@@ -1,5 +1,8 @@
 import java.util.concurrent.locks.ReentrantLock
 
+// Default for optional params (avoids "Access to undefined parameter" warnings)
+params.l2_folder = params.l2_folder ?: null
+
 // Shared git lock for sequential git operations across participants
 @groovy.transform.Field
 static java.util.concurrent.locks.ReentrantLock git_lock = new java.util.concurrent.locks.ReentrantLock()
@@ -196,6 +199,9 @@ workflow participant_discovery {
 // Handles per-participant logging, HTML archive update, and git sync.
 def finalizeParticipant(pid, files, folder, finalizedPids) {
     if (!finalizedPids.add(pid)) return
+
+    def pipeline_log = new File("${workflow.launchDir}/${params.output_dir}/.bin", "${params.project_name}.log")
+    try {
 
     Thread.sleep(2000)
 
@@ -536,6 +542,11 @@ Duration: ${duration}s
         commitAndPush([logSyncPath, binRel], "${params.project_name}.log: ${pid} complete")
     } finally {
         git_lock.unlock()
+    }
+
+    } catch (Exception e) {
+        def ts = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
+        try { pipeline_log.append("[${ts}] [ERROR] finalizeParticipant(${pid}) failed: ${e.message}\n") } catch (Exception ignored) {}
     }
 }
 
