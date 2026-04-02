@@ -1,7 +1,7 @@
 import java.util.concurrent.locks.ReentrantLock
 
 // Default for optional params (avoids "Access to undefined parameter" warnings)
-params.l2_folder = params.l2_folder ?: null
+if (!params.containsKey('l2_folder')) params.l2_folder = null
 
 // Shared git lock for sequential git operations across participants
 @groovy.transform.Field
