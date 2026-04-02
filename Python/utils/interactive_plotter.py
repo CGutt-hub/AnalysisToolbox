@@ -1709,6 +1709,20 @@ def run(inp, out_dir, pre, project_name='procedure', sidecar_dir=None):
     import shutil
     print(f"[interactive_plotter] Input: {inp}")
 
+    # Fast schema-only check: only publish parquets that carry a plot_type
+    # column — these are visualisation-ready outputs produced by analysis
+    # modules.  Files without plot_type are intermediate processing results
+    # (raw streams, cleaned epochs, etc.) and stay in the Nextflow work
+    # directory where they can still be inspected during development.
+    try:
+        schema = pl.read_parquet_schema(inp)
+    except Exception as e:
+        print(f"[interactive_plotter] ERROR: Failed to read schema of {inp}: {e}")
+        return
+    if 'plot_type' not in schema:
+        print(f"[interactive_plotter] SKIP (no plot_type column, intermediate file): {inp}")
+        return
+
     try:
         df = pl.read_parquet(inp)
     except Exception as e:
