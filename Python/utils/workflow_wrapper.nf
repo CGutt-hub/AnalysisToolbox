@@ -7,6 +7,11 @@ params.l2_folder = params.l2_folder ?: null
 @groovy.transform.Field
 static java.util.concurrent.locks.ReentrantLock git_lock = new java.util.concurrent.locks.ReentrantLock()
 
+// Auto-register final sync on pipeline shutdown (fires on Ctrl+C / SIGINT).
+// In a watchPath-based pipeline this is the only way the workflow ends,
+// so this effectively runs "on keyboard interrupt".
+workflow.onComplete { finalSync() }
+
 // Configure git user identity once at startup
 @groovy.transform.Field
 static boolean git_configured = false
