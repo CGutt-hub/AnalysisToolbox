@@ -18,6 +18,7 @@ def reject_samples(ip: str, columns: list | None = None, criterion: str = 'ampli
         if criterion == 'amplitude': mask &= np.abs(sig) < threshold
         elif criterion == 'gradient': mask &= np.abs(np.gradient(sig)) < threshold
         elif criterion == 'flatline': mask &= np.std(sig) > threshold
+        elif criterion == 'zscore': z = np.abs((sig - np.mean(sig)) / (np.std(sig) + 1e-10)); mask &= z < threshold
         else: log_error(f"Unknown criterion: {criterion}"); sys.exit(1)
     
     retained = int(np.sum(mask))

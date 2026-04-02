@@ -769,6 +769,7 @@ process IOInterface {
     // Format additional args: smart split that preserves bracketed/braced structures
     def extraArgs = ""
     def isGroupLog = false
+    def isTerminal = false
     if (extraParams && extraParams.toString().trim() != "") {
         def paramStr = extraParams.toString().trim()
         
@@ -810,6 +811,9 @@ process IOInterface {
         
         // Strip group_log token — signals group-level context; not forwarded to the underlying script
         isGroupLog = args.remove('group_log')
+        // Strip terminal token — marks this process as a terminal branch for finalization.
+        // Terminal processes always emit output (even on failure) so finalization is never blocked.
+        isTerminal = args.remove('terminal')
         extraArgs = args.collect { "'${escapeArg(it)}'" }.join(' ')
     }
     
@@ -883,7 +887,7 @@ process IOInterface {
             printf "\\n%s [ERROR] ${scriptName} exit code %d\\n" "\$(date '+%Y-%m-%d %H:%M:%S')" \$EXIT_CODE > "\$ERR_TMP"
             ${env_exe} -u "${logWriter}" "\$LOG_FILE" "\$ERR_TMP"
             rm -f "\$ERR_TMP"
-            exit \$EXIT_CODE
+            ${isTerminal ? '# Terminal process: emit sentinel so finalization is never blocked\n            ${env_exe} -c "import polars as pl; pl.DataFrame({\'_sentinel\': [True], \'_error\': [True]}).write_parquet(\'_sentinel_failed.parquet\', compression=\'gzip\')"' : 'exit $EXIT_CODE'}
         fi
 
         # Publish output parquets to the results plots/ folder and register

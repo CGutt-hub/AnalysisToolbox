@@ -1648,7 +1648,7 @@ def add_log_to_archive(archive_path, participant_id, log_path, log_name):
         # (each participant's finalization appends to EV.log before calling
         # add-log), so we just overwrite the parquet with the current snapshot.
         # Non-global text logs are rare (legacy) — also overwrite to be safe.
-        pl.DataFrame({'content': log_content.splitlines()}).write_parquet(sidecar_path, compression='snappy')
+        pl.DataFrame({'content': log_content.splitlines()}).write_parquet(sidecar_path, compression='gzip')
 
     # Lock lives next to HTML
     import hashlib, time
@@ -1706,7 +1706,6 @@ def run(inp, out_dir, pre, project_name='procedure', sidecar_dir=None):
         sidecar_dir: Directory for the published parquet (required).
                      Passed as CONTEXT_PLOT_DIR from the IOInterface bash block.
     """
-    import shutil
     print(f"[interactive_plotter] Input: {inp}")
 
     # Fast schema-only check: only publish parquets that carry a plot_type
@@ -1750,8 +1749,9 @@ def run(inp, out_dir, pre, project_name='procedure', sidecar_dir=None):
     participant_plots_dir = os.path.abspath(sidecar_dir)
     os.makedirs(participant_plots_dir, exist_ok=True)
     sidecar_dest = os.path.join(participant_plots_dir, f'{pre}.parquet')
-    shutil.copy2(inp, sidecar_dest)
-    print(f"[interactive_plotter] Copied sidecar: {sidecar_dest} ({os.path.getsize(sidecar_dest)//1024} KB)")
+    # Re-compress as gzip for smaller results footprint (hyparquet supports gzip natively)
+    df.write_parquet(sidecar_dest, compression='gzip')
+    print(f"[interactive_plotter] Published sidecar (gzip): {sidecar_dest} ({os.path.getsize(sidecar_dest)//1024} KB)")
 
     # Compute the sidecar path relative to the archive root (parent of .bin/)
     sidecar_rel = os.path.relpath(sidecar_dest, out_dir_abs).replace('\\', '/')
