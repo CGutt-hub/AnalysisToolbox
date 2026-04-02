@@ -134,16 +134,35 @@ workflow participant_discovery {
                 new File(git_root, ".git/rebase-merge").with { if (exists()) deleteDir() }
                 new File(git_root, ".git/rebase-apply").with { if (exists()) deleteDir() }
 
-                // Ensure Nextflow trace file is never tracked —
-                // it's held open the entire run and causes rebase failures.
+                // Ensure Nextflow trace file and local runtime files are never tracked —
+                // trace is held open the entire run and causes rebase failures;
+                // the plain-text log and HTML viewer are local-only artifacts.
                 def binIgnore = new File(bin_dir_infra, ".gitignore")
-                if (!binIgnore.exists() || !binIgnore.text.contains("pipeline_trace")) {
-                    binIgnore.append("pipeline_trace.txt\n")
+                def ignorePatterns = ["pipeline_trace.txt", "*.log", "*_results.html"]
+                ignorePatterns.each { pattern ->
+                    if (!binIgnore.exists() || !binIgnore.text.contains(pattern)) {
+                        binIgnore.append("${pattern}\n")
+                    }
                 }
                 def traceRel = git_root.toPath().relativize(
                     new File(bin_dir_infra, "pipeline_trace.txt").toPath().toAbsolutePath()
                 ).toString().replace('\\', '/')
                 runBootGit(["git", "rm", "--cached", "--ignore-unmatch", "--", traceRel], 10)
+                // Also untrack any previously committed local runtime files
+                def localPatterns = ["*.log", "*_results.html"]
+                localPatterns.each { pattern ->
+                    bin_dir_infra.listFiles()?.each { f ->
+                        if (f.isFile()) {
+                            def match = (pattern == "*.log")
+                                ? (f.name.endsWith(".log") && !f.name.endsWith(".log.parquet"))
+                                : f.name.endsWith("_results.html")
+                            if (match) {
+                                def rel = git_root.toPath().relativize(f.toPath().toAbsolutePath()).toString().replace('\\', '/')
+                                runBootGit(["git", "rm", "--cached", "--ignore-unmatch", "--", rel], 10)
+                            }
+                        }
+                    }
+                }
 
                 def addAll = runBootGit(["git", "add", "-A"], 120)
                 if (addAll.exit == 0) {
