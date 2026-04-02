@@ -14,7 +14,7 @@ Every project pipeline has three files — all live in `{Project}_analysis/`:
 |------|---------|
 | `{Proj}_pipeline.nf` | Workflow definition — chains modules via Nextflow channels |
 | `{Proj}_modules.nf` | Module imports — aliases `IOInterface` from workflow_wrapper.nf |
-| `nextflow.config` | Params: paths, thresholds, frequencies, column names |
+| `{Proj}_parameters.config` | Params: paths, thresholds, frequencies, column names |
 
 All processing modules are **generic Python scripts** in the AnalysisToolbox under `Python/readers/`, `Python/processors/`, `Python/analyzers/`.
 
@@ -105,8 +105,8 @@ Rules:
 4. **Create missing modules** — write new Python modules in the appropriate AnalysisToolbox folder (readers/, processors/, analyzers/) following the compact style above. Keep them domain-generic.
 5. **Generate {Proj}_modules.nf** — one `include { IOInterface as ... }` per module alias.
 6. **Generate {Proj}_pipeline.nf** — chain modules using Nextflow channels, following the participant_discovery → readers → processors → analyzers → finalization pattern.
-7. **Generate nextflow.config** — define all params (paths, thresholds, column names) with sensible defaults.
-8. **Review** — verify all channel joins use correct participant ID extraction, all module aliases match between modules.nf and pipeline.nf, and all params referenced in pipeline.nf are defined in nextflow.config.
+7. **Generate {Proj}_parameters.config** — define all params (paths, thresholds, column names) with sensible defaults.
+8. **Review** — verify all channel joins use correct participant ID extraction, all module aliases match between modules.nf and pipeline.nf, and all params referenced in pipeline.nf are defined in {Proj}_parameters.config.
 
 ## Constraints
 
