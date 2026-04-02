@@ -129,9 +129,6 @@ workflow participant_discovery {
                 new File(git_root, ".git/rebase-merge").with { if (exists()) deleteDir() }
                 new File(git_root, ".git/rebase-apply").with { if (exists()) deleteDir() }
 
-                // Ensure Git LFS is initialized in this repo (needed for large parquet files)
-                runBootGit(["git", "lfs", "install", "--local"], 10)
-
                 // Ensure Nextflow trace file is never tracked —
                 // it's held open the entire run and causes rebase failures.
                 def binIgnore = new File(bin_dir_infra, ".gitignore")
@@ -380,63 +377,6 @@ Duration: ${duration}s
 
         cleanupRebase()
 
-        // GitHub rejects packs > 2 GiB.  Split participant files into
-        // "small" (commit together) and "large" (commit+push individually).
-        long LARGE_FILE_BYTES = 100L * 1024L * 1024L  // 100 MB
-
-        // Collect all files under the participant folder
-        def participantDir = results_full_path
-        def smallRelPaths = []
-        def largeRelPaths = []
-        if (participantDir.isDirectory()) {
-            participantDir.eachFileRecurse { f ->
-                if (f.isFile()) {
-                    def rel = git_root.toPath().relativize(f.toPath()).toString().replace('\\', '/')
-                    if (f.length() >= LARGE_FILE_BYTES) {
-                        largeRelPaths << rel
-                    } else {
-                        smallRelPaths << rel
-                    }
-                }
-            }
-        }
-
-        // Shared paths: entire .bin/ directory (HTML, meta.json, serve.py, .gitignore, …)
-        // plus the .sh launcher which lives one level up.
-        def binRel = git_root.toPath().relativize(bin_full.toPath()).toString().replace('\\', '/')
-        def sharedPaths = [binRel]
-        def shLauncher = new File(output_root_full, "${params.project_name}_results.sh")
-        if (shLauncher.exists()) {
-            sharedPaths << git_root.toPath().relativize(shLauncher.toPath()).toString().replace('\\', '/')
-        }
-        // Always include all EV_* result folders (EV_l1, EV_ls, EV_l2, etc.)
-        output_root_full.listFiles()?.findAll { f ->
-            f.isDirectory() && f.name ==~ /${params.project_name}_.+/ 
-        }?.each { f ->
-            sharedPaths << git_root.toPath().relativize(f.toPath()).toString().replace('\\', '/')
-        }
-
-        // Scan L2 folder for updated group-level results (gets new data
-        // after each participant).  Split into small / large like participant files.
-        // Skip files modified within the last 3 seconds — they may still be
-        // written by a concurrently running L2 process.
-        def l2SmallPaths = []
-        def l2LargePaths = []
-        def l2Now = System.currentTimeMillis()
-        def group_full = new File(output_root_full, "${params.project_name}_l2")
-        if (group_full.exists() && group_full.isDirectory()) {
-            group_full.eachFileRecurse { f ->
-                if (f.isFile() && (l2Now - f.lastModified() > 3000)) {
-                    def rel = git_root.toPath().relativize(f.toPath()).toString().replace('\\', '/')
-                    if (f.length() >= LARGE_FILE_BYTES) {
-                        l2LargePaths << rel
-                    } else {
-                        l2SmallPaths << rel
-                    }
-                }
-            }
-        }
-
         // Helper: commit a list of paths and push.
         def commitAndPush = { List paths, String msg ->
             if (!paths) return true
@@ -470,61 +410,19 @@ Duration: ${duration}s
             return true
         }
 
-        // Helper: LFS-track a single large file, commit it + .gitattributes, and push.
-        def lfsCommitAndPush = { String largePath, String msg ->
-            nukeIndexLock()
-            // Tell LFS to track this specific file path
-            def track = runGit(["git", "lfs", "track", "--", largePath], 30)
-            if (track.exit != 0) {
-                logSync("LFS track failed (${msg})", track.out)
-                return false
-            }
-            // Stage .gitattributes (updated by lfs track) and the large file itself
-            def addResult = runGit(["git", "add", "-A", ".gitattributes", largePath], 120)
-            if (addResult.exit != 0) {
-                logSync("Git add failed (${msg})", addResult.out)
-                runGit(["git", "reset", "HEAD"], 10)
-                return false
-            }
-            def st = runGit(["git", "status", "--porcelain", "--cached"], 15)
-            if (!st.out?.trim()) return true
-            def commitResult = runGit(["git", "commit", "-m", msg], 30)
-            if (commitResult.exit != 0) {
-                logSync("Commit failed (${msg})", commitResult.out)
-                return false
-            }
-            def push = runGit(["git", "push"], 900)
-            if (push.exit == 0) return true
-            def pull = runGit(["git", "pull", "--rebase", "--autostash"], 120)
-            if (pull.exit != 0) {
-                cleanupRebase()
-                logSync("Pull --rebase failed (${msg}) — committed locally", pull.out)
-                return true
-            }
-            push = runGit(["git", "push"], 900)
-            if (push.exit != 0) {
-                logSync("LFS push failed (${msg}) — committed locally", push.out)
-            }
-            return true
-        }
+        // Scoped sync: only participant folder, .bin/, and l2 (if present).
+        // All output parquets are small (visualisation-only, <100 KB) so no
+        // LFS or large-file splitting is needed.
+        def binRel = git_root.toPath().relativize(bin_full.toPath()).toString().replace('\\', '/')
+        def syncPaths = [relative_path, binRel]
 
-        // Only push the participant folder, .bin, and l2 (if present), using parameterized names
-        // 1. Commit and push participant folder (small + large files)
-        def participantPaths = smallRelPaths + largeRelPaths
-        commitAndPush(participantPaths, "autosync: ${pid} participant folder")
-
-        // 2. Commit and push .bin (always, since it changes with every participant)
-        commitAndPush([binRel], "autosync: ${pid} .bin update")
-
-        // 3. Commit and push l2 (always, since it may change with every participant)
         def l2_folder_name = params.l2_folder ?: "${params.project_name}_l2"
         def l2_full_dir = new File(output_root_full, l2_folder_name)
         if (l2_full_dir.exists() && l2_full_dir.isDirectory()) {
-            def l2Rel = git_root.toPath().relativize(l2_full_dir.toPath()).toString().replace('\\', '/')
-            commitAndPush([l2Rel], "autosync: ${pid} l2 update")
+            syncPaths << git_root.toPath().relativize(l2_full_dir.toPath()).toString().replace('\\', '/')
         }
 
-        // 4. Commit 2: convert pipeline log -> parquet, delete text file, sync parquet
+        // Convert pipeline log → parquet and register in HTML archive before commit
         def pipeline_log_parquet      = new File(pipeline_log.parentFile, "${params.project_name}.log.parquet")
         def pipeline_log_parquet_path = git_root.toPath().relativize(pipeline_log_parquet.toPath()).toString().replace('\\', '/')
         if (procedure_html.exists() && pipeline_log.exists()) {
@@ -533,13 +431,15 @@ Duration: ${duration}s
                     "${workflow.launchDir}/${params.toolbox_dir}/utils/interactive_plotter.py",
                     'add-log', procedure_html.absolutePath, 'global', pipeline_log.absolutePath, "${params.project_name}.log"]
                 def proc2 = add_global_cmd.execute()
-                def finished = proc2.waitFor(60, java.util.concurrent.TimeUnit.SECONDS)
-                // Keep the text log so it accumulates across participants
+                proc2.waitFor(60, java.util.concurrent.TimeUnit.SECONDS)
             } catch (Exception e) { /* non-critical */ }
         }
-        def logSyncPath       = pipeline_log_parquet.exists() ? pipeline_log_parquet_path : pipeline_log_path
-        // Use commitAndPush for the log parquet + full .bin/ dir
-        commitAndPush([logSyncPath, binRel], "${params.project_name}.log: ${pid} complete")
+        if (pipeline_log_parquet.exists()) {
+            syncPaths << pipeline_log_parquet_path
+        }
+
+        // Single scoped commit + push
+        commitAndPush(syncPaths, "autosync: ${pid} complete")
     } finally {
         git_lock.unlock()
     }
@@ -680,33 +580,6 @@ Session: ${workflow.sessionId}
         }
         cleanupRebase()
 
-        // GitHub rejects packs > 2 GiB.  Split L2 files into
-        // "small" (commit together) and "large" (commit+push individually).
-        long LARGE_FILE_BYTES = 100L * 1024L * 1024L  // 100 MB
-
-        def smallRelPaths = []
-        def largeRelPaths = []
-        if (l2_full.isDirectory()) {
-            l2_full.eachFileRecurse { f ->
-                if (f.isFile()) {
-                    def rel = git_root.toPath().relativize(f.toPath()).toString().replace('\\', '/')
-                    if (f.length() >= LARGE_FILE_BYTES) {
-                        largeRelPaths << rel
-                    } else {
-                        smallRelPaths << rel
-                    }
-                }
-            }
-        }
-
-        // Shared paths: entire .bin/ directory (HTML, meta.json, serve.py, …) + .sh launcher
-        def binRel = git_root.toPath().relativize(bin_full.toPath()).toString().replace('\\', '/')
-        def sharedPaths = [binRel]
-        def shLauncher = new File(output_root_full, "${params.project_name}_results.sh")
-        if (shLauncher.exists()) {
-            sharedPaths << git_root.toPath().relativize(shLauncher.toPath()).toString().replace('\\', '/')
-        }
-
         // Helper: commit a list of paths and push.
         def commitAndPush = { List paths, String msg ->
             if (!paths) return true
@@ -739,63 +612,12 @@ Session: ${workflow.sessionId}
             return true
         }
 
-        // Helper: LFS-track a single large file, commit + push.
-        def lfsCommitAndPush = { String largePath, String msg ->
-            nukeIndexLock()
-            def track = runGit(["git", "lfs", "track", "--", largePath], 30)
-            if (track.exit != 0) {
-                logMsg("Git sync L2: LFS track failed (${msg})\n${track.out}\n")
-                return false
-            }
-            def addResult = runGit(["git", "add", "-A", ".gitattributes", largePath], 120)
-            if (addResult.exit != 0) {
-                logMsg("Git sync L2: add failed (${msg})\n${addResult.out}\n")
-                runGit(["git", "reset", "HEAD"], 10)
-                return false
-            }
-            def st = runGit(["git", "status", "--porcelain", "--cached"], 15)
-            if (!st.out?.trim()) return true
-            def commitResult = runGit(["git", "commit", "-m", msg], 30)
-            if (commitResult.exit != 0) {
-                logMsg("Git sync L2: commit failed (${msg})\n${commitResult.out}\n")
-                return false
-            }
-            def push = runGit(["git", "push"], 900)
-            if (push.exit == 0) return true
-            def pull = runGit(["git", "pull", "--rebase", "--autostash"], 120)
-            if (pull.exit != 0) {
-                cleanupRebase()
-                logMsg("Git sync L2: pull failed (${msg}) — committed locally\n${pull.out}\n")
-                return true
-            }
-            push = runGit(["git", "push"], 900)
-            if (push.exit != 0) {
-                logMsg("Git sync L2: LFS push failed (${msg}) — committed locally\n${push.out}\n")
-            }
-            return true
-        }
+        // Scoped sync: l2 folder + .bin/
+        def binRel = git_root.toPath().relativize(bin_full.toPath()).toString().replace('\\', '/')
+        def l2Rel  = git_root.toPath().relativize(l2_full.toPath()).toString().replace('\\', '/')
+        commitAndPush([l2Rel, binRel], "autosync: ${l2_name} completed")
 
-        // Chunk 1: all small L2 files + shared paths (HTML, meta) → bulk commit & push
-        def smallChunkPaths = smallRelPaths + sharedPaths
-        commitAndPush(smallChunkPaths, "autosync: ${l2_name} completed")
-
-        // Large files (>= 100 MB): try LFS if available, else commit normally
-        if (largeRelPaths) {
-            def lfsCheck = runGit(["git", "lfs", "version"], 5)
-            if (lfsCheck.exit == 0) {
-                largeRelPaths.eachWithIndex { largePath, idx ->
-                    def chunkOk = lfsCommitAndPush(largePath, "autosync: ${l2_name} large file ${idx + 1}/${largeRelPaths.size()}")
-                    if (!chunkOk) {
-                        logMsg("Git sync L2: stopped LFS push at large file ${idx + 1}\n${largePath}\n")
-                    }
-                }
-            } else {
-                logMsg("Git sync L2: git-lfs not available — committing ${largeRelPaths.size()} large file(s) without LFS\n")
-                commitAndPush(largeRelPaths, "autosync: ${l2_name} large files (no LFS)")
-            }
-        }
-
-        logMsg("Git sync L2: done (${smallRelPaths.size()} small pushed, ${largeRelPaths.size()} large via LFS)\n")
+        logMsg("Git sync L2: done\n")
     } finally {
         git_lock.unlock()
     }
@@ -813,6 +635,95 @@ workflow finalize_l2 {
             .subscribe { files ->
                 finalizeL2(files)
             }
+}
+
+// Final sync: commit and push all scoped output paths once at pipeline close.
+// Call this from workflow.onComplete in your pipeline:
+//     workflow.onComplete { finalSync() }
+def finalSync() {
+    def pipeline_log = new File("${workflow.launchDir}/${params.output_dir}/.bin", "${params.project_name}.log")
+    try {
+        def ts = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
+        try { pipeline_log.append("[${ts}] [workflow] Final sync starting\n") } catch (Exception ignored) {}
+
+        git_lock.lock()
+        try {
+            def output_root_full = new File("${workflow.launchDir}/${params.output_dir}").getAbsoluteFile()
+            def git_root = output_root_full
+            while (git_root != null && !new File(git_root, ".git").exists()) {
+                git_root = git_root.getParentFile()
+            }
+            if (!git_root) return
+
+            def runGit = { cmd, timeout = 10 ->
+                try {
+                    def env = ["GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=echo", "SSH_ASKPASS=echo"]
+                    def proc = cmd.execute(env, git_root)
+                    def out = new StringBuilder(); def err = new StringBuilder()
+                    def reader = Thread.start { proc.waitForProcessOutput(out, err) }
+                    reader.join(timeout * 1000L)
+                    if (reader.isAlive()) {
+                        try { proc.destroyForcibly() } catch (Exception ignored) { proc.destroy() }
+                        reader.join(3000L)
+                        out.append(err)
+                        return [exit: -1, out: "timeout: ${out}".toString()]
+                    }
+                    out.append(err)
+                    return [exit: proc.exitValue(), out: out.toString()]
+                } catch (Exception e) { return [exit: -1, out: e.message] }
+            }
+
+            // Clean up stale state
+            def lockFile = new File(git_root, ".git/index.lock")
+            if (lockFile.exists()) lockFile.delete()
+            runGit(["git", "rebase", "--abort"], 2)
+            new File(git_root, ".git/rebase-merge").with { if (exists()) deleteDir() }
+            new File(git_root, ".git/rebase-apply").with { if (exists()) deleteDir() }
+
+            // Scoped paths: {project}_l1, {project}_l2, .bin
+            def syncPaths = []
+            def bin_full = new File(output_root_full, ".bin")
+            if (bin_full.exists()) {
+                syncPaths << git_root.toPath().relativize(bin_full.toPath()).toString().replace('\\', '/')
+            }
+            def l1_full = new File(output_root_full, "${params.project_name}_l1")
+            if (l1_full.exists()) {
+                syncPaths << git_root.toPath().relativize(l1_full.toPath()).toString().replace('\\', '/')
+            }
+            def l2_folder_name = params.l2_folder ?: "${params.project_name}_l2"
+            def l2_full = new File(output_root_full, l2_folder_name)
+            if (l2_full.exists()) {
+                syncPaths << git_root.toPath().relativize(l2_full.toPath()).toString().replace('\\', '/')
+            }
+            if (!syncPaths) return
+
+            def addResult = runGit(["git", "add", "-A"] + syncPaths, 120)
+            if (addResult.exit != 0) {
+                try { pipeline_log.append("[${ts}] [finalSync] git add failed: ${addResult.out}\n") } catch (Exception ignored) {}
+                return
+            }
+            def st = runGit(["git", "status", "--porcelain", "--cached"], 15)
+            if (!st.out?.trim()) {
+                try { pipeline_log.append("[${ts}] [finalSync] Nothing to commit\n") } catch (Exception ignored) {}
+                return
+            }
+            runGit(["git", "commit", "-m", "autosync: final sync (pipeline complete)"], 30)
+            def push = runGit(["git", "push"], 600)
+            if (push.exit != 0) {
+                def pull = runGit(["git", "pull", "--rebase", "--autostash"], 120)
+                if (pull.exit != 0) {
+                    runGit(["git", "rebase", "--abort"], 2)
+                }
+                runGit(["git", "push"], 600)
+            }
+            try { pipeline_log.append("[${ts}] [finalSync] Complete\n") } catch (Exception ignored) {}
+        } finally {
+            git_lock.unlock()
+        }
+    } catch (Exception e) {
+        def ts = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
+        try { pipeline_log.append("[${ts}] [ERROR] finalSync failed: ${e.message}\n") } catch (Exception ignored) {}
+    }
 }
 
 // Generic IOInterface: exe script input params
