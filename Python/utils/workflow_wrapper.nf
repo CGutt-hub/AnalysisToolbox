@@ -249,13 +249,6 @@ Duration: ${duration}s
         } catch (Exception e) { /* non-critical */ }
     }
 
-    // Write finalization to central pipeline log (inside .bin/)
-    def pipeline_log = new File("${workflow.launchDir}/${params.output_dir}/.bin", "${params.project_name}.log")
-    try {
-        pipeline_log.parentFile?.mkdirs()
-        if (!pipeline_log.exists()) pipeline_log.text = ""
-    } catch (Exception e) { /* NAS/SMB can transiently fail */ }
-
     // Register the live .log.parquet in the interactive HTML archive (meta.json)
     // add_log_to_archive detects .log.parquet and uses the file at its existing location.
     def procedure_html = new File("${workflow.launchDir}/${params.output_dir}/.bin", "${params.project_name}_results.html")
