@@ -675,8 +675,8 @@ def create_archive_html(project_name='procedure'):
             const pid = (meta.path && meta.path[0]) || 'unknown';
 
             if (meta.type === 'log') {{
-                // Path stored in meta.file (relative to archive root) — no URL construction needed
-                const url = meta.file.startsWith('/') || meta.file.startsWith('http') ? meta.file : '/' + meta.file;
+                // Path stored in meta.file (relative to archive root) — resolve relative to parent
+                const url = meta.file.startsWith('/') || meta.file.startsWith('http') ? meta.file : '../' + meta.file;
                 const resp = await fetch(url);
                 if (!resp.ok) throw new Error('HTTP ' + resp.status + ' fetching ' + url + ' — open via HTTP server (serve_html.ps1 or GitHub Pages)');
                 let rows;
@@ -696,7 +696,7 @@ def create_archive_html(project_name='procedure'):
 
             // Plot: fetch .parquet, decode, build Plotly figure
             const rawUrl = meta.file || (pid + '/plots/' + id + '.parquet');
-            const url = rawUrl.startsWith('/') || rawUrl.startsWith('http') ? rawUrl : '/' + rawUrl;
+            const url = rawUrl.startsWith('/') || rawUrl.startsWith('http') ? rawUrl : '../' + rawUrl;
             const resp = await fetch(url);
             if (!resp.ok) throw new Error('HTTP ' + resp.status + ' fetching ' + url + ' — open via HTTP server (serve_html.ps1 or GitHub Pages)');
             let rows;
@@ -1467,17 +1467,17 @@ def create_archive_html(project_name='procedure'):
                     }}
                 }}
                 // Fallback: directory listing
-                const rootResp = await fetch('/?_=' + Date.now()).catch(() => null);
+                const rootResp = await fetch('../?_=' + Date.now()).catch(() => null);
                 if (!rootResp?.ok) return meta;
                 const rootHtml = await rootResp.text();
                 const pidMatches = [...rootHtml.matchAll(/href="({project_name}_[A-Za-z0-9]+)\\/?"/g)];
                 const pids = [...new Set(pidMatches.map(m => m[1]))];
                 for (const pid of pids) {{
                     const logFile = pid + '/' + pid + '.log.parquet';
-                    const logHead = await fetch('/' + logFile, {{ method: 'HEAD' }}).catch(() => null);
+                    const logHead = await fetch('../' + logFile, {{ method: 'HEAD' }}).catch(() => null);
                     if (logHead?.ok)
                         meta[pid + '_log'] = {{ title: pid + ' Log', path: [pid, 'log'], type: 'log', file: logFile }};
-                    const plotsResp = await fetch('/' + pid + '/plots/?_=' + Date.now()).catch(() => null);
+                    const plotsResp = await fetch('../' + pid + '/plots/?_=' + Date.now()).catch(() => null);
                     if (!plotsResp?.ok) continue;
                     const plotsHtml = await plotsResp.text();
                     const pqMatches = [...plotsHtml.matchAll(/href="([^"?#]+\\.parquet)"/g)];
@@ -1648,7 +1648,7 @@ def add_log_to_archive(archive_path, participant_id, log_path, log_name):
         # (each participant's finalization appends to EV.log before calling
         # add-log), so we just overwrite the parquet with the current snapshot.
         # Non-global text logs are rare (legacy) — also overwrite to be safe.
-        pl.DataFrame({'content': log_content.splitlines()}).write_parquet(sidecar_path, compression='gzip')
+        pl.DataFrame({'content': log_content.splitlines()}).write_parquet(sidecar_path, compression='snappy')
 
     # Lock lives next to HTML
     import hashlib, time
@@ -1749,9 +1749,9 @@ def run(inp, out_dir, pre, project_name='procedure', sidecar_dir=None):
     participant_plots_dir = os.path.abspath(sidecar_dir)
     os.makedirs(participant_plots_dir, exist_ok=True)
     sidecar_dest = os.path.join(participant_plots_dir, f'{pre}.parquet')
-    # Re-compress as gzip for smaller results footprint (hyparquet supports gzip natively)
-    df.write_parquet(sidecar_dest, compression='gzip')
-    print(f"[interactive_plotter] Published sidecar (gzip): {sidecar_dest} ({os.path.getsize(sidecar_dest)//1024} KB)")
+    # Write as snappy (natively supported by hyparquet in browser, no addon needed)
+    df.write_parquet(sidecar_dest, compression='snappy')
+    print(f"[interactive_plotter] Published sidecar: {sidecar_dest} ({os.path.getsize(sidecar_dest)//1024} KB)")
 
     # Compute the sidecar path relative to the archive root (parent of .bin/)
     sidecar_rel = os.path.relpath(sidecar_dest, out_dir_abs).replace('\\', '/')

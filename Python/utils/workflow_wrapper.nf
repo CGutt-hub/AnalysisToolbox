@@ -887,7 +887,7 @@ process IOInterface {
             printf "\\n%s [ERROR] ${scriptName} exit code %d\\n" "\$(date '+%Y-%m-%d %H:%M:%S')" \$EXIT_CODE > "\$ERR_TMP"
             ${env_exe} -u "${logWriter}" "\$LOG_FILE" "\$ERR_TMP"
             rm -f "\$ERR_TMP"
-            ${isTerminal ? '# Terminal process: emit sentinel so finalization is never blocked\n            ${env_exe} -c "import polars as pl; pl.DataFrame({\'_sentinel\': [True], \'_error\': [True]}).write_parquet(\'_sentinel_failed.parquet\', compression=\'gzip\')"' : 'exit $EXIT_CODE'}
+            ${isTerminal ? "# Terminal process: emit sentinel so finalization is never blocked\n            ${env_exe} -c \"import polars as pl; pl.DataFrame({'_sentinel': [True], '_error': [True]}).write_parquet('\${PARTICIPANT_ID}_sentinel_failed.parquet', compression='snappy')\"\n            exit 0" : 'exit \\$EXIT_CODE'}
         fi
 
         # Publish output parquets to the results plots/ folder and register
