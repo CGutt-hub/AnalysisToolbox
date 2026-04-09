@@ -35,7 +35,7 @@ def main():
     parts = basename.split('_')
     pid = '_'.join(parts[:2]) if len(parts) >= 2 else 'result'
 
-    output_name = f"{pid}_{clean_name}.parquet"
+    output_name = f"{pid}_{clean_name}_result.parquet"
     df.write_parquet(output_name, compression='snappy')
     print(f"[result_collector] {basename} -> {output_name}")
 

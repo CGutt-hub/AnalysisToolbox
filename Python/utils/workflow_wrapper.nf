@@ -767,6 +767,7 @@ process IOInterface {
     def extraArgs = ""
     def isGroupLog = false
     def isTerminal = false
+    def isResult = false
     if (extraParams && extraParams.toString().trim() != "") {
         def paramStr = extraParams.toString().trim()
         
@@ -905,9 +906,14 @@ process IOInterface {
         PROCEDURE_FOLDER="\$(cd "${workflow.launchDir}/${params.output_dir}" && pwd)"
         PROJECT_NAME="${params.project_name}"
 
+        IS_RESULT=${isResult ? '"true"' : '"false"'}
         _publish_parquet() {
             local FILE="\$1"
             local BASENAME=\$(basename "\$FILE")
+            # For result processes, strip _result suffix so published file has clean name
+            if [ "\$IS_RESULT" = "true" ]; then
+                BASENAME="\${BASENAME%_result.parquet}.parquet"
+            fi
             local PREFIX=\${BASENAME%.parquet}
             local REG_TMP=\$(mktemp)
             ${env_exe} -u "${workflow.launchDir}/${params.interactive_plotter_script}" "\$FILE" "\$PROCEDURE_FOLDER" "\$PREFIX" "\$PROJECT_NAME" "\$CONTEXT_PLOT_DIR" 2>&1 | \
