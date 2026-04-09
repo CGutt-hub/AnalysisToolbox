@@ -470,22 +470,19 @@ Duration: ${duration}s
 // Separate finalization workflow: logging + git sync
 workflow finalize_participant {
     take:
-        terminal_plots
+        result_outputs       // Pre-mixed channel of all terminal/result output files
+        result_count         // Number of expected results per participant
         participant_context
     
     main:
-        def terminal_outputs = Channel.empty()
-        def terminal_count = terminal_plots.size()
-        terminal_plots.each { ch -> terminal_outputs = terminal_outputs.mix(ch) }
-        
         def finalizedPids = Collections.synchronizedSet(new HashSet<String>())
 
-        terminal_outputs
+        result_outputs
             .map { file -> 
                 def pid = file.baseName.toString().split('_')[0..1].join('_')
                 [pid, file]
             }
-            .groupTuple(size: terminal_count, remainder: true)
+            .groupTuple(size: result_count, remainder: true)
             .join(participant_context)
             .subscribe { pid, files, folder ->
                 finalizeParticipant(pid, files, folder, finalizedPids)
@@ -814,6 +811,9 @@ process IOInterface {
         // Strip terminal token — marks this process as a terminal branch for finalization.
         // Terminal processes always emit output (even on failure) so finalization is never blocked.
         isTerminal = args.remove('terminal')
+        // Strip result token — publishes output to results/ instead of plots/.
+        // Used by result_collector to create a clean-named curated output folder.
+        isResult = args.remove('result')
         extraArgs = args.collect { "'${escapeArg(it)}'" }.join(' ')
     }
     
@@ -834,9 +834,11 @@ process IOInterface {
         ? groupDir
         : "${workflow.launchDir}/${params.output_dir}/${params.project_name}_l1/\${PARTICIPANT_ID}"
     // plots/ subfolder mirrors the structure of participant folders (log.parquet sibling to plots/)
+    // When the result token is present, output goes to results/ instead (curated clean-named files).
+    def publishFolder = isResult ? 'results' : 'plots'
     def contextPlotDir = isGroupLog
-        ? "${groupDir}/plots"
-        : "${workflow.launchDir}/${params.output_dir}/${params.project_name}_l1/\${PARTICIPANT_ID}/plots"
+        ? "${groupDir}/${publishFolder}"
+        : "${workflow.launchDir}/${params.output_dir}/${params.project_name}_l1/\${PARTICIPANT_ID}/${publishFolder}"
     def contextCondition = isGroupLog ? "true" : "[ -n \"\$PARTICIPANT_ID\" ]"
     // Path to the live parquet log writer utility
     def logWriter = "${workflow.launchDir}/${params.toolbox_dir}/utils/log_to_parquet.py"
