@@ -156,9 +156,26 @@ def concat_generic(files: list[str], conds: list[str]) -> pl.DataFrame:
             result.append(item)
         return result
 
-    for field in ('y_data', 'y_var'):
+    for field in ('y_data', 'y_var', 'ci_lower', 'ci_upper'):
         if field in aggregated:
             aggregated[field] = normalize_nested(aggregated[field])
+
+    # Flatten bar charts: merge per-condition single values into one series
+    # Input:  y_data=[[5.2],[4.8],[5.0]], labels=['NEG','NEU','POS'], x_data=['NEG']
+    # Output: y_data=[5.2,4.8,5.0], x_data=['NEG','NEU','POS'] (no labels needed)
+    if plot_type == 'bar' and 'y_data' in aggregated:
+        y_list = aggregated['y_data']
+        if all(isinstance(v, list) and len(v) == 1 for v in y_list):
+            metadata_fields['x_data'] = labels
+            aggregated['y_data'] = [v[0] for v in y_list]
+            for field in ('y_var', 'ci_lower', 'ci_upper'):
+                if field in aggregated:
+                    aggregated[field] = [
+                        v[0] if isinstance(v, list) and len(v) == 1 else v
+                        for v in aggregated[field]
+                    ]
+            del aggregated['labels']
+            log_info(f"Flattened bar chart: {len(y_list)} conditions -> x_data={metadata_fields['x_data']}")
 
     return pl.DataFrame([{**metadata_fields, **aggregated}])
 

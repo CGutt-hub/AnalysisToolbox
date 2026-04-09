@@ -100,7 +100,7 @@ def analyze_intervals(ip: str, event_col: str | None = None, y_lim: float | None
             # Quality check: high variance in IBIs suggests artifacts
             ibi_mean = float(np.mean(intervals))
             ibi_std = sdnn_val
-            if ibi_mean > 0 and (ibi_std / ibi_mean) > 0.5:
+            if ibi_mean > 0 and (ibi_std / ibi_mean) > 0.7:
                 log_warning(f"{cond} epoch {eid}: High IBI variability (CV={ibi_std/ibi_mean:.2f}), possible artifacts")
             
             all_epoch_data.append({'condition': cond, 'epoch_id': eid, 'SDNN': sdnn_val, 'RMSSD': rmssd_val})
