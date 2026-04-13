@@ -944,6 +944,10 @@ process IOInterface {
             # No subfolders — publish root-level parquets.
             for OUT_FILE in *.parquet; do
                 [ -f "\$OUT_FILE" ] || continue
+                # For result processes, skip staged inputs — only publish _result outputs.
+                if [ "\$IS_RESULT" = "true" ]; then
+                    case "\$OUT_FILE" in *_result.parquet) ;; *) continue ;; esac
+                fi
                 _publish_parquet "\$OUT_FILE"
             done
         fi
