@@ -121,7 +121,7 @@ workflow participant_discovery {
             if (git_root) {
                 def runBootGit = { cmd, timeout = 10 ->
                     try {
-                        def env = ["GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=echo", "SSH_ASKPASS=echo"]
+                        def env = System.getenv().collect { k, v -> "${k}=${v}" } + ["GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=echo", "SSH_ASKPASS=echo"]
                         def proc = cmd.execute(env, git_root)
                         def out = new StringBuilder(); def err = new StringBuilder()
                         def reader = Thread.start { proc.waitForProcessOutput(out, err) }
@@ -303,7 +303,7 @@ Duration: ${duration}s
 
         def runGit = { cmd, timeout = 10 ->
             try {
-                def env = ["GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=echo", "SSH_ASKPASS=echo"]
+                def env = System.getenv().collect { k, v -> "${k}=${v}" } + ["GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=echo", "SSH_ASKPASS=echo"]
                 def proc = cmd.execute(env, git_root)
                 def out = new StringBuilder()
                 def err = new StringBuilder()
@@ -538,7 +538,7 @@ def finalSync() {
 
             def runGit = { cmd, timeout = 10 ->
                 try {
-                    def env = ["GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=echo", "SSH_ASKPASS=echo"]
+                    def env = System.getenv().collect { k, v -> "${k}=${v}" } + ["GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=echo", "SSH_ASKPASS=echo"]
                     def proc = cmd.execute(env, git_root)
                     def out = new StringBuilder(); def err = new StringBuilder()
                     def reader = Thread.start { proc.waitForProcessOutput(out, err) }
