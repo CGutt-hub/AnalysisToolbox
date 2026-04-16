@@ -77,7 +77,8 @@ def bootstrap_analyze(ip: str, group_col: str = 'condition', sample_col: str | N
         if not candidates:
             print(f"[bootstrap] ERROR: No value column found"); sys.exit(1)
         value_col = candidates[0]
-    if value_col not in df.columns:
+    # 'auto_multi' is handled after group detection (bootstraps all non-meta columns)
+    if value_col != 'auto_multi' and value_col not in df.columns:
         print(f"[bootstrap] ERROR: Value column '{value_col}' not found"); sys.exit(1)
     
     print(f"[bootstrap] Columns: group={group_col}, sample={sample_col}, value={value_col}")
@@ -85,62 +86,87 @@ def bootstrap_analyze(ip: str, group_col: str = 'condition', sample_col: str | N
     out_folder = os.path.join(os.getcwd(), f"{base}_{suffix}")
     os.makedirs(out_folder, exist_ok=True)
     
+    # Detect multi-column mode: when value_col is 'auto_multi', bootstrap every
+    # non-meta column independently (e.g., fNIRS ROIs: Left PFC, Right PFC, …).
+    multi_cols: list[str] | None = None
+    if value_col == 'auto_multi':
+        meta = {'time', 'sfreq', group_col, sample_col, 'source', 'folder_path', 'signal', 'conditions'}
+        multi_cols = [c for c in df.columns if c not in meta]
+        if not multi_cols:
+            print(f"[bootstrap] ERROR: No value columns found for multi-column mode"); sys.exit(1)
+        print(f"[bootstrap] Multi-column mode: {multi_cols}")
+
     groups = sorted(df[group_col].unique().to_list())
     print(f"[bootstrap] Processing {len(groups)} groups")
     
     for idx, grp in enumerate(groups):
         grp_df = df.filter(pl.col(group_col) == grp)
         
-        # Aggregate value per sample using group_by (more efficient than filtering)
-        sample_agg = grp_df.group_by(sample_col).agg(pl.col(value_col).mean().alias('mean_val'))
-        sample_vals = sample_agg['mean_val'].to_numpy().astype(float)
-        n_samples = len(sample_vals)
+        # Decide which columns to bootstrap
+        cols_to_boot = multi_cols if multi_cols else [value_col]
         
-        if n_samples < 2:
-            log_warning(f"{grp} has <2 samples, skipping")
+        all_means, all_errors, all_ci_lo, all_ci_hi = [], [], [], []
+        x_labels: list[str] = []
+        
+        for vcol in cols_to_boot:
+            # Aggregate value per sample using group_by
+            sample_agg = grp_df.group_by(sample_col).agg(pl.col(vcol).mean().alias('mean_val'))
+            sample_vals = sample_agg['mean_val'].to_numpy().astype(float)
+            n_samples = len(sample_vals)
+            
+            if n_samples < 2:
+                log_warning(f"{grp}/{vcol} has <2 samples, skipping column")
+                continue
+            elif n_samples < 5:
+                log_info(f"{grp}/{vcol} has only {n_samples} samples, bootstrap CI may be unreliable")
+            
+            rng = np.random.default_rng(seed=42)
+            boot_means = np.array([np.mean(rng.choice(sample_vals, size=n_samples, replace=True)) for _ in range(n_boot)])
+            observed_mean = float(np.mean(sample_vals))
+            
+            if ci_method == 'percentile':
+                ci_lower, ci_upper = float(np.percentile(boot_means, 100*alpha/2)), float(np.percentile(boot_means, 100*(1-alpha/2)))
+            elif ci_method == 'bca':
+                z0 = stats.norm.ppf(np.sum(boot_means < observed_mean) / n_boot)
+                jack_means = np.array([np.mean(np.delete(sample_vals, i)) for i in range(n_samples)])
+                jack_mean = np.mean(jack_means)
+                num, denom = np.sum((jack_mean - jack_means)**3), 6 * (np.sum((jack_mean - jack_means)**2)**1.5)
+                a = num / denom if denom > 0 else 0
+                z_l, z_u = stats.norm.ppf(alpha/2), stats.norm.ppf(1-alpha/2)
+                p_l = stats.norm.cdf(z0 + (z0+z_l)/(1-a*(z0+z_l))) if abs(a*(z0+z_l)) < 1 else alpha/2
+                p_u = stats.norm.cdf(z0 + (z0+z_u)/(1-a*(z0+z_u))) if abs(a*(z0+z_u)) < 1 else 1-alpha/2
+                ci_lower, ci_upper = float(np.percentile(boot_means, 100*p_l)), float(np.percentile(boot_means, 100*p_u))
+            elif ci_method == 'normal':
+                z_crit, boot_se = stats.norm.ppf(1 - alpha/2), float(np.std(boot_means, ddof=1))
+                ci_lower, ci_upper = observed_mean - z_crit * boot_se, observed_mean + z_crit * boot_se
+            else:
+                log_error(f"Unknown method '{ci_method}'"); sys.exit(1)
+            
+            error = max(abs(ci_upper - observed_mean), abs(observed_mean - ci_lower))
+            all_means.append(observed_mean)
+            all_errors.append(error)
+            all_ci_lo.append(ci_lower)
+            all_ci_hi.append(ci_upper)
+            x_labels.append(vcol if multi_cols else str(grp))
+            
+            print(f"[bootstrap]   {grp}/{vcol}: {observed_mean:.3f} CI=[{ci_lower:.3f}, {ci_upper:.3f}] (n={n_samples})")
+        
+        if not all_means:
+            log_warning(f"{grp}: no columns had enough samples, skipping")
             continue
-        elif n_samples < 5:
-            log_info(f"{grp} has only {n_samples} samples, bootstrap CI may be unreliable (recommended minimum: 10)")
-        
-        # Bootstrap: resample samples with replacement, compute mean
-        rng = np.random.default_rng(seed=42)
-        boot_means = np.array([np.mean(rng.choice(sample_vals, size=n_samples, replace=True)) for _ in range(n_boot)])
-        observed_mean = float(np.mean(sample_vals))
-        
-        # CI computation (vectorized where possible)
-        if ci_method == 'percentile':
-            ci_lower, ci_upper = float(np.percentile(boot_means, 100*alpha/2)), float(np.percentile(boot_means, 100*(1-alpha/2)))
-        elif ci_method == 'bca':
-            z0 = stats.norm.ppf(np.sum(boot_means < observed_mean) / n_boot)
-            jack_means = np.array([np.mean(np.delete(sample_vals, i)) for i in range(n_samples)])
-            jack_mean = np.mean(jack_means)
-            num, denom = np.sum((jack_mean - jack_means)**3), 6 * (np.sum((jack_mean - jack_means)**2)**1.5)
-            a = num / denom if denom > 0 else 0
-            z_l, z_u = stats.norm.ppf(alpha/2), stats.norm.ppf(1-alpha/2)
-            p_l = stats.norm.cdf(z0 + (z0+z_l)/(1-a*(z0+z_l))) if abs(a*(z0+z_l)) < 1 else alpha/2
-            p_u = stats.norm.cdf(z0 + (z0+z_u)/(1-a*(z0+z_u))) if abs(a*(z0+z_u)) < 1 else 1-alpha/2
-            ci_lower, ci_upper = float(np.percentile(boot_means, 100*p_l)), float(np.percentile(boot_means, 100*p_u))
-        elif ci_method == 'normal':
-            z_crit, boot_se = stats.norm.ppf(1 - alpha/2), float(np.std(boot_means, ddof=1))
-            ci_lower, ci_upper = observed_mean - z_crit * boot_se, observed_mean + z_crit * boot_se
-        else:
-            log_error(f"Unknown method '{ci_method}'"); sys.exit(1)
-        
-        error = max(abs(ci_upper - observed_mean), abs(observed_mean - ci_lower))
         
         pl.DataFrame({
             'condition': [str(grp)],
-            'x_data': [[str(grp)]],
-            'y_data': [[observed_mean]],
-            'y_var': [[error]],
-            'ci_lower': [[ci_lower]],
-            'ci_upper': [[ci_upper]],
+            'x_data': [x_labels],
+            'y_data': [all_means],
+            'y_var': [all_errors],
+            'ci_lower': [all_ci_lo],
+            'ci_upper': [all_ci_hi],
             'plot_type': ['bar'],
-            'x_label': ['Condition'],
+            'x_label': ['ROI' if multi_cols else 'Condition'],
             'y_label': [y_label],
             'y_ticks': [y_lim] if y_lim is not None else [None]
         }).write_parquet(os.path.join(out_folder, f"{base}_{suffix}{idx+1}.parquet"))
-        print(f"[bootstrap]   {grp}: {observed_mean:.3f} CI=[{ci_lower:.3f}, {ci_upper:.3f}] (n={n_samples})")
     
     signal_path = os.path.join(os.getcwd(), f"{base}_{suffix}.parquet")
     pl.DataFrame({

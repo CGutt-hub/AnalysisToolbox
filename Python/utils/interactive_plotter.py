@@ -1691,6 +1691,65 @@ def add_log_to_archive(archive_path, participant_id, log_path, log_name):
         except:
             pass
 
+def _downsample_to_line_plot(inp: str, schema: dict, max_points: int = 4000) -> pl.DataFrame:
+    """Read a raw time-series parquet, decimate to display resolution, return plot-ready DataFrame.
+
+    Uses min-max decimation: buckets the time axis into *max_points*/2 bins and
+    keeps the min and max value per bin per channel.  This preserves visual peaks
+    and artifacts while cutting data volume by orders of magnitude.
+    """
+    import numpy as np
+
+    df = pl.read_parquet(inp)
+    meta_cols = {'time', 'sfreq', 'epoch_id', 'condition'}
+    ch_names = [c for c in df.columns if c not in meta_cols]
+    if not ch_names:
+        raise ValueError("No signal columns found")
+
+    times = df['time'].to_numpy()
+    n_samples = len(times)
+    if n_samples < 2:
+        raise ValueError("Too few samples")
+
+    data = np.column_stack([df[c].to_numpy(allow_copy=True).astype(np.float64) for c in ch_names]).T
+
+    # Min-max decimation: split into bins, keep min+max per bin per channel
+    if n_samples > max_points:
+        n_bins = max_points // 2
+        bin_size = n_samples // n_bins
+        usable = n_bins * bin_size  # trim tail to exact multiple
+        reshaped = data[:, :usable].reshape(data.shape[0], n_bins, bin_size)
+        mins = reshaped.min(axis=2)
+        maxs = reshaped.max(axis=2)
+        # Interleave min, max per bin → 2*n_bins points per channel
+        decimated = np.empty((data.shape[0], 2 * n_bins), dtype=np.float64)
+        decimated[:, 0::2] = mins
+        decimated[:, 1::2] = maxs
+        data = decimated
+        # Matching time axis (bin midpoints, interleaved)
+        bin_edges = np.linspace(float(times[0]), float(times[usable - 1]), n_bins + 1)
+        bin_mids = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+        t_dec = np.empty(2 * n_bins)
+        t_dec[0::2] = bin_mids
+        t_dec[1::2] = bin_mids
+        times = t_dec
+        print(f"[interactive_plotter] Decimated {n_samples} -> {2 * n_bins} pts/ch "
+              f"({len(ch_names)} ch, min-max binning)")
+    else:
+        print(f"[interactive_plotter] No decimation needed ({n_samples} <= {max_points})")
+
+    times_list = times.tolist()
+    n_ch = data.shape[0]
+    if n_ch == 1:
+        row = {'plot_type': 'line', 'x_data': times_list, 'y_data': data[0].tolist(),
+               'x_label': 'Time (s)', 'y_label': ch_names[0]}
+    else:
+        row = {'plot_type': 'line', 'x_data': times_list,
+               'y_data': [data[i].tolist() for i in range(n_ch)],
+               'labels': ch_names, 'x_label': 'Time (s)', 'y_label': 'Amplitude'}
+    return pl.DataFrame([row])
+
+
 def run(inp, out_dir, pre, project_name='procedure', sidecar_dir=None):
     """Copy an output parquet to plots/ and register it in the HTML archive.
 
@@ -1708,24 +1767,30 @@ def run(inp, out_dir, pre, project_name='procedure', sidecar_dir=None):
     """
     print(f"[interactive_plotter] Input: {inp}")
 
-    # Fast schema-only check: only publish parquets that carry a plot_type
-    # column — these are visualisation-ready outputs produced by analysis
-    # modules.  Files without plot_type are intermediate processing results
-    # (raw streams, cleaned epochs, etc.) and stay in the Nextflow work
-    # directory where they can still be inspected during development.
+    # Fast schema-only check: decide whether to publish as-is, downsample, or skip.
     try:
         schema = pl.read_parquet_schema(inp)
     except Exception as e:
         print(f"[interactive_plotter] ERROR: Failed to read schema of {inp}: {e}")
         return
-    if 'plot_type' not in schema:
-        print(f"[interactive_plotter] SKIP (no plot_type column, intermediate file): {inp}")
-        return
 
-    try:
-        df = pl.read_parquet(inp)
-    except Exception as e:
-        print(f"[interactive_plotter] ERROR: Failed to read {inp}: {e}")
+    if 'plot_type' in schema:
+        # Already plot-ready — publish as-is
+        try:
+            df = pl.read_parquet(inp)
+        except Exception as e:
+            print(f"[interactive_plotter] ERROR: Failed to read {inp}: {e}")
+            return
+    elif 'time' in schema:
+        # Raw time-series — downsample to 250 Hz and convert to line plot
+        try:
+            df = _downsample_to_line_plot(inp, schema, target_sfreq=250.0)
+        except Exception as e:
+            print(f"[interactive_plotter] ERROR: Failed to downsample {inp}: {e}")
+            return
+    else:
+        # Neither plot-ready nor time-series — skip
+        print(f"[interactive_plotter] SKIP (no plot_type or time column): {inp}")
         return
 
     # Extract participant ID from prefix (e.g. EV_002_xdf4_extr1_filt -> EV_002)
@@ -1751,7 +1816,14 @@ def run(inp, out_dir, pre, project_name='procedure', sidecar_dir=None):
     sidecar_dest = os.path.join(participant_plots_dir, f'{pre}.parquet')
     # Write as snappy (natively supported by hyparquet in browser, no addon needed)
     df.write_parquet(sidecar_dest, compression='snappy')
-    print(f"[interactive_plotter] Published sidecar: {sidecar_dest} ({os.path.getsize(sidecar_dest)//1024} KB)")
+    sidecar_size = os.path.getsize(sidecar_dest)
+    # Safety guard: refuse to keep parquets > 5 MB in plots/ (prevents repo bloat)
+    max_plot_bytes = 5 * 1024 * 1024
+    if sidecar_size > max_plot_bytes:
+        os.remove(sidecar_dest)
+        print(f"[interactive_plotter] SKIP (too large: {sidecar_size // 1024} KB > {max_plot_bytes // 1024} KB limit): {pre}")
+        return
+    print(f"[interactive_plotter] Published sidecar: {sidecar_dest} ({sidecar_size // 1024} KB)")
 
     # Compute the sidecar path relative to the archive root (parent of .bin/)
     sidecar_rel = os.path.relpath(sidecar_dest, out_dir_abs).replace('\\', '/')

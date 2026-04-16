@@ -1,14 +1,26 @@
 """ICA Analyzer - Perform ICA on EEG data, output cleaned .fif and component variance."""
-import polars as pl, mne, sys, os, warnings
+import polars as pl, mne, sys, os, json, warnings
 warnings.filterwarnings('ignore', message='.*does not conform to MNE naming conventions.*')
 
-def analyze_ica(ip: str, n_components: float = 0.99, y_lim: float | None = None) -> str:
+def analyze_ica(ip: str, n_components: float = 0.99, y_lim: float | None = None, exclude: str | None = None) -> str:
     if not os.path.exists(ip): print(f"[ic] File not found: {ip}"); sys.exit(1)
     if not ip.endswith('.fif'): print("[ic] Error: Requires .fif format"); sys.exit(1)
     print(f"[ic] ICA analysis: {ip}, n_components={n_components}")
     raw = mne.io.read_raw_fif(ip, preload=True, verbose=False)
     original_sfreq = raw.info['sfreq']
     print(f"[ic] Loaded: {len(raw.ch_names)} channels, sfreq={original_sfreq} Hz")
+    # Drop noisy edge channels before ICA (blacklist approach)
+    if exclude:
+        try:
+            exclude_list = json.loads(exclude) if exclude.startswith('[') else [ch.strip() for ch in exclude.split(',')]
+        except json.JSONDecodeError:
+            exclude_list = [ch.strip() for ch in exclude.split(',')]
+        to_drop = [ch for ch in exclude_list if ch in raw.ch_names]
+        if to_drop:
+            raw.drop_channels(to_drop)
+            print(f"[ic] Excluded {len(to_drop)} channels: {to_drop}")
+        else:
+            print(f"[ic] Warning: None of the excluded channels found in data, using all {len(raw.ch_names)} channels")
     target_sfreq = 250.0
     raw_for_ica = raw.copy().resample(target_sfreq, verbose=False) if original_sfreq > target_sfreq else raw.copy()
     ica = mne.preprocessing.ICA(n_components=n_components, random_state=42, verbose=False)
@@ -32,4 +44,4 @@ def analyze_ica(ip: str, n_components: float = 0.99, y_lim: float | None = None)
     print(f"[ic] Output: {signal_path}")
     return signal_path
 
-if __name__ == '__main__': (lambda a: analyze_ica(a[1], float(a[2]) if len(a) > 2 else 0.99, float(a[3]) if len(a) > 3 and a[3] else None) if len(a) >= 2 else (print('ICA decomposition with component variance output. Plot-ready output.\n[ic] Usage: ic_analyzer.py <input.fif> [n_components] [y_lim]'), sys.exit(1)))(sys.argv)
+if __name__ == '__main__': (lambda a: analyze_ica(a[1], float(a[2]) if len(a) > 2 else 0.99, float(a[3]) if len(a) > 3 and a[3] and a[3] != 'None' else None, a[4] if len(a) > 4 else None) if len(a) >= 2 else (print('ICA decomposition with component variance output. Plot-ready output.\n[ic] Usage: ic_analyzer.py <input.fif> [n_components] [y_lim] [exclude_json]'), sys.exit(1)))(sys.argv)

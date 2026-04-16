@@ -142,7 +142,7 @@ def concat_generic(files: list[str], conds: list[str]) -> pl.DataFrame:
     print(f"[concatenating] List fields (to aggregate): {list_fields}")
     print(f"[concatenating] Metadata fields: {list(metadata_fields.keys())}")
 
-    aggregated = {field: [row.get(field) for row in all_rows] for field in list_fields}
+    aggregated = {field: [row.get(field, []) for row in all_rows] for field in list_fields}
     aggregated['labels'] = labels
 
     # Unwrap over-nested single-element lists so plotter gets consistent depth
@@ -191,6 +191,6 @@ if __name__ == '__main__': (lambda a:
             ))(extract_pid(files[0]) if files else '', 
                os.path.join(os.getcwd(), f"{extract_pid(files[0]) + '_' if files and extract_pid(files[0]) else ''}{out_base}.parquet"))
         ))([p.split(':',1)[1] for p in items] if ':' in items[0] else items, 
-           [p.split(':',1)[0] for p in items] if ':' in items[0] else [f"cond{i+1}" for i in range(len(items))])
+           [p.split(':',1)[0] for p in items] if ':' in items[0] else [os.path.splitext(os.path.basename(p))[0].rsplit('_', 1)[-1] for p in items])
     ))(a[1:-1], a[-1]) if len(a) >= 3 else (print(f"Aggregate multiple condition parquets into single plot-ready output.\n[concatenating] Usage: python {a[0]} <path1> <path2> ... <out_basename> OR <label1:path1> <label2:path2> ... <out_basename>"), sys.exit(1))
 )(sys.argv)

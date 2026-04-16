@@ -24,6 +24,8 @@ def configureGitUser() {
                 git_root = git_root.getParentFile()
             }
             if (git_root) {
+                // Mark all repos as safe (cross-OS ownership mismatch: Windows + Linux)
+                ["git", "config", "--global", "safe.directory", "*"].execute().waitFor()
                 // Set git user config in repository (not global to avoid permission issues)
                 ["git", "config", "user.email", params.git_user_email].execute(null, git_root).waitFor()
                 ["git", "config", "user.name",  params.git_user_name ].execute(null, git_root).waitFor()
@@ -184,17 +186,21 @@ workflow participant_discovery {
             pipeline_log.append("[${new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())}] [workflow] Bootstrap push failed: ${e.message}\n")
         }
 
-        def watched_participants = Channel
-            .watchPath("${workflow.launchDir}/${input_dir}/*", 'create,modify')
-            .map { path -> path.getName() }
-            .filter { it.matches(regex_pattern) }
-            .unique()
-
-        def all_participants = Channel.fromList(new_participants).concat(watched_participants)
-            .filter { pid ->
-                def safe_id = pid.replaceAll('\r', '').trim().replaceAll('[^A-Za-z0-9._-]', '_')
-                !new File("${workflow.launchDir}/${output_dir}/${params.project_name}_l1/${safe_id}").exists()
-            }
+        def all_participants
+        if (params.watch) {
+            def watched_participants = Channel
+                .watchPath("${workflow.launchDir}/${input_dir}/*", 'create,modify')
+                .map { path -> path.getName() }
+                .filter { it.matches(regex_pattern) }
+                .unique()
+            all_participants = Channel.fromList(new_participants).concat(watched_participants)
+                .filter { pid ->
+                    def safe_id = pid.replaceAll('\r', '').trim().replaceAll('[^A-Za-z0-9._-]', '_')
+                    !new File("${workflow.launchDir}/${output_dir}/${params.project_name}_l1/${safe_id}").exists()
+                }
+        } else {
+            all_participants = Channel.fromList(new_participants)
+        }
 
         participant_context = all_participants.map { pid ->
             def safe_id = pid.replaceAll('\r', '').trim().replaceAll('[^A-Za-z0-9._-]', '_')
@@ -394,6 +400,9 @@ Duration: ${duration}s
 
         cleanupRebase()
 
+        // Trust all repos regardless of filesystem ownership (cross-OS)
+        runGit(["git", "config", "--global", "safe.directory", "*"], 5)
+
         // Helper: commit a list of paths and push.
         def commitAndPush = { List paths, String msg ->
             if (!paths) return true
@@ -467,188 +476,46 @@ Duration: ${duration}s
     }
 }
 
-// Separate finalization workflow: logging + git sync
+// Channel-based finalization: triggers per participant when all terminal result
+// channels have emitted.  groupTuple(size: N) fires the moment N items arrive
+// for a PID — works with infinite (watchPath) channels, no timers needed.
+// Participants with upstream failures (< N results) are caught by finalSync()
+// on Ctrl+C shutdown.
 workflow finalize_participant {
     take:
-        result_outputs       // Pre-mixed channel of all terminal/result output files
-        result_count         // Number of expected results per participant
-        participant_context
-    
+        result_outputs       // Pre-mixed channel of all L1 terminal result files
+        result_count         // Number of expected L1 terminal results per participant
+        participant_context  // Channel of [pid, folder] tuples
+
     main:
         def finalizedPids = Collections.synchronizedSet(new HashSet<String>())
+        def contextMap = new java.util.concurrent.ConcurrentHashMap<String, String>()
+
+        participant_context.subscribe { pid, folder -> contextMap[pid] = folder }
 
         result_outputs
-            .map { file -> 
-                def pid = file.baseName.toString().split('_')[0..1].join('_')
-                [pid, file]
-            }
-            .groupTuple(size: result_count, remainder: true)
-            .join(participant_context)
-            .subscribe { pid, files, folder ->
-                finalizeParticipant(pid, files, folder, finalizedPids)
+            .map { file -> [file.baseName.toString().split('_')[0..1].join('_'), file] }
+            .groupTuple(size: result_count)
+            .subscribe { pid, files ->
+                def folder = contextMap[pid]
+                if (folder) finalizeParticipant(pid, files, folder, finalizedPids)
             }
 }
 
-// Finalize the group-level (l2) folder: append completion entry to EV_l2.log.parquet,
-// register it in the HTML archive, and commit + push the entire EV_l2 folder.
-// Call this after all l2 processes complete (use .collect() on l2 outputs in the pipeline).
-def finalizeL2(files) {
-    def timestamp   = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
-    def l2_name     = "${params.project_name}_l2"
-    def l2_dir      = new File("${workflow.launchDir}/${params.output_dir}/${l2_name}")
-    def log_file    = new File(l2_dir, "${l2_name}.log.parquet")
-    def pipeline_log = new File("${workflow.launchDir}/${params.output_dir}/.bin", "${params.project_name}.log")
-
-    def finalization_text = """
-=== Group-level analysis (${l2_name}) completed: ${timestamp} ===
-Files produced: ${files.size()}
-Session: ${workflow.sessionId}
-=== ${l2_name} finalized: ${timestamp} ===
-
-"""
-    if (log_file.exists()) {
-        try {
-            def append_cmd = [params.python_exe, '-u',
-                "${workflow.launchDir}/${params.toolbox_dir}/utils/log_to_parquet.py",
-                log_file.absolutePath, '--text', finalization_text]
-            append_cmd.execute().waitFor(30, java.util.concurrent.TimeUnit.SECONDS)
-        } catch (Exception e) { /* non-critical */ }
-    }
-
-    // Register the l2 log.parquet in the HTML archive
-    def procedure_html = new File("${workflow.launchDir}/${params.output_dir}/.bin", "${params.project_name}_results.html")
-    if (procedure_html.exists() && log_file.exists()) {
-        try {
-            def add_log_cmd = [params.python_exe, '-u',
-                "${workflow.launchDir}/${params.toolbox_dir}/utils/interactive_plotter.py",
-                'add-log', procedure_html.absolutePath, l2_name, log_file.absolutePath, 'Group Log']
-            add_log_cmd.execute().waitFor(30, java.util.concurrent.TimeUnit.SECONDS)
-        } catch (Exception e) { /* non-critical */ }
-    }
-
-    try {
-        pipeline_log.parentFile?.mkdirs()
-        if (!pipeline_log.exists()) pipeline_log.text = ""
-        pipeline_log.append("\n=== ${l2_name} finalized: ${timestamp} ===\nFiles: ${files.size()}\n\n")
-    } catch (Exception e) { /* .bin/ may not exist yet on NAS */ }
-
-    git_lock.lock()
-    try {
-        def l2_full = l2_dir.getAbsoluteFile()
-        def git_root = l2_full
-        while (git_root != null && !new File(git_root, ".git").exists()) {
-            git_root = git_root.getParentFile()
-        }
-        if (!git_root) return
-
-        def output_root_full = new File("${workflow.launchDir}/${params.output_dir}").getAbsoluteFile()
-        def bin_full = new File(output_root_full, ".bin")
-        def meta_full = new File(bin_full, "${params.project_name}_meta.json")
-        def html_full = new File(bin_full, "${params.project_name}_results.html")
-
-        def runGit = { cmd, timeout = 10 ->
-            try {
-                def env = ["GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=echo", "SSH_ASKPASS=echo"]
-                def proc = cmd.execute(env, git_root)
-                def out = new StringBuilder(); def err = new StringBuilder()
-                def reader = Thread.start { proc.waitForProcessOutput(out, err) }
-                reader.join(timeout * 1000L)
-                if (reader.isAlive()) {
-                    try {
-                        def pid_val = proc.pid()
-                        ["pkill", "-9", "-P", "${pid_val}"].execute().waitFor(3, java.util.concurrent.TimeUnit.SECONDS)
-                    } catch (Exception ignored) {}
-                    try { proc.destroyForcibly() } catch (Exception ignored) { proc.destroy() }
-                    reader.join(3000L)
-                    out.append(err)
-                    return [exit: -1, out: "timeout: ${out}".toString()]
-                }
-                out.append(err)
-                return [exit: proc.exitValue(), out: out.toString()]
-            } catch (Exception e) { return [exit: -1, out: e.message] }
-        }
-
-        def logMsg = { msg -> try { pipeline_log.append(msg) } catch (Exception ignored) {} }
-
-        def nukeIndexLock = {
-            def lockFile = new File(git_root, ".git/index.lock")
-            if (!lockFile.exists()) return
-            lockFile.delete()
-            if (!lockFile.exists()) return
-            try {
-                ["fuser", "-k", lockFile.absolutePath].execute().waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
-                Thread.sleep(500)
-            } catch (Exception ignored) {}
-            lockFile.delete()
-            if (!lockFile.exists()) return
-            Thread.sleep(2000)
-            lockFile.delete()
-        }
-
-        // Clean up stale git state
-        def cleanupRebase = {
-            runGit(["git", "rebase", "--abort"], 2)
-            new File(git_root, ".git/rebase-merge").with { if (exists()) deleteDir() }
-            new File(git_root, ".git/rebase-apply").with { if (exists()) deleteDir() }
-            nukeIndexLock()
-        }
-        cleanupRebase()
-
-        // Helper: commit a list of paths and push.
-        def commitAndPush = { List paths, String msg ->
-            if (!paths) return true
-            nukeIndexLock()
-            def addResult = runGit(["git", "add", "-A"] + paths, 120)
-            if (addResult.exit != 0) {
-                logMsg("Git sync L2: add failed (${msg})\n${addResult.out}\n")
-                runGit(["git", "reset", "HEAD"], 10)
-                return false
-            }
-            def st = runGit(["git", "status", "--porcelain", "--cached"], 15)
-            if (!st.out?.trim()) return true
-            def commitResult = runGit(["git", "commit", "-m", msg], 30)
-            if (commitResult.exit != 0) {
-                logMsg("Git sync L2: commit failed (${msg})\n${commitResult.out}\n")
-                return false
-            }
-            def push = runGit(["git", "push"], 600)
-            if (push.exit == 0) return true
-            def pull = runGit(["git", "pull", "--rebase", "--autostash"], 120)
-            if (pull.exit != 0) {
-                cleanupRebase()
-                logMsg("Git sync L2: pull failed (${msg}) — committed locally\n${pull.out}\n")
-                return true
-            }
-            push = runGit(["git", "push"], 600)
-            if (push.exit != 0) {
-                logMsg("Git sync L2: push failed (${msg}) — committed locally\n${push.out}\n")
-            }
-            return true
-        }
-
-        // Scoped sync: l2 folder + .bin/
-        def binRel = git_root.toPath().relativize(bin_full.toPath()).toString().replace('\\', '/')
-        def l2Rel  = git_root.toPath().relativize(l2_full.toPath()).toString().replace('\\', '/')
-        commitAndPush([l2Rel, binRel], "autosync: ${l2_name} completed")
-
-        logMsg("Git sync L2: done\n")
-    } finally {
-        git_lock.unlock()
-    }
-}
-
-// Finalization workflow for group-level (l2) outputs.
-// Pass all l2 process output channels mixed together; .collect() waits for all of them.
+// L2 finalization: subscribes to L2 result channels.  Each emission triggers
+// a dedicated L2 log entry.  Git sync of the L2 folder already happens inside
+// every L1 finalizeParticipant (syncPaths includes l2_dir), so no separate
+// commit/push is needed here — just the log bookkeeping.
 workflow finalize_l2 {
     take:
         l2_outputs
 
     main:
-        l2_outputs
-            .collect()
-            .subscribe { files ->
-                finalizeL2(files)
-            }
+        l2_outputs.subscribe { file ->
+            def pipeline_log = new File("${workflow.launchDir}/${params.output_dir}/.bin", "${params.project_name}.log")
+            def ts = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
+            try { pipeline_log.append("[${ts}] L2 result: ${file.name}\n") } catch (Exception e) {}
+        }
 }
 
 // Final sync: commit and push all scoped output paths once at pipeline close.
@@ -690,6 +557,10 @@ def finalSync() {
             // Clean up stale state
             def lockFile = new File(git_root, ".git/index.lock")
             if (lockFile.exists()) lockFile.delete()
+
+            // Trust all repos regardless of filesystem ownership (cross-OS)
+            runGit(["git", "config", "--global", "safe.directory", "*"], 5)
+
             runGit(["git", "rebase", "--abort"], 2)
             new File(git_root, ".git/rebase-merge").with { if (exists()) deleteDir() }
             new File(git_root, ".git/rebase-apply").with { if (exists()) deleteDir() }

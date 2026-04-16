@@ -94,7 +94,7 @@ def copy_and_output(matches, signal_file, pattern, append_suffix):
         ext = os.path.splitext(original_name)[1]
         out_name = f"{stem}_{append_suffix}{ext}"
         print(f"[file_finder] Appended suffix: {original_name} -> {out_name}", file=sys.stderr)
-        shutil.copy2(f, out_name)
+        shutil.copyfile(f, out_name)
         print(os.path.abspath(out_name))
     return 0
 
