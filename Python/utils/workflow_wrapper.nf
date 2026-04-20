@@ -119,10 +119,11 @@ workflow participant_discovery {
                 git_root = git_root.getParentFile()
             }
             if (git_root) {
+                // Cache inherited env once — avoid re-collecting on every git call over SMB
+                def inheritedEnv = System.getenv().collect { k, v -> "${k}=${v}" } + ["GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=echo", "SSH_ASKPASS=echo"]
                 def runBootGit = { cmd, timeout = 10 ->
                     try {
-                        def env = System.getenv().collect { k, v -> "${k}=${v}" } + ["GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=echo", "SSH_ASKPASS=echo"]
-                        def proc = cmd.execute(env, git_root)
+                        def proc = cmd.execute(inheritedEnv, git_root)
                         def out = new StringBuilder(); def err = new StringBuilder()
                         def reader = Thread.start { proc.waitForProcessOutput(out, err) }
                         reader.join(timeout * 1000L)
@@ -146,38 +147,31 @@ workflow participant_discovery {
                         binIgnore.append("${pattern}\n")
                     }
                 }
-                def traceRel = git_root.toPath().relativize(
-                    new File(bin_dir_infra, "pipeline_trace.txt").toPath().toAbsolutePath()
-                ).toString().replace('\\', '/')
-                runBootGit(["git", "rm", "--cached", "--ignore-unmatch", "--", traceRel], 10)
-                // Also untrack any previously committed local runtime files
-                def localPatterns = ["*.log", "*_results.html"]
-                localPatterns.each { pattern ->
-                    bin_dir_infra.listFiles()?.each { f ->
-                        if (f.isFile()) {
-                            def match = (pattern == "*.log")
-                                ? (f.name.endsWith(".log") && !f.name.endsWith(".log.parquet"))
-                                : f.name.endsWith("_results.html")
-                            if (match) {
-                                def rel = git_root.toPath().relativize(f.toPath().toAbsolutePath()).toString().replace('\\', '/')
-                                runBootGit(["git", "rm", "--cached", "--ignore-unmatch", "--", rel], 10)
-                            }
-                        }
-                    }
+                // Single call to untrack all ignored files still in the index
+                def binRel = git_root.toPath().relativize(bin_dir_infra.toPath().toAbsolutePath()).toString().replace('\\', '/')
+                runBootGit(["git", "rm", "-r", "--cached", "--ignore-unmatch", "--", binRel], 15)
+                // Untrack Nextflow runtime logs — held open during the run, breaks rebase
+                def nfLog = new File(workflow.launchDir.toString(), ".nextflow.log")
+                if (nfLog.exists()) {
+                    def nfLogRel = git_root.toPath().relativize(nfLog.toPath().toAbsolutePath()).toString().replace('\\', '/')
+                    runBootGit(["git", "rm", "--cached", "--ignore-unmatch", "--", nfLogRel], 5)
                 }
 
-                def addAll = runBootGit(["git", "add", "-A"], 120)
+                def outputRel = git_root.toPath().relativize(
+                    new File("${workflow.launchDir}/${output_dir}").getAbsoluteFile().toPath()
+                ).toString().replace('\\', '/')
+                def addAll = runBootGit(["git", "add", "-A", outputRel], 30)
                 if (addAll.exit == 0) {
                     def st = runBootGit(["git", "status", "--porcelain", "--cached"], 15)
                     if (st.out?.trim()) {
                         def ts = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
                         runBootGit(["git", "commit", "-m", "autosync: bootstrap push before analysis (${ts})"], 30)
-                        def pull = runBootGit(["git", "pull", "--rebase", "--autostash"], 600)
+                        def pull = runBootGit(["git", "pull", "--rebase", "--autostash"], 60)
                         if (pull.exit != 0) {
                             runBootGit(["git", "rebase", "--abort"], 5)
                             new File(git_root, ".git/index.lock").with { if (exists()) delete() }
                         }
-                        runBootGit(["git", "push"], 900)
+                        runBootGit(["git", "push"], 120)
                     }
                 }
                 pipeline_log.append("[${new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())}] [workflow] Bootstrap push completed\n")
@@ -301,10 +295,11 @@ Duration: ${duration}s
         def html_path         = html_full.exists() ? git_root.toPath().relativize(html_full.toPath()).toString().replace('\\', '/') : null
         def meta_path         = meta_full.exists() ? git_root.toPath().relativize(meta_full.toPath()).toString().replace('\\', '/') : null
 
+        // Cache inherited env once — avoid re-collecting on every git call over SMB
+        def inheritedEnv = System.getenv().collect { k, v -> "${k}=${v}" } + ["GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=echo", "SSH_ASKPASS=echo"]
         def runGit = { cmd, timeout = 10 ->
             try {
-                def env = System.getenv().collect { k, v -> "${k}=${v}" } + ["GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=echo", "SSH_ASKPASS=echo"]
-                def proc = cmd.execute(env, git_root)
+                def proc = cmd.execute(inheritedEnv, git_root)
                 def out = new StringBuilder()
                 def err = new StringBuilder()
                 def reader = Thread.start { proc.waitForProcessOutput(out, err) }
@@ -536,10 +531,11 @@ def finalSync() {
             }
             if (!git_root) return
 
+            // Cache inherited env once — avoid re-collecting on every git call over SMB
+            def inheritedEnv = System.getenv().collect { k, v -> "${k}=${v}" } + ["GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=echo", "SSH_ASKPASS=echo"]
             def runGit = { cmd, timeout = 10 ->
                 try {
-                    def env = System.getenv().collect { k, v -> "${k}=${v}" } + ["GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=echo", "SSH_ASKPASS=echo"]
-                    def proc = cmd.execute(env, git_root)
+                    def proc = cmd.execute(inheritedEnv, git_root)
                     def out = new StringBuilder(); def err = new StringBuilder()
                     def reader = Thread.start { proc.waitForProcessOutput(out, err) }
                     reader.join(timeout * 1000L)
