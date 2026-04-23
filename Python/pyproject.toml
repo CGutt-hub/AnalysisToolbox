@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gitref-toolbox"
+version = "0.1.0"
+description = "Git-aware multimodal analysis toolbox CLI for pipeline workflows"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "polars>=0.20",
+]
+authors = [
+  { name = "AnalysisToolbox Contributors" }
+]
+
+[project.scripts]
+gitref = "gitref_toolbox.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

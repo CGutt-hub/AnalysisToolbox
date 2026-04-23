@@ -1,0 +1,2 @@
+[console_scripts]
+gitref = gitref_toolbox.cli:main

@@ -1294,6 +1294,7 @@ def create_archive_html(project_name='procedure'):
                     content.innerHTML = `
                         <div class="plot-title">${{meta.title}}</div>
                         <div class="export-bar">
+                            <button class="export-btn" onclick="downloadParquet('${plotId}')">&#8659; Parquet</button>
                             <button class="export-btn png" onclick="exportPlot('png','${{safeName}}')">&#8659; PNG</button>
                             <button class="export-btn svg" onclick="exportPlot('svg','${{safeName}}')">&#8659; SVG</button>
                             <button class="export-btn pdf" onclick="downloadPDF('${{safeName}}')">&#8659; PDF</button>
@@ -1399,6 +1400,19 @@ def create_archive_html(project_name='procedure'):
             const h = parseInt(document.getElementById('exp-h')?.value || 600);
             Plotly.downloadImage(el, {{format, filename, width: w, height: h}});
         }}
+
+        function downloadParquet(plotId) {
+            const meta = plotMeta[plotId];
+            if (!meta || !meta.file) return;
+            const rawUrl = meta.file;
+            const url = rawUrl.startsWith('/') || rawUrl.startsWith('http') ? rawUrl : '../' + rawUrl;
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = (rawUrl.split('/').pop() || (plotId + '.parquet'));
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        }
 
         function resizePlotForExport() {{
             // No-op: Plotly.downloadImage uses its own width/height, no resize needed

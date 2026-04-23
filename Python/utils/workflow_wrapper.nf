@@ -60,9 +60,13 @@ workflow participant_discovery {
         def input_path = new File("${workflow.launchDir}/${input_dir}")
         def output_path = new File("${workflow.launchDir}/${output_dir}")
         // Discover already-processed participants by checking per-participant output subfolders inside l1/
+        // A .reinject marker overrides the check — the participant is re-included for correction replay.
         def l1_path    = new File(output_path, "${params.project_name}_l1")
         def output_dirs = l1_path.exists() ? l1_path.list() as Set : [] as Set
-        def new_participants = input_path.list().findAll { it.matches(regex_pattern) }.findAll { !(it in output_dirs) }
+        def reinject_pids = l1_path.exists()
+            ? l1_path.listFiles().findAll { it.isDirectory() && new File(it, ".reinject").exists() }.collect { it.name } as Set
+            : [] as Set
+        def new_participants = input_path.list().findAll { it.matches(regex_pattern) }.findAll { !(it in output_dirs) || it in reinject_pids }
         
         // Create .bin/ infrastructure directory and global log inside it
         def bin_dir_infra = new File("${workflow.launchDir}/${params.output_dir}", ".bin")
@@ -190,7 +194,8 @@ workflow participant_discovery {
             all_participants = Channel.fromList(new_participants).concat(watched_participants)
                 .filter { pid ->
                     def safe_id = pid.replaceAll('\r', '').trim().replaceAll('[^A-Za-z0-9._-]', '_')
-                    !new File("${workflow.launchDir}/${output_dir}/${params.project_name}_l1/${safe_id}").exists()
+                    def pid_dir = new File("${workflow.launchDir}/${output_dir}/${params.project_name}_l1/${safe_id}")
+                    !pid_dir.exists() || new File(pid_dir, ".reinject").exists()
                 }
         } else {
             all_participants = Channel.fromList(new_participants)
@@ -220,6 +225,9 @@ workflow participant_discovery {
 // Handles per-participant logging, HTML archive update, and git sync.
 def finalizeParticipant(pid, files, folder, finalizedPids) {
     if (!finalizedPids.add(pid)) return
+
+    // Remove .reinject marker so this participant is not re-included on next run
+    new File("${workflow.launchDir}/${folder}/.reinject").with { if (exists()) delete() }
 
     def pipeline_log = new File("${workflow.launchDir}/${params.output_dir}/.bin", "${params.project_name}.log")
     try {
@@ -743,6 +751,31 @@ process IOInterface {
             rm -f "\$INIT_TMP"
         fi
 
+        # --- Correction Override ---
+        # When manual corrections exist for this step, they replace the
+        # computed output entirely and the script is skipped.
+        # Convention:  <participant>/corrections/<scriptName>/<file>.parquet
+        # The notebook writes validated corrections there; the gate copies
+        # them into the work directory so downstream channels receive the
+        # corrected data and normal publishing picks them up.
+        CORRECTION_DIR="\$CONTEXT_DIR/corrections/${scriptName}"
+        HAS_CORRECTIONS=false
+        if [ -d "\$CORRECTION_DIR" ]; then
+            shopt -s nullglob
+            _CORR_FILES=("\$CORRECTION_DIR"/*.parquet)
+            shopt -u nullglob
+            if [ \${#_CORR_FILES[@]} -gt 0 ]; then
+                HAS_CORRECTIONS=true
+                for _cf in "\${_CORR_FILES[@]}"; do cp "\$_cf" .; done
+                _CORR_TMP=\$(mktemp)
+                printf "%s [CORRECTION] Applied %d override(s) from corrections/${scriptName}/, skipping script\\n" \
+                    "\$(date '+%Y-%m-%d %H:%M:%S')" \${#_CORR_FILES[@]} > "\$_CORR_TMP"
+                ${env_exe} -u "${logWriter}" "\$LOG_FILE" "\$_CORR_TMP"
+                rm -f "\$_CORR_TMP"
+            fi
+        fi
+
+        if [ "\$HAS_CORRECTIONS" != "true" ]; then
         TEMP_OUT=\$(mktemp)
         export VIS_LABEL_MAP='${params.vis_label_map}'
         ${env_exe} -u "${workflow.launchDir}/${script}" ${inputArgs} ${extraArgs} 2>&1 | tee "\$TEMP_OUT"
@@ -763,6 +796,7 @@ process IOInterface {
             rm -f "\$ERR_TMP"
             ${isTerminal ? "# Terminal process: emit sentinel so finalization is never blocked\n            ${env_exe} -c \"import polars as pl; pl.DataFrame({'_sentinel': [True], '_error': [True]}).write_parquet('\${PARTICIPANT_ID}_sentinel_failed.parquet', compression='snappy')\"\n            exit 0" : 'exit \\$EXIT_CODE'}
         fi
+        fi  # end HAS_CORRECTIONS check
 
         # Publish output parquets to the results plots/ folder and register
         # them in the HTML archive.  Only .parquet files are staged — other
