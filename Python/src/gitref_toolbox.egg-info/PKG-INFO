@@ -1,7 +1,0 @@
-Metadata-Version: 2.4
-Name: gitref-toolbox
-Version: 0.1.0
-Summary: Git-aware multimodal analysis toolbox CLI for pipeline workflows
-Author: AnalysisToolbox Contributors
-Requires-Python: >=3.10
-Requires-Dist: polars>=0.20

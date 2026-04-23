@@ -78,7 +78,49 @@ AnalysisToolbox/
 │   └── utils/           # Infrastructure (Nextflow wrapper, plotting)
 ```
 
+## Core Functionality
+
+This repository provides one integrated toolbox with these core functions:
+
+- Environment generation for pipeline projects, including folder and workflow setup
+	(for example project structures such as `EV_analysis` and `EV_results`)
+- Participant-level correction and replay via reinjection ("cherry-picking" one
+	participant or one corrected output without restarting everything)
+- Web GUI/bootstrap helpers for local result inspection and sharing
+- Python processing, analysis, and statistical math scripts (reader/processor/analyzer modules)
+
 ## Usage
+
+### Install
+
+```bash
+pip install atbx
+```
+
+Installs all Python dependencies and the `atbx` command. Nextflow must be installed separately (see Prerequisites). On first run, `atbx` asks where to mirror the modules folder.
+
+To uninstall: `pip uninstall atbx`
+
+### Commands
+
+| Command | What it does |
+|---|---|
+| `atbx init <dir>` | Scaffold a new analysis project |
+| `atbx serve [--dir DIR] [--port PORT]` | Start web UI to browse results and plots |
+| `atbx reinject <PID> --corrected-file <file> --script-name <name> [--pipeline-dir DIR]` | Reinject a corrected parquet for one participant |
+
+`atbx init <dir>` prompts for project name, raw data path, Python executable, and toolbox location, then creates:
+
+```
+<dir>/
+├── {name}_analysis/
+│   ├── {name}_pipeline.nf          ← workflow definition
+│   ├── {name}_modules.nf           ← add your process includes here
+│   └── {name}_parameters.config    ← pre-filled with your answers
+└── {name}_results/
+```
+
+`atbx reinject` places a corrected parquet into `corrections/<script_name>/`, marks the participant for replay, invalidates relevant cache entries, and resumes only that participant.
 
 ### Creating a Pipeline
 

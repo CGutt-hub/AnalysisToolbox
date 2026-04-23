@@ -89,10 +89,10 @@ workflow participant_discovery {
         def l1_dir_scaffold = new File("${workflow.launchDir}/${params.output_dir}", "${params.project_name}_l1")
         l1_dir_scaffold.mkdirs()
 
-        // Initialize HTML archive (shared across participants)
-        // To view results: atbx serve --dir <results_dir>
+        // Initialize HTML archive + serve script + launcher (shared across participants)
         def html_file_scaffold = new File(bin_dir_infra, "${params.project_name}_results.html")
-        if (!html_file_scaffold.exists()) {
+        def serve_file_scaffold = new File(bin_dir_infra, "${params.project_name}_results_serve.py")
+        if (!html_file_scaffold.exists() || !serve_file_scaffold.exists()) {
             try {
                 def init_cmd = [params.python_exe, '-u',
                     "${workflow.launchDir}/${params.toolbox_dir}/utils/interactive_plotter.py",
