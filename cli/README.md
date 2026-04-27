@@ -141,7 +141,11 @@ Generic Nextflow process that runs any script (reader/processor/analyzer) with a
 
 ### Modules
 
-The `modules/` folder is a curated but non-exhaustive starting collection of commonly useful scripts. The first time `atbx` is run it mirrors the full collection to `~/Documents/atbxModules` (Windows) or `~/atbxModules` (Linux/macOS) automatically. You can move that folder anywhere — just update the path in `~/.atbx_config`. The local copy is yours to extend: add domain-specific scripts, modify existing ones, or organise them into subfolders. Any script there can be called via `IOInterface` identically to the built-in modules, as long as it follows the same convention: positional CLI arguments in, Parquet or FIF outputs, non-zero exit on failure.
+The `modules/` folder is a curated but non-exhaustive starting collection of commonly useful scripts. When `atbx` is first run, this collection is mirrored to a local directory of your choice (configured on first launch). That local copy is yours to extend — add domain-specific scripts, modify existing ones, or organise them into subfolders. Any script placed there can be included in an `IOInterface` pipeline call identically to the built-in modules, as long as it follows the same convention: positional CLI arguments in, Parquet or FIF outputs, non-zero exit on failure.
+
+### `modules/utils/file_finder.py`
+
+A utility module included explicitly via `IOInterface` to locate files matching a pattern within a participant's output. Add it to your `{name}_modules.nf` when needed.
 
 ## Authors
 

@@ -1,9 +1,22 @@
 Metadata-Version: 2.4
 Name: atbx
 Version: 0.2.0
-Summary: AnalysisToolbox CLI for pipeline setup, reinjection, serving, and inspection
-Author: AnalysisToolbox Contributors
+Summary: CLI toolkit for scaffolding and running Nextflow-based data analysis pipelines
+Author: Cagatay Özcan Jagiello Gutt
+License: MIT
+Project-URL: Repository, https://github.com/CagatayGutt/AnalysisToolbox
+Keywords: nextflow,pipeline,data-analysis,neuroscience,cli
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Science/Research
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Topic :: Scientific/Engineering
 Requires-Python: >=3.10
+Description-Content-Type: text/markdown
 Requires-Dist: numpy>=1.24
 Requires-Dist: scipy>=1.10
 Requires-Dist: polars>=0.20
@@ -15,3 +28,157 @@ Requires-Dist: pyxdf>=1.16
 Requires-Dist: statsmodels>=0.14
 Requires-Dist: pingouin>=0.5
 Requires-Dist: neurokit2>=0.2.7
+
+# AnalysisToolbox
+
+A modular framework for automated data processing and statistical analysis pipelines. Built on **Nextflow** for scalable, reproducible workflows with automatic result synchronization.
+
+## Overview
+
+The AnalysisToolbox provides infrastructure for building data processing pipelines that:
+
+- **Process multiple datasets** in parallel with automatic participant discovery
+- **Handle diverse data types** through a generic reader/processor/analyzer architecture
+- **Track progress** via per-participant logging visible live in the web UI
+- **Recover gracefully** from failures without losing completed work
+
+The framework is domain-agnostic — modules follow simple input/output conventions (Parquet/FIF files) and can implement any processing logic.
+
+## Repository Structure
+
+```
+AnalysisToolbox/
+├── bin/           # Auto-infrastructure used by every pipeline
+│   ├── workflow_wrapper.nf      # Participant discovery, IOInterface, watchdog
+│   ├── log_to_parquet.py        # Live log writer (called by workflow_wrapper)
+│   ├── interactive_plotter.py   # Per-step plot generator
+│   ├── template.nf              # Pipeline scaffold
+│   ├── nextflow.config          # Default Nextflow configuration
+│   ├── result_collector.py      # Result aggregation helper
+│   ├── reinject.sh              # Shell helper for reinjection
+│   └── serve_html.ps1           # PowerShell result viewer
+├── modules/       # User-included pipeline modules
+│   ├── analyzers/   # Statistical analysis scripts
+│   ├── processors/  # Data transformation scripts
+│   ├── readers/     # File format readers (XDF, TXT, CSV, …)
+│   ├── utils/       # Utility modules (file_finder, xdf_inspector)
+│   ├── matlab/      # MATLAB preprocessing scripts
+│   └── msc/         # Miscellaneous domain-specific scripts
+└── cli/           # pip-installable atbx package
+```
+
+## Prerequisites
+
+### 1. WSL (Windows Subsystem for Linux)
+
+The pipeline runs in Linux. On Windows, install WSL:
+
+```powershell
+wsl --install -d Ubuntu
+```
+
+### 2. Java Runtime (required by Nextflow)
+
+```bash
+sudo apt update && sudo apt install default-jre
+java -version
+```
+
+### 3. Nextflow
+
+```bash
+curl -s https://get.nextflow.io | bash
+sudo mv nextflow /usr/local/bin/
+nextflow -version
+```
+
+### 4. Python Environment
+
+```bash
+python3 -m venv ~/analysis_venv
+source ~/analysis_venv/bin/activate
+pip install atbx
+```
+
+## Install
+
+```bash
+pip install atbx
+```
+
+Installs all Python dependencies (`numpy`, `scipy`, `polars`, `mne`, `neurokit2`, …) and the `atbx` command.
+
+To uninstall: `pip uninstall atbx`
+
+## Usage
+
+### Commands
+
+| Command | What it does |
+|---|---|
+| `atbx init <dir>` | Scaffold a new analysis project |
+| `atbx serve [--dir DIR] [--port PORT]` | Serve results HTML locally in browser |
+| `atbx reinject <PID> [options]` | Reinject a corrected output for one participant |
+
+### `atbx init`
+
+Prompts for project name, raw data directory, Python executable, and toolbox path, then creates:
+
+```
+<dir>/
+├── {name}_analysis/
+│   ├── {name}_pipeline.nf       ← edit your workflow here
+│   ├── {name}_modules.nf        ← add IOInterface includes here
+│   └── {name}_parameters.config ← pre-filled paths and params
+└── {name}_results/
+```
+
+`{name}_modules.nf` includes `participant_discovery`, `finalize_participant`, and `finalize_l2` from `bin/workflow_wrapper.nf` automatically. Add your readers, processors, and analyzers there.
+
+### `atbx reinject`
+
+Places a corrected parquet into `corrections/<script_name>/`, marks the participant for replay, invalidates relevant Nextflow cache entries, and resumes the pipeline for that participant only.
+
+```bash
+atbx reinject EV_002 --corrected-file fixed.parquet --script-name filtering_processor
+```
+
+### `atbx serve`
+
+Starts a local HTTP server to browse results HTML generated by the pipeline.
+
+```bash
+atbx serve --dir ../EV_results --port 8080
+```
+
+## Running a Pipeline
+
+```bash
+cd EV_analysis
+nextflow run EV_pipeline.nf -c EV_parameters.config -with-trace
+```
+
+`-with-trace` is required for the watchdog to monitor per-participant completion.
+
+## Key Components
+
+### `bin/workflow_wrapper.nf`
+
+Discovers participant directories, manages per-participant output folders, runs `log_to_parquet.py` and `interactive_plotter.py` automatically, and starts per-participant watchdog threads that trigger git sync on completion.
+
+### `IOInterface`
+
+Generic Nextflow process that runs any script (reader/processor/analyzer) with automatic logging. Every module in `modules/` is called through `IOInterface`.
+
+### Modules
+
+The `modules/` folder is a curated but non-exhaustive starting collection of commonly useful scripts. When `atbx` is first run, this collection is mirrored to a local directory of your choice (configured on first launch). That local copy is yours to extend — add domain-specific scripts, modify existing ones, or organise them into subfolders. Any script placed there can be included in an `IOInterface` pipeline call identically to the built-in modules, as long as it follows the same convention: positional CLI arguments in, Parquet or FIF outputs, non-zero exit on failure.
+
+### `modules/utils/file_finder.py`
+
+A utility module included explicitly via `IOInterface` to locate files matching a pattern within a participant's output. Add it to your `{name}_modules.nf` when needed.
+
+## Authors
+
+**Cagatay Özcan Jagiello Gutt** — Lead Developer
+ORCID: https://orcid.org/0000-0002-1774-532X
