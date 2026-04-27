@@ -18,7 +18,8 @@ if (-not $ServeDir) {
     $ServeDir = (Get-Location).Path
 }
 
-$ServeDir = (Resolve-Path $ServeDir -ErrorAction SilentlyContinue)?.Path
+$resolved = Resolve-Path $ServeDir -ErrorAction SilentlyContinue
+$ServeDir = if ($resolved) { $resolved.Path } else { $null }
 if (-not $ServeDir -or -not (Test-Path $ServeDir)) {
     Write-Error "Directory not found: '$ServeDir'"
     exit 1

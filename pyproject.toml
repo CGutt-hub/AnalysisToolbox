@@ -3,17 +3,16 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "atbx"
-version = "0.2.0"
-description = "CLI toolkit for scaffolding and running Nextflow-based data analysis pipelines"
+name = "GitAtbx"
+version = "0.3.0"
+description = "Git-integrated CLI toolkit for scaffolding and running Nextflow-based data analysis pipelines"
 readme = {file = "README.md", content-type = "text/markdown"}
 requires-python = ">=3.10"
-license = {text = "MIT"}
+license = "MIT"
 keywords = ["nextflow", "pipeline", "data-analysis", "neuroscience", "cli"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Science/Research",
-  "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
@@ -42,25 +41,23 @@ authors = [
 Repository = "https://github.com/CagatayGutt/AnalysisToolbox"
 
 [project.scripts]
-atbx = "analysis_toolbox_cli.cli:main"
-
-[tool.setuptools]
-package-dir = {"" = "src"}
+gitatbx = "gitatbx.cli:main"
 
 [tool.setuptools.packages.find]
-where = ["src"]
+include = ["gitatbx*"]
 
 [tool.setuptools.package-data]
-analysis_toolbox_cli = [
-  "resources/templates/*.nf",
-  "resources/templates/*.config",
-  "resources/modules/analyzers/*.py",
-  "resources/modules/processors/*.py",
-  "resources/modules/readers/*.py",
-  "resources/modules/utils/*.py",
-  "resources/bin/*.py",
-  "resources/bin/*.nf",
-  "resources/utils/*.config",
-  "resources/utils/*.ps1",
-  "resources/utils/*.sh",
+gitatbx = [
+  "templates/*.nf",
+  "templates/*.config",
+  "modules/analyzers/*.py",
+  "modules/processors/*.py",
+  "modules/readers/*.py",
+  "modules/utils/*.py",
+  "bin/*.py",
+  "bin/*.nf",
+  "bin/*.config",
+  "utils/*.ps1",
+  "utils/*.sh",
+  "utils/*.py",
 ]

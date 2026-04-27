@@ -21,13 +21,12 @@ jobs:
           python-version: '3.x'
 
       - name: Install build tools
-        run: pip install build
+        run: pip install build setuptools wheel
 
       - name: Build package
-        working-directory: cli/
         run: python -m build --sdist --wheel --no-isolation
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          packages-dir: cli/dist/
+          packages-dir: dist/

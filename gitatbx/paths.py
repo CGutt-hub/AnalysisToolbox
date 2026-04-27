@@ -15,12 +15,12 @@ def run_paths(args) -> int:
         "reinject.sh",
     ]
 
-    base = files("analysis_toolbox_cli")
+    base = files("atbx")
     for name in names:
         if name in {"template.nf", "nextflow.config"}:
-            res = base.joinpath("resources", "templates", name)
+            res = base.joinpath("templates", name)
         else:
-            res = base.joinpath("resources", "utils", name)
+            res = base.joinpath("utils", name)
         with as_file(res) as p:
             print(f"{name}: {p}")
 

@@ -17,43 +17,27 @@ The framework is domain-agnostic — modules follow simple input/output conventi
 
 ```
 AnalysisToolbox/
-├── bin/           # Auto-infrastructure used by every pipeline
-│   ├── workflow_wrapper.nf      # Participant discovery, IOInterface, watchdog
-│   ├── log_to_parquet.py        # Live log writer (called by workflow_wrapper)
-│   ├── interactive_plotter.py   # Per-step plot generator
-│   ├── template.nf              # Pipeline scaffold
-│   ├── nextflow.config          # Default Nextflow configuration
-│   ├── result_collector.py      # Result aggregation helper
-│   ├── reinject.sh              # Shell helper for reinjection
-│   └── serve_html.ps1           # PowerShell result viewer
-├── modules/       # User-included pipeline modules
-│   ├── analyzers/   # Statistical analysis scripts
-│   ├── processors/  # Data transformation scripts
-│   ├── readers/     # File format readers (XDF, TXT, CSV, …)
-│   ├── utils/       # Utility modules (file_finder, xdf_inspector)
-│   ├── matlab/      # MATLAB preprocessing scripts
-│   └── msc/         # Miscellaneous domain-specific scripts
-└── cli/           # pip-installable atbx package
+├── gitatbx/               # pip-installable package (installed via pip install GitAtbx)
+│   ├── bin/               # workflow_wrapper.nf, log_to_parquet.py, nextflow.config, ...
+│   ├── modules/           # analyzers/, processors/, readers/, utils/
+│   ├── templates/         # workflow_template.nf, modules_template.nf, parameters_template.config
+│   └── utils/             # serve_html.ps1, reinject.sh, result_collector.py
+├── pyproject.toml
+└── README.md
 ```
+
+On first run `gitatbx` creates a **symlink** `~/Documents/GitAtbxModules` → `<site-packages>/gitatbx/modules/`. The symlink always reflects the live installed version — upgrading via `pip install --upgrade GitAtbx` automatically shows updated modules through the same symlink path.
 
 ## Prerequisites
 
-### 1. WSL (Windows Subsystem for Linux)
-
-The pipeline runs in Linux. On Windows, install WSL:
-
-```powershell
-wsl --install -d Ubuntu
-```
-
-### 2. Java Runtime (required by Nextflow)
+### Java Runtime (required by Nextflow)
 
 ```bash
 sudo apt update && sudo apt install default-jre
 java -version
 ```
 
-### 3. Nextflow
+### Nextflow
 
 ```bash
 curl -s https://get.nextflow.io | bash
@@ -61,23 +45,15 @@ sudo mv nextflow /usr/local/bin/
 nextflow -version
 ```
 
-### 4. Python Environment
-
-```bash
-python3 -m venv ~/analysis_venv
-source ~/analysis_venv/bin/activate
-pip install atbx
-```
-
 ## Install
 
 ```bash
-pip install atbx
+pip install GitAtbx
 ```
 
-Installs all Python dependencies (`numpy`, `scipy`, `polars`, `mne`, `neurokit2`, …) and the `atbx` command.
+Python dependencies (`numpy`, `scipy`, `polars`, `mne`, `neurokit2`, …) are installed automatically.
 
-To uninstall: `pip uninstall atbx`
+On first run `gitatbx` creates a symlink `~/Documents/GitAtbxModules` → `<site-packages>/gitatbx/modules/` and saves the path to `~/.gitatbx_config`.
 
 ## Usage
 
@@ -85,55 +61,73 @@ To uninstall: `pip uninstall atbx`
 
 | Command | What it does |
 |---|---|
-| `atbx init <dir>` | Scaffold a new analysis project |
-| `atbx serve [--dir DIR] [--port PORT]` | Serve results HTML locally in browser |
-| `atbx reinject <PID> [options]` | Reinject a corrected output for one participant |
+| `gitatbx init <dir>` | Scaffold a new analysis project |
+| `gitatbx run [pattern]` | Find and run a pipeline by project name pattern |
+| `gitatbx serve [--dir DIR] [--port PORT]` | Serve results HTML locally in browser |
+| `gitatbx reinject <PID> [options]` | Reinject a corrected output for one participant |
+| `gitatbx move <dest>` | Move the deployed modules folder to a new location |
+| `gitatbx config show` | Print current configuration (`~/.gitatbx_config`) |
 
-### `atbx init`
+### `gitatbx init`
 
-Prompts for project name, raw data directory, Python executable, and toolbox path, then creates:
+Prompts for project name, raw data directory, Python executable, toolbox path, git author identity, and an optional GitHub remote URL for the results repo. Then creates:
 
 ```
 <dir>/
 ├── {name}_analysis/
 │   ├── {name}_pipeline.nf       ← edit your workflow here
 │   ├── {name}_modules.nf        ← add IOInterface includes here
-│   └── {name}_parameters.config ← pre-filled paths and params
+│   └── {name}_parameters.config ← pre-filled paths, params, and git identity
 └── {name}_results/
+    └── .git/                    ← initialised + remote added (if URL provided)
 ```
 
-`{name}_modules.nf` includes `participant_discovery`, `finalize_participant`, and `finalize_l2` from `bin/workflow_wrapper.nf` automatically. Add your readers, processors, and analyzers there.
+Git author name and email default to your global `git config` values if already set. The remote URL is validated immediately with `git ls-remote` — if authentication fails (e.g. SSH key not yet added to GitHub), a warning is printed with a link to the GitHub SSH setup guide.
 
-### `atbx reinject`
+The pipeline uses the stamped `params.git_user_name` / `params.git_user_email` as the commit author for all automatic result syncs.
 
-Places a corrected parquet into `corrections/<script_name>/`, marks the participant for replay, invalidates relevant Nextflow cache entries, and resumes the pipeline for that participant only.
+### `gitatbx run`
+
+GitAtbx searches the entire accessible filesystem (home directory and all drives on Windows) for a directory named `(name)_analysis` containing a `*_pipeline.nf`, then runs it automatically. No need to `cd` anywhere.
 
 ```bash
-atbx reinject EV_002 --corrected-file fixed.parquet --script-name filtering_processor
+gitatbx run (name) --resume   # continue a previous run
+gitatbx run               # no pattern: use current directory
 ```
 
-### `atbx serve`
+Found paths are cached in `~/.gitatbx_config` so subsequent calls are instant.
+
+### `gitatbx serve`
 
 Starts a local HTTP server to browse results HTML generated by the pipeline.
 
 ```bash
-atbx serve --dir ../EV_results --port 8080
+gitatbx serve --dir ../EV_results --port 8080
 ```
 
-## Running a Pipeline
+### `gitatbx reinject`
+
+Places a corrected parquet into `corrections/<script_name>/`, marks the participant for replay, invalidates relevant Nextflow cache entries, and resumes the pipeline for that participant only.
 
 ```bash
-cd EV_analysis
-nextflow run EV_pipeline.nf -c EV_parameters.config -with-trace
+gitatbx reinject EV_002 --corrected-file fixed.parquet --script-name filtering_processor
 ```
 
-`-with-trace` is required for the watchdog to monitor per-participant completion.
+### `gitatbx move`
+
+To move the symlink to a custom location:
+
+```bash
+gitatbx move /mnt/d/repoShaggy/GitAtbxModules
+```
+
+`gitatbx` moves the folder and updates `~/.gitatbx_config` automatically. `gitatbx init` will then default `toolbox_dir` to that path when scaffolding new projects.
 
 ## Key Components
 
 ### `bin/workflow_wrapper.nf`
 
-Discovers participant directories, manages per-participant output folders, runs `log_to_parquet.py` and `interactive_plotter.py` automatically, and starts per-participant watchdog threads that trigger git sync on completion.
+Discovers participant directories, manages per-participant output folders, runs `log_to_parquet.py` and `interactive_plotter.py` automatically, and handles per-participant git sync on completion.
 
 ### `IOInterface`
 
@@ -141,7 +135,7 @@ Generic Nextflow process that runs any script (reader/processor/analyzer) with a
 
 ### Modules
 
-The `modules/` folder is a curated but non-exhaustive starting collection of commonly useful scripts. The first time `atbx` is run it mirrors the full collection to `~/Documents/atbxModules` (Windows) or `~/atbxModules` (Linux/macOS) automatically. You can move that folder anywhere — just update the path in `~/.atbx_config`. The local copy is yours to extend: add domain-specific scripts, modify existing ones, or organise them into subfolders. Any script there can be called via `IOInterface` identically to the built-in modules, as long as it follows the same convention: positional CLI arguments in, Parquet or FIF outputs, non-zero exit on failure.
+The `modules/` folder is a curated but non-exhaustive starting collection of commonly useful scripts. The first time `gitatbx` is run it mirrors the full collection to `~/Documents/GitAtbxModules` (Windows) or `~/GitAtbxModules` (Linux/macOS) automatically. You can move that folder anywhere with `gitatbx move`. The local copy is yours to extend: add domain-specific scripts, modify existing ones, or organise them into subfolders. Any script there can be called via `IOInterface` identically to the built-in modules, as long as it follows the same convention: positional CLI arguments in, Parquet or FIF outputs, non-zero exit on failure.
 
 ## Authors
 
