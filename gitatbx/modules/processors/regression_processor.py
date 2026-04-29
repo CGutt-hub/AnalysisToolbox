@@ -36,7 +36,13 @@ def apply_regression(ip: str, regr_type: str = 'short_channel', out: str | None 
         if regr_type == 'short_channel':
             # Short channel regression for fNIRS
             from mne_nirs.signal_enhancement import short_channel_regression
-            short_channels = [c for c in raw.ch_names if re.search(r'(^s\d+\b)|short|_sd|_short', c, re.I)]
+            # Match common short-channel naming conventions:
+            #   - MNE-NIRS: starts with 's' followed by digits (e.g. 's1', 's2')
+            #   - NIRx raw fif: 'S-D:idx-wl' where D is short detector (D8-D15)
+            #     e.g. '1-8:3-0', '2-9:6-1', '3-10:9-0' — detector number 8..15
+            #   - Generic: channel name contains 'short', '_sd', '_short'
+            short_channels = [c for c in raw.ch_names if re.search(
+                r'(^s\d+\b)|short|_sd|_short|-(?:8|9|1[0-5]):', c, re.I)]
             
             if not short_channels:
                 print(f"[regression] Warning: No short channels detected, skipping regression")

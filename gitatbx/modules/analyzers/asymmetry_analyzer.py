@@ -69,6 +69,8 @@ def compute_asymmetry(ip: str, pairs: list[tuple[str,str]], mode: str = 'log',
         
         # Detect sem column name
         sem_col = 'sem' if 'sem' in df.columns else 'power_std' if 'power_std' in df.columns else None
+        # If no pre-computed SEM but per-epoch data is available, we can compute SEM from epoch spread
+        has_epoch_data = 'epoch_id' in df.columns
         
         # Filter by band if specified
         if band and 'band' in df.columns:
@@ -78,10 +80,23 @@ def compute_asymmetry(ip: str, pairs: list[tuple[str,str]], mode: str = 'log',
         def compute_asym(data_df):
             # Aggregate if multiple rows per region/channel
             if len(data_df) > data_df[region_col].n_unique():
-                region_data = data_df.group_by(region_col).agg([
-                    pl.col(value_col).mean().alias('value'),
-                    pl.col(sem_col).mean().alias('sem') if sem_col and sem_col in data_df.columns else pl.lit(0.0).alias('sem')
-                ])
+                if sem_col and sem_col in data_df.columns:
+                    # Pre-computed SEM available — propagate it as mean
+                    region_data = data_df.group_by(region_col).agg([
+                        pl.col(value_col).mean().alias('value'),
+                        pl.col(sem_col).mean().alias('sem'),
+                    ])
+                elif has_epoch_data:
+                    # Per-epoch raw data — compute SEM from epoch-to-epoch variance
+                    region_data = data_df.group_by(region_col).agg([
+                        pl.col(value_col).mean().alias('value'),
+                        (pl.col(value_col).std() / pl.col(value_col).count().cast(pl.Float64).sqrt()).alias('sem'),
+                    ])
+                else:
+                    region_data = data_df.group_by(region_col).agg([
+                        pl.col(value_col).mean().alias('value'),
+                        pl.lit(0.0).alias('sem'),
+                    ])
             else:
                 region_data = data_df.rename({value_col: 'value'})
                 if sem_col and sem_col in data_df.columns:
