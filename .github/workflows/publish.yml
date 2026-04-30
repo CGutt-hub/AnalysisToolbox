@@ -24,7 +24,7 @@ jobs:
           python-version: '3.x'
 
       - name: Build package
-        run: pip install build ; python -m build --sdist --wheel --no-isolation
+        run: pip install build setuptools wheel ; python -m build --sdist --wheel --no-isolation
 
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
