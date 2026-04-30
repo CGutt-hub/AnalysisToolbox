@@ -35,24 +35,61 @@ def apply_regression(ip: str, regr_type: str = 'short_channel', out: str | None 
         
         if regr_type == 'short_channel':
             # Short channel regression for fNIRS
-            from mne_nirs.signal_enhancement import short_channel_regression
             # Match common short-channel naming conventions:
             #   - MNE-NIRS: starts with 's' followed by digits (e.g. 's1', 's2')
             #   - NIRx raw fif: 'S-D:idx-wl' where D is short detector (D8-D15)
             #     e.g. '1-8:3-0', '2-9:6-1', '3-10:9-0' — detector number 8..15
             #   - Generic: channel name contains 'short', '_sd', '_short'
-            short_channels = [c for c in raw.ch_names if re.search(
+            short_ch_names = [c for c in raw.ch_names if re.search(
                 r'(^s\d+\b)|short|_sd|_short|-(?:8|9|1[0-5]):', c, re.I)]
-            
-            if not short_channels:
+
+            if not short_ch_names:
                 print(f"[regression] Warning: No short channels detected, skipping regression")
                 out_file = out or f"{base}_{suffix}.fif"
                 raw.save(out_file, overwrite=True, verbose=False)
                 print(f"[regression] Output (MNE Raw): {out_file}")
                 return out_file
-            
-            print(f"[regression] Applying short-channel regression ({len(short_channels)} short channels)")
-            raw_corrected = short_channel_regression(raw)
+
+            long_ch_names = [c for c in raw.ch_names if c not in short_ch_names]
+            print(f"[regression] Applying short-channel regression ({len(short_ch_names)} short, {len(long_ch_names)} long channels)")
+
+            # Extract data arrays: channels × samples
+            data = raw.get_data()  # shape (n_ch, n_times)
+            ch_idx = {ch: i for i, ch in enumerate(raw.ch_names)}
+
+            # For NIRx data, wavelength group is encoded in channel name as the last token
+            # e.g. '1-8:3-0' → wl group '0'. Group short regressors by wavelength.
+            def wl_group(name: str) -> str:
+                m = re.search(r':(\d+)-(\d+)$', name)
+                return m.group(2) if m else 'all'
+
+            # Build per-wavelength short-channel mean regressors
+            wl_short: dict[str, list[int]] = {}
+            for c in short_ch_names:
+                wl = wl_group(c)
+                wl_short.setdefault(wl, []).append(ch_idx[c])
+
+            # If no wavelength structure detected, use all shorts together
+            if set(wl_short.keys()) == {'all'}:
+                global_short_mean = data[list(wl_short['all']), :].mean(axis=0, keepdims=True)  # (1, T)
+
+            corrected = data.copy()
+            for c in long_ch_names:
+                wl = wl_group(c)
+                if wl in wl_short:
+                    regressor = data[wl_short[wl], :].mean(axis=0)  # (T,)
+                elif 'all' in wl_short:
+                    regressor = data[wl_short['all'], :].mean(axis=0)
+                else:
+                    continue  # no matching short channels — skip
+
+                # OLS: corrected = signal - (signal·reg / reg·reg) * reg
+                idx = ch_idx[c]
+                signal = data[idx]
+                beta = float(np.dot(signal, regressor) / (np.dot(regressor, regressor) + 1e-12))
+                corrected[idx] = signal - beta * regressor
+
+            raw_corrected = mne.io.RawArray(corrected, raw.info, verbose=False)
             out_file = out or f"{base}_{suffix}.fif"
             raw_corrected.save(out_file, overwrite=True, verbose=False)
             print(f"[regression] Output (MNE Raw): {out_file}")

@@ -1,4 +1,5 @@
 import numpy as np, sys, os, mne, warnings, polars as pl
+from mne.io.constants import FIFF
 from numpy.typing import NDArray
 from typing import cast
 warnings.filterwarnings('ignore', message='.*does not conform to MNE naming conventions.*')
@@ -22,6 +23,11 @@ def log_transform_process(ip: str, baseline_sec: str = '5.0', out: str | None = 
     transformed = log_transform(data, baseline_samples)
     print(f"[log_transform] -log10(x/baseline) on {len(raw.ch_names)} ch, baseline={baseline_sec}s")
     raw_out = mne.io.RawArray(transformed, raw.info, verbose=False)
+    # Mark fNIRS channels as optical density so downstream MNE-NIRS functions
+    # (e.g. short_channel_regression, beer_lambert_law) accept the data.
+    for ch in raw_out.info['chs']:
+        if ch['coil_type'] == FIFF.FIFFV_COIL_FNIRS_CW_AMPLITUDE:
+            ch['coil_type'] = FIFF.FIFFV_COIL_FNIRS_OD
     base = os.path.splitext(os.path.basename(ip))[0]
     out_file = out or f"{base}_log.fif"
     raw_out.save(out_file, overwrite=True, verbose=False)

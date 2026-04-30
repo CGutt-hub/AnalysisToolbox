@@ -643,7 +643,6 @@ process IOInterface {
     def isGroupLog = false
     def isTerminal = false
     def isResult = false
-    def isQuality = false
     if (extraParams && extraParams.toString().trim() != "") {
         def paramStr = extraParams.toString().trim()
         
@@ -691,9 +690,6 @@ process IOInterface {
         // Strip result token — publishes output to results/ instead of plots/.
         // Used by result_collector to create a clean-named curated output folder.
         isResult = args.remove('result')
-        // Strip quality token — publishes output to quality/ instead of plots/.
-        // Used by quality inspection modules for dedicated data quality assessment.
-        isQuality = args.remove('quality')
         extraArgs = args.collect { "'${escapeArg(it)}'" }.join(' ')
     }
     
@@ -715,7 +711,7 @@ process IOInterface {
         : "${workflow.launchDir}/${params.output_dir}/${params.project_name}_l1/\${PARTICIPANT_ID}"
     // plots/ subfolder mirrors the structure of participant folders (log.parquet sibling to plots/)
     // When the result token is present, output goes to results/ instead (curated clean-named files).
-    def publishFolder = isResult ? 'results' : (isQuality ? 'quality' : 'plots')
+    def publishFolder = isResult ? 'results' : 'plots'
     def contextPlotDir = isGroupLog
         ? "${groupDir}/${publishFolder}"
         : "${workflow.launchDir}/${params.output_dir}/${params.project_name}_l1/\${PARTICIPANT_ID}/${publishFolder}"
