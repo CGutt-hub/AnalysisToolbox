@@ -28,12 +28,10 @@ def reject_samples(ip: str, columns: list | None = None, criterion: str = 'ampli
     print(f"[rejection] Retaining {retained} of {total} samples ({100-rejection_pct:.1f}%)")
     
     # Quality check: excessive rejection
-    if rejection_pct > 50:
+    if rejection_pct > 80:
+        log_warning(f"Rejected {rejection_pct:.1f}% of samples (>80%), threshold may be too strict")
+    elif rejection_pct > 50:
         log_warning(f"Rejected {rejection_pct:.1f}% of samples (>50%), check threshold or signal quality")
-    elif rejection_pct > 80:
-        log_error(f"Rejected {rejection_pct:.1f}% of samples (>80%), threshold may be too strict")
-    elif retained < 100:
-        log_warning(f"Only {retained} samples retained, may be insufficient for analysis")
     
     # Output cleaned data
     out_file = ip.replace('.parquet', '_rej.parquet')
