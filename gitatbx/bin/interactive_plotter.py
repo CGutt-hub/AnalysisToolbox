@@ -95,7 +95,7 @@ def _write_launcher_sidecar(archive_path):
     serve_py = f'''\
 #!/usr/bin/env python3
 # Auto-generated sidecar server for {html_name}.
-# Run: python3 .bin/{serve_name}   (or double-click {base}_results.sh)
+# Run: python3 .bin/{serve_name}
 from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
@@ -165,61 +165,13 @@ if __name__ == '__main__':
             raise
 '''
 
-    sh = (
-        '#!/bin/bash\n'
-        'cd "$(dirname "$0")"\n'
-        '# Resolve python: prefer python3, fall back to python\n'
-        'PY=$(command -v python3 2>/dev/null || command -v python 2>/dev/null)\n'
-        'if [ -z "$PY" ]; then echo "ERROR: python not found"; exit 1; fi\n'
-        f'"$PY" ".bin/{serve_name}" > ".bin/{base}_results_serve.log" 2>&1 &\n'
-        'SERVER_PID=$!\n'
-        'sleep 1\n'
-        f'URL="http://localhost:8080/.bin/{html_name}"\n'
-        'if command -v powershell.exe &>/dev/null; then\n'
-        '    powershell.exe -c "Start-Process \'$URL\'"\n'
-        'elif command -v xdg-open &>/dev/null; then\n'
-        '    xdg-open "$URL"\n'
-        'elif command -v open &>/dev/null; then\n'
-        '    open "$URL"\n'
-        'fi\n'
-        'disown $SERVER_PID\n'
-        'exit 0\n'
-    )
-
-    # .sh launcher goes at the results ROOT (parent of .bin/), not inside .bin/
     root_dir = os.path.dirname(bin_dir)
-    sh_path  = os.path.join(root_dir, f'{base}_results.sh')
 
     try:
         with open(serve_path, 'w', encoding='utf-8', newline='\n') as f:
             f.write(serve_py)
-        with open(sh_path, 'w', encoding='utf-8', newline='\n') as f:
-            f.write(sh)
-        # Make .sh executable — try os.chmod first (works on Linux/NFS/WSL2+NTFS),
-        # then fall back to git update-index so the file is committed as mode 100755
-        # and restored as executable on the next git checkout even on plain NTFS.
-        try:
-            os.chmod(sh_path, 0o755)
-        except Exception:
-            pass
-        try:
-            import subprocess as _sp
-            if not (os.stat(sh_path).st_mode & 0o111):
-                # chmod didn't stick (plain NTFS without metadata mount); mark in git index
-                _gr = _sp.run(['git', 'rev-parse', '--show-toplevel'],
-                              capture_output=True, text=True,
-                              cwd=os.path.dirname(os.path.abspath(sh_path)))
-                if _gr.returncode == 0:
-                    _git_root = _gr.stdout.strip()
-                    _rel = os.path.relpath(sh_path, _git_root).replace('\\', '/')
-                    _sp.run(['git', 'update-index', '--chmod=+x', _rel],
-                            capture_output=True, cwd=_git_root)
-        except Exception:
-            pass
         # Remove any stale files that old generator versions may have left.
-        # serve_name is only cleaned from root_dir (old location); bin_dir has
-        # the freshly written copy that must be kept.
-        for stale_name in [serve_name, f'{base}_results.bat', f'{base}_results.desktop']:
+        for stale_name in [serve_name, f'{base}_results.sh', f'{base}_results.bat', f'{base}_results.desktop']:
             stale_dirs = [root_dir] if stale_name == serve_name else [bin_dir, root_dir]
             for stale_dir in stale_dirs:
                 stale = os.path.join(stale_dir, stale_name)
@@ -595,9 +547,9 @@ def create_archive_html(project_name='procedure'):
     <div id="file-protocol-banner">
         <span class="fpb-badge">! file://</span>
         <span style="color:var(--text-secondary)"><code>fetch()</code> is blocked &mdash; plots will not load.</span>
-        <code id="fpb-cmd">{project_name}_results.sh</code>
+        <code id="fpb-cmd">atbx serve {project_name}_results.html</code>
         <button class="fpb-copy" onclick="navigator.clipboard.writeText(document.getElementById('fpb-cmd').textContent).then(()=>{{this.textContent='Copied';setTimeout(()=>this.textContent='Copy',1500)}})">Copy</button>
-        <span class="fpb-note">Run the .sh script in the results folder, then re-open the URL shown.</span>
+        <span class="fpb-note">Run in the results folder, then re-open the URL shown.</span>
     </div>
     <div id="header">
         <h1><span>{project_name}</span> &mdash; Analysis Archive</h1>
@@ -1294,7 +1246,7 @@ def create_archive_html(project_name='procedure'):
                     content.innerHTML = `
                         <div class="plot-title">${{meta.title}}</div>
                         <div class="export-bar">
-                            <button class="export-btn" onclick="downloadParquet('${plotId}')">&#8659; Parquet</button>
+                            <button class="export-btn" onclick="downloadParquet('${{plotId}}')">&#8659; Parquet</button>
                             <button class="export-btn png" onclick="exportPlot('png','${{safeName}}')">&#8659; PNG</button>
                             <button class="export-btn svg" onclick="exportPlot('svg','${{safeName}}')">&#8659; SVG</button>
                             <button class="export-btn pdf" onclick="downloadPDF('${{safeName}}')">&#8659; PDF</button>
@@ -1401,7 +1353,7 @@ def create_archive_html(project_name='procedure'):
             Plotly.downloadImage(el, {{format, filename, width: w, height: h}});
         }}
 
-        function downloadParquet(plotId) {
+        function downloadParquet(plotId) {{
             const meta = plotMeta[plotId];
             if (!meta || !meta.file) return;
             const rawUrl = meta.file;
@@ -1412,7 +1364,7 @@ def create_archive_html(project_name='procedure'):
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
-        }
+        }}
 
         function resizePlotForExport() {{
             // No-op: Plotly.downloadImage uses its own width/height, no resize needed
@@ -1798,7 +1750,7 @@ def run(inp, out_dir, pre, project_name='procedure', sidecar_dir=None):
     elif 'time' in schema:
         # Raw time-series — downsample to 250 Hz and convert to line plot
         try:
-            df = _downsample_to_line_plot(inp, schema, target_sfreq=250.0)
+            df = _downsample_to_line_plot(inp, schema)
         except Exception as e:
             print(f"[interactive_plotter] ERROR: Failed to downsample {inp}: {e}")
             return

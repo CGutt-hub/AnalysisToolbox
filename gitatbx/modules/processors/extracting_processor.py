@@ -126,7 +126,8 @@ def determine_needed_channels(sels: list[str], all_channels: list[str]) -> list[
             matched = [c for c in all_channels if s_clean.lower() in c.lower()]
             needed.update(matched)
     
-    return list(needed) if needed else all_channels  # Fallback to all if nothing matched
+    # Preserve original XDF channel order (set iteration order is arbitrary)
+    return [c for c in all_channels if c in needed] if needed else all_channels
 
 def save_fif(od: pl.DataFrame, pp: str, fp: str, chs: list[str], t: np.ndarray | None, sf: float, ch_types: dict[str, str] | None) -> None:
     od.write_parquet(pp, compression='snappy')

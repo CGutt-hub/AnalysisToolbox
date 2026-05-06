@@ -409,8 +409,19 @@ Duration: ${duration}s
         // Helper: commit a list of paths and push.
         def commitAndPush = { List paths, String msg ->
             if (!paths) return true
-            nukeIndexLock()
-            def addResult = runGit(["git", "add", "-A"] + paths, 120)
+            // Retry git-add up to 5 times — an external process (e.g. VS Code Git
+            // extension) may race us in the window between nukeIndexLock() and the
+            // actual git-add call, creating a fresh index.lock we didn't see.
+            def addResult = null
+            def addAttempts = 5
+            for (def i = 0; i < addAttempts; i++) {
+                nukeIndexLock()
+                addResult = runGit(["git", "add", "-A"] + paths, 120)
+                if (addResult.exit == 0) break
+                if (!addResult.out?.contains('index.lock')) break  // unrelated error, don't retry
+                pipeline_log.append("[autosync] git add retry ${i + 1}/${addAttempts}: index.lock race\n")
+                Thread.sleep(1000L * (i + 1))  // 1s, 2s, 3s, 4s back-off
+            }
             if (addResult.exit != 0) {
                 logSync("Git add failed (${msg})", addResult.out)
                 runGit(["git", "reset", "HEAD"], 10)

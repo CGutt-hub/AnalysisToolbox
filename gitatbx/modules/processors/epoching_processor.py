@@ -112,18 +112,20 @@ def _epoch_mne(raw, events: Dict[str, List[Tuple[float, float]]], data_path: str
     print(f"[epoching] Output: {out} ({len(pl.concat(dfs)) if dfs else 0} rows)")
     return out
 
-def window_epochs(data_path: str, window_size: float = 30.0, step_size: float = 10.0) -> str:
+def window_epochs(data_path: str, window_size: float = 30.0, step_size: float = 10.0, crop_start: float = 0.0, crop_end: float = 0.0) -> str:
     """Create sliding windows from existing epochs (for bootstrap resampling).
     
     Args:
         data_path: Parquet file with epoched data (columns: condition, epoch_id, time, ...)
         window_size: Window duration in seconds
         step_size: Step size for sliding window in seconds
+        crop_start: Seconds to skip at the start of each epoch (e.g. HRF ramp-up)
+        crop_end: Seconds to skip at the end of each epoch (e.g. HRF ramp-down)
     
     Returns:
         Path to windowed parquet file
     """
-    print(f"[epoching] Windowing mode: window={window_size}s, step={step_size}s")
+    print(f"[epoching] Windowing mode: window={window_size}s, step={step_size}s, crop=[{crop_start}s, -{crop_end}s]")
     df = pl.read_parquet(data_path)
 
     # Validate structure for time-series windowing
@@ -163,10 +165,12 @@ def window_epochs(data_path: str, window_size: float = 30.0, step_size: float = 
         
         times = epoch_df['time'].to_numpy()
         t_min, t_max = times.min(), times.max()
+        t_min = t_min + crop_start
+        t_max = t_max - crop_end
         duration = t_max - t_min
         
         if duration < window_size:
-            log_warning(f"{eid}: Duration {duration:.1f}s < window {window_size}s, skipping")
+            log_warning(f"{eid}: Duration {duration:.1f}s < window {window_size}s after cropping, skipping")
             continue
         
         # Generate window starts
@@ -219,7 +223,7 @@ def window_epochs(data_path: str, window_size: float = 30.0, step_size: float = 
     print(f"[epoching] Output: {out} ({len(result_df)} rows, {total_windows} windows)")
     return out
 
-def epoch_and_flatten(data_path: str, events_path: str, orig_path: str | None = None, mode: str = 'events', window_size: float = 30.0, step_size: float = 10.0) -> str:
+def epoch_and_flatten(data_path: str, events_path: str, orig_path: str | None = None, mode: str = 'events', window_size: float = 30.0, step_size: float = 10.0, crop_start: float = 0.0, crop_end: float = 0.0) -> str:
     """Segment data into epochs.
     
     Args:
@@ -229,10 +233,12 @@ def epoch_and_flatten(data_path: str, events_path: str, orig_path: str | None = 
         mode: 'events' (default) or 'sliding' for sliding windows
         window_size: Window duration in seconds (for mode='sliding')
         step_size: Step size in seconds (for mode='sliding')
+        crop_start: Seconds to skip at the start of each epoch before windowing
+        crop_end: Seconds to skip at the end of each epoch before windowing
     """
     # Sliding window mode
     if mode == 'sliding':
-        return window_epochs(data_path, window_size, step_size)
+        return window_epochs(data_path, window_size, step_size, crop_start, crop_end)
     
     # Event-based epoching (original behavior)
     events = pl.read_parquet(events_path)['data'][0]
@@ -334,13 +340,16 @@ if __name__ == '__main__':
         # Detect mode
         if len(args) >= 3 and args[2] == 'sliding':
             # Sliding window mode
+            print('Sliding mode: epoching_processor.py <epochs.parquet> sliding [window_size=30.0] [step_size=10.0] [crop_start=0.0] [crop_end=0.0]')
             epoch_and_flatten(
                 args[1], 
                 '', 
                 None,
                 mode='sliding',
                 window_size=float(args[3]) if len(args) > 3 else 30.0,
-                step_size=float(args[4]) if len(args) > 4 else 10.0
+                step_size=float(args[4]) if len(args) > 4 else 10.0,
+                crop_start=float(args[5]) if len(args) > 5 else 0.0,
+                crop_end=float(args[6]) if len(args) > 6 else 0.0
             )
         else:
             # Event-based mode
