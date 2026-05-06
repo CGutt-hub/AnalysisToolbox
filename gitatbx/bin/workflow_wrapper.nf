@@ -170,7 +170,11 @@ workflow participant_discovery {
                     if (st.out?.trim()) {
                         def ts = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
                         runBootGit(["git", "commit", "-m", "autosync: bootstrap push before analysis (${ts})"], 30)
-                        def pull = runBootGit(["git", "pull", "--rebase", "--autostash"], 60)
+                        // Pull with rebase but WITHOUT --autostash: we must not stash/restore
+                        // uncommitted working-tree files (e.g. .nf/.config edited externally)
+                        // because the stash-pop can silently fail on SMB/NFS and leave those
+                        // files reverted to the remote HEAD version.
+                        def pull = runBootGit(["git", "pull", "--rebase"], 60)
                         if (pull.exit != 0) {
                             runBootGit(["git", "rebase", "--abort"], 5)
                             new File(git_root, ".git/index.lock").with { if (exists()) delete() }
@@ -436,8 +440,9 @@ Duration: ${duration}s
             }
             def push = runGit(["git", "push"], 600)
             if (push.exit == 0) return true
-            // Push rejected → pull --rebase then retry once
-            def pull = runGit(["git", "pull", "--rebase", "--autostash"], 120)
+            // Push rejected → pull --rebase then retry once (no --autostash: avoids clobbering
+            // uncommitted working-tree edits on SMB/NFS where stash-pop can silently fail)
+            def pull = runGit(["git", "pull", "--rebase"], 120)
             if (pull.exit != 0) {
                 cleanupRebase()
                 logSync("Pull --rebase failed (${msg}) — committed locally", pull.out)
@@ -610,7 +615,7 @@ def finalSync() {
             runGit(["git", "commit", "-m", "autosync: final sync (pipeline complete)"], 30)
             def push = runGit(["git", "push"], 600)
             if (push.exit != 0) {
-                def pull = runGit(["git", "pull", "--rebase", "--autostash"], 120)
+                def pull = runGit(["git", "pull", "--rebase"], 120)
                 if (pull.exit != 0) {
                     runGit(["git", "rebase", "--abort"], 2)
                 }
