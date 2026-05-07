@@ -5,7 +5,8 @@ def log_warning(msg): print(f"[asymmetry] WARNING: {msg}")
 def log_error(msg): print(f"[asymmetry] ERROR: {msg}")
 def compute_asymmetry(ip: str, pairs: list[tuple[str,str]], mode: str = 'log', 
                       band: str | None = None, y_lim: float | None = None, 
-                      y_label: str | None = None) -> str:
+                      y_label: str | None = None,
+                      epoch_output: bool = False) -> str:
     """Compute asymmetry between paired regions from raw or plot data.
     
     Input: Parquet with region/channel data or plot-formatted data
@@ -141,6 +142,27 @@ def compute_asymmetry(ip: str, pairs: list[tuple[str,str]], mode: str = 'log',
             
             return asym_vals, asym_sems
         
+        # ── Epoch-level flat-table output ────────────────────────────────────
+        if epoch_output and 'epoch_id' in df.columns:
+            epoch_ids = df['epoch_id'].unique().sort().to_list()
+            records = []
+            for eid in epoch_ids:
+                epoch_df = df.filter(pl.col('epoch_id') == eid)
+                cond_val = str(epoch_df['condition'][0]) if 'condition' in epoch_df.columns else cond
+                asym_vals, _ = compute_asym(epoch_df)
+                row = {'condition': cond_val, 'epoch_id': eid}
+                for (left, right), val in zip(pairs, asym_vals):
+                    row[f'fai_{left}_{right}'] = val
+                records.append(row)
+            if not records:
+                log_warning("No epoch records produced — empty output")
+            out_path = os.path.join(os.getcwd(), f"{base}_{suffix}_epochs.parquet")
+            pl.DataFrame(records, infer_schema_length=max(len(records), 1)).write_parquet(out_path, compression='snappy')
+            print(f"[asymmetry] Epoch output ({len(records)} rows): {out_path}")
+            print(out_path)
+            return out_path
+        # ────────────────────────────────────────────────────────────────────
+
         # Check if multiple bands
         if 'band' in df.columns and df['band'].n_unique() > 1:
             bands = sorted(df['band'].unique().to_list())
@@ -311,7 +333,8 @@ if __name__ == '__main__':
                                   a[3] if len(a) > 3 and a[3] not in ('None', '') else 'log',
                                   a[4] if len(a) > 4 and a[4] not in ('None', '') else None,
                                   float(a[5]) if len(a) > 5 and a[5] not in ('None', '') else None,
-                                  a[6] if len(a) > 6 and a[6] not in ('None', '') else None) if len(a) >= 3 else (
+                                  a[6] if len(a) > 6 and a[6] not in ('None', '', 'terminal') else None,
+                                  len(a) > 7 and a[7].lower() in ('1', 'true', 'yes')) if len(a) >= 3 else (
         print('[asymmetry] Compute asymmetry between paired regions.'),
         print('Usage: asymmetry_analyzer.py <input.parquet> <pairs> [mode] [band] [y_lim] [y_label]'),
         print('  pairs: Python list, e.g. "[(\'F3\',\'F4\'),(\'F7\',\'F8\')]"'),
