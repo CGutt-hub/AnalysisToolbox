@@ -191,6 +191,28 @@ def concat_generic(files: list[str], conds: list[str]) -> pl.DataFrame:
 
     return pl.DataFrame([{**metadata_fields, **aggregated}])
 
+
+def _parse_items(items: list[str]) -> tuple[list[str], list[str]]:
+    """Parse CLI items into (files, labels).
+
+    Supports three syntaxes:
+      1. labels=EDA,HRV,...  file1 file2 ...   – explicit labels= token (IOInterface-friendly)
+      2. EDA:file1 HRV:file2 ...               – label:path inline syntax
+      3. file1 file2 ...                       – no labels; derived from basename suffix
+    """
+    label_arg = next((p for p in items if p.startswith('labels=')), None)
+    if label_arg:
+        files  = [p for p in items if not p.startswith('labels=')]
+        labels = label_arg.split('=', 1)[1].split(',')
+    elif items and ':' in items[0]:
+        files  = [p.split(':', 1)[1] for p in items]
+        labels = [p.split(':', 1)[0] for p in items]
+    else:
+        files  = items
+        labels = [os.path.splitext(os.path.basename(p))[0].rsplit('_', 1)[-1] for p in items]
+    return files, labels
+
+
 if __name__ == '__main__': (lambda a:
     (lambda items, out_base: (
         (lambda files, labels: (
@@ -202,7 +224,6 @@ if __name__ == '__main__': (lambda a:
                 ))(concat_generic(files, labels))
             ))(extract_pid(files[0]) if files else '', 
                os.path.join(os.getcwd(), f"{extract_pid(files[0]) + '_' if files and extract_pid(files[0]) else ''}{out_base}.parquet"))
-        ))([p.split(':',1)[1] for p in items] if ':' in items[0] else items, 
-           [p.split(':',1)[0] for p in items] if ':' in items[0] else [os.path.splitext(os.path.basename(p))[0].rsplit('_', 1)[-1] for p in items])
-    ))(a[1:-1], a[-1]) if len(a) >= 3 else (print(f"Aggregate multiple condition parquets into single plot-ready output.\n[concatenating] Usage: python {a[0]} <path1> <path2> ... <out_basename> OR <label1:path1> <label2:path2> ... <out_basename>"), sys.exit(1))
+        ))(*_parse_items(items))
+    ))(a[1:-1], a[-1]) if len(a) >= 3 else (print(f"Aggregate multiple condition parquets into single plot-ready output.\n[concatenating] Usage: python {a[0]} <path1> <path2> ... <out_basename> OR <label1:path1> <label2:path2> ... <out_basename> OR labels=L1,L2,... <path1> <path2> ... <out_basename>"), sys.exit(1))
 )(sys.argv)

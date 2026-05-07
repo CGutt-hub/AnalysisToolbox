@@ -172,4 +172,47 @@ def compute_plv(stream_paths: list[str], stream_configs: list[dict[str, Any]], o
     print(f"[plv] Finished. Signal: {os.path.basename(signal_path)}")
     return signal_path
 
-if __name__ == '__main__': (lambda a: compute_plv(ast.literal_eval(a[1])['streams'], ast.literal_eval(a[1])['configs'], ast.literal_eval(a[1])['output_name'], float(a[2]) if len(a) > 2 and a[2] else None) if len(a) >= 2 else (print('Compute Phase Locking Value between streams. Plot-ready output.\n[plv] Usage: plv_analyzer.py <config_dict> [y_lim]'), sys.exit(1)))(sys.argv)
+
+def _plv_main(argv: list[str]) -> None:
+    """Entry point supporting two CLI formats:
+
+    Legacy (original):
+        plv_analyzer.py <config_dict>  [y_lim]
+        config_dict = {'streams': [...], 'configs': [...], 'output_name': '...'}
+
+    IOInterface-compatible (new):
+        plv_analyzer.py <file1> [file2 ...] <json_configs_list> <output_name> [y_lim]
+        json_configs_list = JSON list of per-stream config dicts (one per file, no 'streams' key)
+        output_name       = base name for output files (e.g. 'DEAP_01_eeg_hrv')
+    """
+    a = argv
+    if len(a) < 2:
+        print('Compute Phase Locking Value between streams. Plot-ready output.\n'
+              '[plv] Usage: plv_analyzer.py <file1> [file2 ...] <json_configs_list> <output_name> [y_lim]')
+        sys.exit(1)
+
+    if a[1].startswith('{'):
+        # Legacy format
+        cfg = ast.literal_eval(a[1])
+        compute_plv(cfg['streams'], cfg['configs'], cfg['output_name'],
+                    float(a[2]) if len(a) > 2 and a[2] else None)
+        return
+
+    # IOInterface format: files come first, then the JSON configs list, then output_name
+    json_idx = next((i for i, x in enumerate(a[1:], 1) if x.startswith('[')), None)
+    if json_idx is None:
+        print(f'[plv] ERROR: no JSON configs list found in args: {a[1:]}')
+        sys.exit(1)
+
+    stream_paths = a[1:json_idx]
+    configs      = ast.literal_eval(a[json_idx])
+    output_name  = a[json_idx + 1] if len(a) > json_idx + 1 else \
+                   re.sub(r'^([A-Za-z]+_[0-9]+).*', r'\1_plv', os.path.basename(stream_paths[0]))
+    y_lim        = float(a[json_idx + 2]) if len(a) > json_idx + 2 and a[json_idx + 2] else None
+
+    compute_plv(stream_paths, configs, output_name, y_lim)
+
+
+if __name__ == '__main__':
+    import re
+    _plv_main(sys.argv)
