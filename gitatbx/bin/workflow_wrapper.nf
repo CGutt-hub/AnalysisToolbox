@@ -33,11 +33,13 @@ def configureGitUser() {
                 
                 // Log to ${params.project_name}.log instead of terminal
                 def pipeline_log = new File("${workflow.launchDir}/${params.output_dir}/.bin", "${params.project_name}.log")
+                pipeline_log.parentFile.mkdirs()
                 def timestamp = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
                 pipeline_log.append("[${timestamp}] [workflow] Git user configured: ${params.git_user_name} <${params.git_user_email}>\n")
             }
         } catch (Exception e) {
             def pipeline_log = new File("${workflow.launchDir}/${params.output_dir}/.bin", "${params.project_name}.log")
+            pipeline_log.parentFile.mkdirs()
             def timestamp = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
             pipeline_log.append("[${timestamp}] [workflow] Warning: Could not configure git user - ${e.message}\n")
         }
