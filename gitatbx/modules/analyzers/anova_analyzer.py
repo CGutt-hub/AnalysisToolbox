@@ -13,66 +13,98 @@ def _sig(p: float) -> str:
     if p < 0.05:  return '*'
     return 'ns'
 
-def anova_analyze(ip: str, dv: str, between: str, apply_fdr: bool = False, y_lim: float | None = None) -> str:
+def anova_analyze(ip: str, dv: str, between: str, apply_fdr: bool = False,
+                  y_lim: float | None = None, group_by: str | None = None) -> str:
     if not os.path.exists(ip): log_error(f"File not found: {ip}"); sys.exit(1)
     df = pl.read_parquet(ip).to_pandas()
 
-    meta_cols = {between, 'epoch_id', 'sub_epoch_id', 'participant_id', 'window_id', 'condition', 'region'}
-    if dv.lower() == 'auto':
-        dv_cols = [c for c in df.select_dtypes(include='number').columns if c not in meta_cols]
+    meta_cols = {between, 'epoch_id', 'sub_epoch_id', 'participant_id', 'window_id',
+                 'condition', 'region', 'source'}
+    if group_by:
+        meta_cols.add(group_by)
+
+    def _run_anova(sub_df) -> tuple[list, list]:
+        """Run ANOVA on sub_df; returns (rows, p_vals_raw)."""
+        if dv.lower() == 'auto':
+            dv_cols = [c for c in sub_df.select_dtypes(include='number').columns if c not in meta_cols]
+        else:
+            dv_cols = [dv] if dv not in meta_cols else []
+        rows, p_vals_raw = [], []
+        for col in dv_cols:
+            try:
+                group_vals = [sub_df.loc[sub_df[between] == cond, col].dropna().values
+                              for cond in sub_df[between].dropna().unique()]
+                if len(group_vals) < 2 or any(len(g) == 0 for g in group_vals):
+                    log_warning(f"Skipping {col}: insufficient groups"); continue
+                F, p = f_oneway(*group_vals)
+                k  = len(group_vals)
+                N  = sum(len(g) for g in group_vals)
+                grand_mean = np.concatenate(group_vals).mean()
+                ss_between = sum(len(g) * (g.mean() - grand_mean) ** 2 for g in group_vals)
+                ss_total   = sum(((g - grand_mean) ** 2).sum() for g in group_vals)
+                eta_sq = float(ss_between / ss_total) if ss_total > 0 else 0.0
+                rows.append({'dv': col, 'F': float(F), 'df1': k - 1, 'df2': N - k,
+                             'p': float(p), 'eta_sq': eta_sq})
+                p_vals_raw.append(float(p))
+            except Exception as e:
+                log_warning(f"ANOVA failed for {col}: {e}")
+        return rows, p_vals_raw
+
+    if group_by and group_by in df.columns:
+        groups = sorted(df[group_by].dropna().unique().tolist())
+        log_info(f"ANOVA: {ip}, DVs={dv}, between={between}, group_by={group_by}({groups}), fdr={apply_fdr}")
+        all_rows = []
+        all_p_raw = []
+        for grp in groups:
+            sub = df[df[group_by] == grp]
+            rows, p_raw = _run_anova(sub)
+            for r in rows:
+                r[group_by] = grp
+            all_rows.extend(rows)
+            all_p_raw.extend(p_raw)
+        if not all_rows:
+            log_error("All ANOVA runs failed"); sys.exit(1)
+        if apply_fdr and len(all_p_raw) > 1:
+            _, p_corrected = fdrcorrection(all_p_raw)
+            for i, row in enumerate(all_rows):
+                row['p'] = float(p_corrected[i])
+        for row in all_rows:
+            row['sig'] = _sig(row['p'])
+        col_names = [group_by, 'DV', 'F', 'df1', 'df2', 'p', 'η²', 'sig']
+        col_data  = [
+            [r[group_by]            for r in all_rows],
+            [r['dv']                for r in all_rows],
+            [round(r['F'],    3)    for r in all_rows],
+            [r['df1']               for r in all_rows],
+            [r['df2']               for r in all_rows],
+            [round(r['p'],    4)    for r in all_rows],
+            [round(r['eta_sq'], 3)  for r in all_rows],
+            [r['sig']               for r in all_rows],
+        ]
+        rows = all_rows
     else:
-        dv_cols = [dv]
-
-    if not dv_cols:
-        log_error("No numeric DV columns found"); sys.exit(1)
-    log_info(f"ANOVA: {ip}, DVs={dv_cols}, between={between}, fdr={apply_fdr}")
-
-    rows = []
-    p_vals_raw = []
-    for col in dv_cols:
-        try:
-            group_vals = [df.loc[df[between] == cond, col].dropna().values
-                          for cond in df[between].dropna().unique()]
-            if len(group_vals) < 2 or any(len(g) == 0 for g in group_vals):
-                log_warning(f"Skipping {col}: insufficient groups")
-                continue
-            F, p = f_oneway(*group_vals)
-            k  = len(group_vals)
-            N  = sum(len(g) for g in group_vals)
-            df_between = k - 1
-            df_within  = N - k
-            grand_mean = np.concatenate(group_vals).mean()
-            ss_between = sum(len(g) * (g.mean() - grand_mean) ** 2 for g in group_vals)
-            ss_total   = sum(((g - grand_mean) ** 2).sum() for g in group_vals)
-            eta_sq = float(ss_between / ss_total) if ss_total > 0 else 0.0
-            rows.append({'dv': col, 'F': float(F), 'df1': df_between, 'df2': df_within,
-                         'p': float(p), 'eta_sq': eta_sq})
-            p_vals_raw.append(float(p))
-        except Exception as e:
-            log_warning(f"ANOVA failed for {col}: {e}")
-
-    if not rows:
-        log_error("All ANOVA runs failed"); sys.exit(1)
-
-    if apply_fdr and len(p_vals_raw) > 1:
-        _, p_corrected = fdrcorrection(p_vals_raw)
-        for i, row in enumerate(rows):
-            row['p'] = float(p_corrected[i])
-
-    for row in rows:
-        row['sig'] = _sig(row['p'])
-
-    # Store as table spec: x_data = column headers, y_data = column data (transposed)
-    col_names  = ['DV', 'F', 'df1', 'df2', 'p', 'η²', 'sig']
-    col_data   = [
-        [r['dv']                    for r in rows],
-        [round(r['F'],    3)        for r in rows],
-        [r['df1']                   for r in rows],
-        [r['df2']                   for r in rows],
-        [round(r['p'],    4)        for r in rows],
-        [round(r['eta_sq'], 3)      for r in rows],
-        [r['sig']                   for r in rows],
-    ]
+        if group_by:
+            log_warning(f"group_by='{group_by}' not found in columns {list(df.columns)} — ignoring")
+        log_info(f"ANOVA: {ip}, DVs={dv}, between={between}, fdr={apply_fdr}")
+        rows, p_vals_raw = _run_anova(df)
+        if not rows:
+            log_error("All ANOVA runs failed"); sys.exit(1)
+        if apply_fdr and len(p_vals_raw) > 1:
+            _, p_corrected = fdrcorrection(p_vals_raw)
+            for i, row in enumerate(rows):
+                row['p'] = float(p_corrected[i])
+        for row in rows:
+            row['sig'] = _sig(row['p'])
+        col_names = ['DV', 'F', 'df1', 'df2', 'p', 'η²', 'sig']
+        col_data  = [
+            [r['dv']                for r in rows],
+            [round(r['F'],    3)    for r in rows],
+            [r['df1']               for r in rows],
+            [r['df2']               for r in rows],
+            [round(r['p'],    4)    for r in rows],
+            [round(r['eta_sq'], 3)  for r in rows],
+            [r['sig']               for r in rows],
+        ]
     p_label = f"p (FDR-corrected)" if apply_fdr else "p"
 
     base = os.path.splitext(os.path.basename(ip))[0]
@@ -95,7 +127,8 @@ if __name__ == '__main__':
     if len(a) >= 4:
         anova_analyze(a[1], a[2], a[3],
                       len(a) > 4 and a[4].lower() in ['1', 'true', 'yes'],
-                      float(a[5]) if len(a) > 5 and a[5] and a[5].lower() != 'none' else None)
+                      float(a[5]) if len(a) > 5 and a[5] and a[5].lower() not in ('none', 'terminal') else None,
+                      a[6] if len(a) > 6 and a[6].lower() not in ('none', 'terminal') else None)
     else:
-        print('[anova] One-way ANOVA per DV. Usage: anova_analyzer.py <input.parquet> <dv|auto> <between> [apply_fdr=false] [y_lim]')
+        print('[anova] One-way ANOVA per DV. Usage: anova_analyzer.py <input.parquet> <dv|auto> <between> [apply_fdr=false] [y_lim] [group_by_col]')
         sys.exit(1)

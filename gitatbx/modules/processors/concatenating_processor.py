@@ -112,7 +112,19 @@ def concat_generic(files: list[str], conds: list[str]) -> pl.DataFrame:
     # ── MODE B: raw row-bind ────────────────────────────────────────────────────
     if not is_plot_ready:
         log_info("Raw/mixed inputs detected — performing row-bind concatenation")
-        result_df = pl.concat(loaded, how='diagonal')
+        # If the caller supplied explicit labels (label:path syntax), inject them as a
+        # 'source' column so downstream scripts (e.g. anova_analyzer group_by) can
+        # distinguish rows by origin.
+        label_injected = [c for c in conds if c and not c.startswith('cond')]
+        if label_injected and len(label_injected) == len(loaded):
+            labelled = [
+                df.with_columns(pl.lit(label).alias('source'))
+                for df, label in zip(loaded, conds)
+            ]
+            result_df = pl.concat(labelled, how='diagonal')
+            log_info(f"Injected 'source' column with labels: {conds}")
+        else:
+            result_df = pl.concat(loaded, how='diagonal')
         print(f"[concatenating] Row-bound {len(loaded)} files -> {result_df.height} rows, cols: {result_df.columns}")
         return result_df
 
