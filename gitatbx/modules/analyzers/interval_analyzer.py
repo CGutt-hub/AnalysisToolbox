@@ -5,24 +5,27 @@ def log_info(msg): print(f"[interval] INFO: {msg}")
 def log_warning(msg): print(f"[interval] WARNING: {msg}")
 def log_error(msg): print(f"[interval] ERROR: {msg}")
 
-def analyze_intervals(ip: str, event_col: str | None = None, y_lim: float | None = None, 
+def analyze_intervals(ip: str, event_col: str | None = None, y_lim: float | None = None,
                       y_label: str = 'Value (ms)',
-                      metrics_mode: str = 'auto') -> str:
+                      metrics_mode: str = 'auto',
+                      output_format: str = 'signal_pointer') -> str:
     """
-    Analyze inter-event intervals (SDNN, RMSSD) per condition: epoch-level or aggregated output.
-    Generic interval analyzer - works on any point process (R-peaks, blinks, keystrokes, etc.)
+    Generic interval statistics analyzer — computes inter-event intervals (e.g., SDNN, RMSSD)
+    on any point process: R-peaks, blinks, keystrokes, neural spike times, etc.
+    
+    Supports both epoched and flat input data. Outputs can be formatted for different
+    downstream statistical workflows: direct joining, bootstrap resampling, or plotting.
     
     Args:
-        ip: Input parquet with epoched event data [condition, epoch_id, event_col, sfreq]
+        ip: Input parquet with event data (epoched or flat)
         event_col: Column containing event samples/times (auto-detected if None)
-        y_lim: Optional Y-axis maximum (None = output epoch-level data for bootstrap)
-        y_label: Label for y-axis (e.g., 'Value (ms)', 'IBI (ms)')
-        metrics_mode: 'auto' (both SDNN+RMSSD), 'SDNN', or 'RMSSD' for single metric
+        y_lim: Y-axis maximum (None = epoch-level data)
+        y_label: Label for y-axis
+        metrics_mode: 'auto' (both SDNN+RMSSD), 'SDNN', or 'RMSSD'
+        output_format: 'signal_pointer' (default), 'flat_table' (for joining), or 'aggregated'
     
     Returns:
-        Path to signal file
-    
-    Note: If y_lim is None, outputs epoch-level data for bootstrap; else outputs mean ± SEM
+        Path to output parquet (format depends on output_format parameter)
     """
     suffix = 'interv'
     print(f"[interval] Interval analysis: {ip}, mode={'epoch-level' if y_lim is None else 'aggregated'}")
@@ -173,14 +176,33 @@ def analyze_intervals(ip: str, event_col: str | None = None, y_lim: float | None
             print(f"[interval]   {cond}: SDNN={sdnn_mean:.2f}±{sdnn_sem:.2f}, RMSSD={rmssd_mean:.2f}±{rmssd_sem:.2f} ({len(sdnn_vals)} epochs)")
     
     signal_path = os.path.join(os.getcwd(), f"{base}_{suffix}.parquet")
-    pl.DataFrame({
-        'signal': [1],
-        'source': [os.path.basename(ip)],
-        'conditions': [len(conditions)],
-        'folder_path': [os.path.abspath(out_folder)]
-    }).write_parquet(signal_path, compression='snappy')
-    
-    print(f"[interval] Output: {signal_path}")
+
+    # Output format routing: 'signal_pointer' (default) for bootstrap workflows,
+    # 'flat_table' for correlation/statistical joining, 'aggregated' for direct plots.
+    if output_format == 'flat_table' and y_lim is None:
+        # Emit raw epoch-level data as a joinable table for downstream statistical
+        # processes (e.g., correlation_analyzer, custom group-level analyses).
+        if metrics_mode.upper() == 'RMSSD':
+            out_df = epoch_df.select(['condition', 'epoch_id', pl.col('RMSSD').alias('value')])
+        elif metrics_mode.upper() == 'SDNN':
+            out_df = epoch_df.select(['condition', 'epoch_id', pl.col('SDNN').alias('value')])
+        else:  # auto: long format with metric column
+            sdnn_out = epoch_df.select(['condition', 'epoch_id', pl.col('SDNN').alias('value')]).with_columns(pl.lit('SDNN').alias('metric'))
+            rmssd_out = epoch_df.select(['condition', 'epoch_id', pl.col('RMSSD').alias('value')]).with_columns(pl.lit('RMSSD').alias('metric'))
+            out_df = pl.concat([sdnn_out, rmssd_out])
+        out_df.write_parquet(signal_path, compression='snappy')
+        print(f"[interval] Output (flat_table): {signal_path} ({len(out_df)} rows for joining)")
+    else:
+        # Default: signal pointer format. Per-condition epoch files written to subfolder;
+        # root file points to folder for bootstrap-resampling workflows.
+        pl.DataFrame({
+            'signal': [1],
+            'source': [os.path.basename(ip)],
+            'conditions': [len(conditions)],
+            'folder_path': [os.path.abspath(out_folder)]
+        }).write_parquet(signal_path, compression='snappy')
+        print(f"[interval] Output (signal_pointer): {signal_path}")
+
     return signal_path
 
 if __name__ == '__main__':
@@ -188,9 +210,10 @@ if __name__ == '__main__':
                                   a[2] if len(a) > 2 and a[2] and a[2] != 'None' else None,
                                   float(a[3]) if len(a) > 3 and a[3] and a[3] != 'None' else None,
                                   a[4] if len(a) > 4 else 'Value (ms)',
-                                  a[5] if len(a) > 5 else 'auto') if len(a) >= 2 else (
-        print('Compute interval statistics (SDNN, RMSSD). Plot-ready output.'),
-        print('[interval] Usage: python interval_analyzer.py <epochs.parquet> [event_col] [y_lim] [y_label] [metrics_mode]'),
-        print('[interval] metrics_mode: auto (both SDNN+RMSSD), SDNN, or RMSSD'),
-        print('[interval] Example: python interval_analyzer.py ecg_epochs.parquet R_Peak_Sample None "IBI (ms)" RMSSD'),
+                                  a[5] if len(a) > 5 and a[5] not in ('signal_pointer', 'flat_table') else 'auto',
+                                  next((x for x in a[5:] if x in ('signal_pointer', 'flat_table')), 'signal_pointer')) if len(a) >= 2 else (
+        print('Compute interval statistics for any point process (SDNN, RMSSD, etc.)'),
+        print('[interval] Usage: interval_analyzer.py <events.parquet> [event_col] [y_lim] [y_label] [metrics] [output_format]'),
+        print('[interval]   output_format: signal_pointer (default) or flat_table'),
+        print('[interval] Example: interval_analyzer.py peaks.parquet peak_sample None "ms" auto flat_table'),
         sys.exit(1)))(sys.argv)

@@ -832,8 +832,13 @@ process IOInterface {
             # For result processes, strip _result suffix so published file has clean name
             if [ "\$IS_RESULT" = "true" ]; then
                 BASENAME="\${BASENAME%_result.parquet}.parquet"
+                # Copy file to results/ folder for curated outputs
+                mkdir -p "\$CONTEXT_PLOT_DIR"
+                cp "\$FILE" "\$CONTEXT_PLOT_DIR/\$BASENAME" 2>/dev/null || true
             fi
             local PREFIX=\${BASENAME%.parquet}
+            
+            # Register in HTML archive (applies to both plots and results)
             local REG_TMP=\$(mktemp)
             ${env_exe} -u "${workflow.launchDir}/${params.interactive_plotter_script}" "\$FILE" "\$PROCEDURE_FOLDER" "\$PREFIX" "\$PROJECT_NAME" "\$CONTEXT_PLOT_DIR" 2>&1 | \
                 while IFS= read -r line; do printf "%s %s\\n" "\$(date '+%Y-%m-%d %H:%M:%S')" "\$line"; done > "\$REG_TMP"

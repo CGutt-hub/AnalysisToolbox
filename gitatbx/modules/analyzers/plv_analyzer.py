@@ -3,7 +3,13 @@ from scipy.signal import hilbert, butter, filtfilt
 from numpy.typing import NDArray
 from typing import Any
 
-def compute_plv(stream_paths: list[str], stream_configs: list[dict[str, Any]], output_name: str, y_lim: float | None = None) -> str:
+def compute_plv(
+    stream_paths: list[str],
+    stream_configs: list[dict[str, Any]],
+    output_name: str,
+    y_lim: float | None = None,
+    output_format: str = 'signal_pointer',
+) -> str:
     """
     Compute PLV between arbitrary number of streams.
     
@@ -39,6 +45,10 @@ def compute_plv(stream_paths: list[str], stream_configs: list[dict[str, Any]], o
         else:
             filters.append(None)
     
+    # Per-epoch PLV records used for both flat-table output and descriptive plots.
+    # Columns: condition, epoch_id, trial_id, pair, value
+    epoch_records: list[dict[str, Any]] = []
+
     # Process each condition
     for idx, cond in enumerate(conditions):
         cond_data = [df.filter(pl.col('condition') == cond) for df in streams]
@@ -49,14 +59,11 @@ def compute_plv(stream_paths: list[str], stream_configs: list[dict[str, Any]], o
         event_streams = [(i, cfg) for i, cfg in enumerate(stream_configs) if cfg['type'] == 'event']
         
         # Build all pairwise PLVs between streams
-        plv_results = []
         
         # Continuous vs Event (e.g., EEG-HRV, EDA-HRV)
         if len(continuous_streams) > 0 and len(event_streams) > 0:
             for cont_idx, cont_cfg in continuous_streams:
                 for ch in cont_cfg['channels']:
-                    ch_plvs = []
-                    
                     for eid in epoch_ids:
                         # Get continuous signal phase
                         signal: NDArray[np.float64] = cond_data[cont_idx].filter(pl.col('epoch_id') == eid)[ch].to_numpy()
@@ -85,15 +92,15 @@ def compute_plv(stream_paths: list[str], stream_configs: list[dict[str, Any]], o
                             # Calculate PLV
                             phase_diff: NDArray[np.floating[Any]] = cont_phase - evt_phase
                             plv: float = float(np.abs(np.mean(np.exp(1j * phase_diff))))
-                            ch_plvs.append(plv)
-                    
-                    if ch_plvs:
-                        label = f"{ch}-{os.path.splitext(os.path.basename(stream_paths[event_streams[0][0]]))[0]}"
-                        plv_results.append({
-                            'pair': label,
-                            'plv_mean': float(np.mean(ch_plvs)),
-                            'plv_sem': float(np.std(ch_plvs, ddof=1) / np.sqrt(len(ch_plvs)))
-                        })
+                            event_name = os.path.splitext(os.path.basename(stream_paths[evt_idx]))[0]
+                            pair_label = f"{ch}-{event_name}"
+                            epoch_records.append({
+                                'condition': cond,
+                                'epoch_id': int(eid),
+                                'trial_id': str(cond),
+                                'pair': pair_label,
+                                'value': plv,
+                            })
         
         # Continuous vs Continuous (e.g., EEG-EDA)
         if len(continuous_streams) >= 2:
@@ -133,35 +140,69 @@ def compute_plv(stream_paths: list[str], stream_configs: list[dict[str, Any]], o
                                 # PLV
                                 pdiff: NDArray[np.floating[Any]] = phase1 - phase2
                                 plv_val: float = float(np.abs(np.mean(np.exp(1j * pdiff))))
-                                pair_plvs.append(plv_val)
-                            
-                            if pair_plvs:
-                                plv_results.append({
-                                    'pair': f"{ch1}-{ch2}",
-                                    'plv_mean': float(np.mean(pair_plvs)),
-                                    'plv_sem': float(np.std(pair_plvs, ddof=1) / np.sqrt(len(pair_plvs)))
+                                pair_label = f"{ch1}-{ch2}"
+                                epoch_records.append({
+                                    'condition': cond,
+                                    'epoch_id': int(eid),
+                                    'trial_id': str(cond),
+                                    'pair': pair_label,
+                                    'value': plv_val,
                                 })
-        
-        # Output
-        if plv_results:
-            result_df = pl.DataFrame(plv_results)
+
+    if not epoch_records:
+        print('[plv] WARNING: no PLV records generated')
+
+    epoch_df = pl.DataFrame(epoch_records) if epoch_records else pl.DataFrame({
+        'condition': [], 'epoch_id': [], 'trial_id': [], 'pair': [], 'value': []
+    })
+
+    # Flat-table mode: one row per trial_id/epoch_id, one column per stream pair.
+    # This is join-ready for downstream correlation_analyzer.
+    signal_path = os.path.join(workspace, f"{output_name}_plv.parquet")
+    if output_format == 'flat_table':
+        if len(epoch_df) > 0:
+            wide_df = epoch_df.pivot(
+                values='value',
+                index=['condition', 'epoch_id', 'trial_id'],
+                columns='pair',
+                aggregate_function='mean',
+            ).sort(['condition', 'epoch_id'])
+        else:
+            wide_df = pl.DataFrame({'condition': [], 'epoch_id': [], 'trial_id': []})
+
+        wide_df.write_parquet(signal_path, compression='snappy')
+        print(f"[plv] Output (flat_table): {os.path.basename(signal_path)} ({len(wide_df)} rows)")
+        return signal_path
+
+    # Default mode: emit per-condition plot files + signal pointer.
+    if len(epoch_df) > 0:
+        cond_summary = epoch_df.group_by(['condition', 'pair']).agg([
+            pl.col('value').mean().alias('plv_mean'),
+            pl.col('value').std(ddof=1).alias('plv_std'),
+            pl.len().alias('n')
+        ]).with_columns([
+            (pl.col('plv_std') / pl.col('n').sqrt()).fill_null(0.0).alias('plv_sem')
+        ])
+
+        for idx, cond in enumerate(conditions):
+            cond_df = cond_summary.filter(pl.col('condition') == cond)
+            if len(cond_df) == 0:
+                continue
             output = pl.DataFrame({
                 'condition': [cond],
-                'x_data': [result_df['pair'].to_list()],
-                'y_data': [result_df['plv_mean'].to_list()],
-                'y_var': [result_df['plv_sem'].to_list()],
+                'x_data': [cond_df['pair'].to_list()],
+                'y_data': [cond_df['plv_mean'].to_list()],
+                'y_var': [cond_df['plv_sem'].to_list()],
                 'plot_type': ['bar'],
                 'x_label': ['Stream Pair'],
                 'y_label': ['Phase-Locking Value (PLV)'],
                 'y_ticks': [y_lim] if y_lim is not None else [None]
             })
-            
+
             out_file = os.path.join(out_folder, f"{output_name}_plv{idx+1}.parquet")
             output.write_parquet(out_file, compression='snappy')
-            print(f"[plv]   {cond}: {os.path.basename(out_file)} ({len(plv_results)} pairs)")
+            print(f"[plv]   {cond}: {os.path.basename(out_file)} ({len(cond_df)} pairs)")
     
-    # Signal file
-    signal_path = os.path.join(workspace, f"{output_name}_plv.parquet")
     pl.DataFrame({
         'signal': [1], 
         'source': [','.join([os.path.basename(p) for p in stream_paths])], 
@@ -177,11 +218,11 @@ def _plv_main(argv: list[str]) -> None:
     """Entry point supporting two CLI formats:
 
     Legacy (original):
-        plv_analyzer.py <config_dict>  [y_lim]
+        plv_analyzer.py <config_dict>  [y_lim] [output_format]
         config_dict = {'streams': [...], 'configs': [...], 'output_name': '...'}
 
     IOInterface-compatible (new):
-        plv_analyzer.py <file1> [file2 ...] <json_configs_list> <output_name> [y_lim]
+        plv_analyzer.py <file1> [file2 ...] <json_configs_list> <output_name> [y_lim] [output_format]
         json_configs_list = JSON list of per-stream config dicts (one per file, no 'streams' key)
         output_name       = base name for output files (e.g. 'DEAP_01_eeg_hrv')
     """
@@ -194,8 +235,9 @@ def _plv_main(argv: list[str]) -> None:
     if a[1].startswith('{'):
         # Legacy format
         cfg = ast.literal_eval(a[1])
-        compute_plv(cfg['streams'], cfg['configs'], cfg['output_name'],
-                    float(a[2]) if len(a) > 2 and a[2] else None)
+        y_lim = float(a[2]) if len(a) > 2 and a[2] and a[2] not in ('None', '') else None
+        output_format = next((x for x in a[2:] if x in ('signal_pointer', 'flat_table')), 'signal_pointer')
+        compute_plv(cfg['streams'], cfg['configs'], cfg['output_name'], y_lim, output_format)
         return
 
     # IOInterface format: files come first, then the JSON configs list, then output_name
@@ -206,11 +248,21 @@ def _plv_main(argv: list[str]) -> None:
 
     stream_paths = a[1:json_idx]
     configs      = ast.literal_eval(a[json_idx])
-    output_name  = a[json_idx + 1] if len(a) > json_idx + 1 else \
-                   re.sub(r'^([A-Za-z]+_[0-9]+).*', r'\1_plv', os.path.basename(stream_paths[0]))
-    y_lim        = float(a[json_idx + 2]) if len(a) > json_idx + 2 and a[json_idx + 2] else None
 
-    compute_plv(stream_paths, configs, output_name, y_lim)
+    tail = a[json_idx + 1:]
+    output_format = next((x for x in tail if x in ('signal_pointer', 'flat_table')), 'signal_pointer')
+    tail_wo_format = [x for x in tail if x not in ('signal_pointer', 'flat_table')]
+
+    if tail_wo_format and tail_wo_format[0] not in ('None', ''):
+        output_name = tail_wo_format[0]
+    else:
+        output_name = re.sub(r'^([A-Za-z]+_[0-9]+).*', r'\1_plv', os.path.basename(stream_paths[0]))
+
+    y_lim = None
+    if len(tail_wo_format) > 1 and tail_wo_format[1] not in ('None', ''):
+        y_lim = float(tail_wo_format[1])
+
+    compute_plv(stream_paths, configs, output_name, y_lim, output_format)
 
 
 if __name__ == '__main__':
