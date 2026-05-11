@@ -55,4 +55,4 @@ def detect_peaks(ip: str, column: str, fs: float, method: str = 'scipy', height:
     print(f"[peak_detection] Output: {out_file} ({len(peaks)} peaks)")
     return out_file
 
-if __name__ == '__main__': (lambda a: detect_peaks(a[1], a[2], float(a[3]), a[4] if len(a) > 4 else 'scipy', float(a[5]) if len(a) > 5 and a[5] else None, float(a[6]) if len(a) > 6 and a[6] else None) if len(a) >= 4 else (print('[peak_detection] Detect peaks in signal using scipy or neurokit2 (ECG R-peaks).\nUsage: peak_detection_processor.py <input.parquet> <column> <fs> [method=scipy|ecg] [height] [distance_sec]'), sys.exit(1)))(sys.argv)
+if __name__ == '__main__': (lambda a: detect_peaks(a[1], a[2], float(a[3]), a[4] if len(a) > 4 else 'scipy', float(a[5]) if len(a) > 5 and a[5] and a[5] != 'None' else None, float(a[6]) if len(a) > 6 and a[6] and a[6] != 'None' else None) if len(a) >= 4 else (print('[peak_detection] Detect peaks in signal using scipy or neurokit2 (ECG R-peaks).\nUsage: peak_detection_processor.py <input.parquet> <column> <fs> [method=scipy|ecg] [height] [distance_sec]'), sys.exit(1)))(sys.argv)
