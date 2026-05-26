@@ -231,7 +231,7 @@ if __name__ == '__main__':
                           ast.literal_eval(a[2]), 
                           ast.literal_eval(a[3]) if len(a) > 3 and a[3] and a[3] not in ['None', 'null'] else None,
                           ast.literal_eval(a[4]) if len(a) > 4 and a[4] and a[4] not in ['None', 'null'] else None,
-                          float(a[5]) if len(a) > 5 and a[5] else None) if len(a) >= 3 else (
+                          float(a[5]) if len(a) > 5 and a[5] and a[5] not in ['None', 'null'] else None) if len(a) >= 3 else (
         print('Power spectral density via Welch method per frequency band. Plot-ready output.'),
         print('[psd] Usage: python psd_analyzer.py <epochs.parquet> <bands_dict> [channels] [regions_dict] [y_lim]'),
         print('[psd] Example (channel): python psd_analyzer.py data.parquet "{\'alpha\':[8,12]}" "[\'Fz\',\'Cz\']" None 50'),
