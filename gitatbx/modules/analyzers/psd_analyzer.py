@@ -215,6 +215,14 @@ def compute_psd(ip: str, bands: dict, channels: list | None = None, regions: dic
         
         print(f"[psd]   {cond}: {len(cond_data['epoch_id'].unique())} epochs")
     
+    # Combined flat file across all conditions (used by label_binner/row_filter in multi-trial pipelines)
+    if region_mode:
+        all_agg = result_df.group_by(['condition', 'epoch_id', 'region', 'band']).agg(
+            pl.col('power').mean().alias('value')
+        )
+        all_pivot = all_agg.pivot(values='value', index=['condition', 'epoch_id', 'region'], on='band')
+        all_pivot.write_parquet(os.path.join(out_folder, f"{base}_psd_all.parquet"))
+
     signal_path = os.path.join(os.getcwd(), f"{base}_psd.parquet")
     pl.DataFrame({
         'signal': [1],
