@@ -661,6 +661,7 @@ process IOInterface {
     def isGroupLog = false
     def isTerminal = false
     def isResult = false
+    def isTable = false
     if (extraParams && extraParams.toString().trim() != "") {
         def paramStr = extraParams.toString().trim()
         
@@ -708,6 +709,10 @@ process IOInterface {
         // Strip result token — publishes output to results/ instead of plots/.
         // Used by result_collector to create a clean-named curated output folder.
         isResult = args.remove('result')
+        // Strip table token — marks this process as a data-table export.
+        // Table processes publish to tables/ instead of results/ or plots/,
+        // and are not registered in the HTML archive (they are raw data files).
+        isTable = args.remove('table')
         extraArgs = args.collect { "'${escapeArg(it)}'" }.join(' ')
     }
     
@@ -729,7 +734,8 @@ process IOInterface {
         : "${workflow.launchDir}/${params.output_dir}/${params.project_name}_l1/\${PARTICIPANT_ID}"
     // plots/ subfolder mirrors the structure of participant folders (log.parquet sibling to plots/)
     // When the result token is present, output goes to results/ instead (curated clean-named files).
-    def publishFolder = isResult ? 'results' : 'plots'
+    // When the table token is present, output goes to tables/ (raw epoch data for Spyder/MATLAB inspection).
+    def publishFolder = isTable ? 'tables' : (isResult ? 'results' : 'plots')
     def contextPlotDir = isGroupLog
         ? "${groupDir}/${publishFolder}"
         : "${workflow.launchDir}/${params.output_dir}/${params.project_name}_l1/\${PARTICIPANT_ID}/${publishFolder}"
@@ -808,7 +814,7 @@ process IOInterface {
             printf "\\n%s [ERROR] ${scriptName} exit code %d\\n" "\$(date '+%Y-%m-%d %H:%M:%S')" \$EXIT_CODE > "\$ERR_TMP"
             ${env_exe} -u "${logWriter}" "\$LOG_FILE" "\$ERR_TMP"
             rm -f "\$ERR_TMP"
-            ${isTerminal ? "# Terminal process: emit sentinel so finalization is never blocked\n            ${env_exe} -c \"import polars as pl; pl.DataFrame({'_sentinel': [True], '_error': [True]}).write_parquet('\${PARTICIPANT_ID}_sentinel_failed.parquet', compression='snappy')\"\n            exit 0" : 'exit \\$EXIT_CODE'}
+            ${isTerminal ? "# Terminal process: emit sentinel so finalization is never blocked\n            ${env_exe} -c \"import polars as pl; pl.DataFrame({'_sentinel': [True], '_error': [True]}).write_parquet('\${PARTICIPANT_ID}_sentinel_failed.parquet', compression='snappy')\"\n            exit 0" : 'exit $EXIT_CODE'}
         fi
         fi  # end HAS_CORRECTIONS check
 
@@ -826,24 +832,56 @@ process IOInterface {
         PROJECT_NAME="${params.project_name}"
 
         IS_RESULT=${isResult ? '"true"' : '"false"'}
+        IS_TABLE=${isTable ? '"true"' : '"false"'}
+        IS_TERMINAL=${isTerminal ? '"true"' : '"false"'}
+        IS_GROUP=${isGroupLog ? '"true"' : '"false"'}
+        STAGED_BASENAMES="|"
+        for _IN in ${inputArgs}; do
+            _BASE="\$(basename "\$_IN")"
+            STAGED_BASENAMES="\${STAGED_BASENAMES}\${_BASE}|"
+        done
         _publish_parquet() {
             local FILE="\$1"
             local BASENAME=\$(basename "\$FILE")
-            # For result processes, strip _result suffix so published file has clean name
-            if [ "\$IS_RESULT" = "true" ]; then
+            # For result and table processes, strip _result suffix so published file has clean name
+            if [ "\$IS_RESULT" = "true" ] || [ "\$IS_TABLE" = "true" ]; then
                 BASENAME="\${BASENAME%_result.parquet}.parquet"
-                # Copy file to results/ folder for curated outputs
+                # Copy file to results/ or tables/ folder for curated outputs
                 mkdir -p "\$CONTEXT_PLOT_DIR"
                 cp "\$FILE" "\$CONTEXT_PLOT_DIR/\$BASENAME" 2>/dev/null || true
             fi
             local PREFIX=\${BASENAME%.parquet}
-            
-            # Register in HTML archive (applies to both plots and results)
-            local REG_TMP=\$(mktemp)
-            ${env_exe} -u "${workflow.launchDir}/${params.interactive_plotter_script}" "\$FILE" "\$PROCEDURE_FOLDER" "\$PREFIX" "\$PROJECT_NAME" "\$CONTEXT_PLOT_DIR" 2>&1 | \
-                while IFS= read -r line; do printf "%s %s\\n" "\$(date '+%Y-%m-%d %H:%M:%S')" "\$line"; done > "\$REG_TMP"
-            ${env_exe} -u "${logWriter}" "\$LOG_FILE" "\$REG_TMP"
-            rm -f "\$REG_TMP"
+
+            # Auto-table: terminal L1 analysis processes that emit raw epoch data
+            # (parquets without a plot_type column) are automatically copied to
+            # tables/ so every project gets per-participant data for Spyder/MATLAB
+            # without any explicit pipeline wiring.
+            # Skipped for: result_collector outputs (IS_RESULT), explicit table
+            # exports (IS_TABLE), group-level processes (IS_GROUP), and any parquet
+            # that already has a plot_type column (plot-ready summary, not raw data).
+            if [ "\$IS_TERMINAL" = "true" ] && [ "\$IS_RESULT" != "true" ] && [ "\$IS_TABLE" != "true" ] && [ "\$IS_GROUP" != "true" ]; then
+                _IS_SENTINEL=\$(${env_exe} -c "
+import polars as pl, sys
+try:
+    df = pl.read_parquet(sys.argv[1])
+    print('1' if '_sentinel' in df.columns else '0')
+except Exception:
+    print('0')
+" "\$FILE" 2>/dev/null || echo '0')
+                if [ "\$_IS_SENTINEL" = "0" ]; then
+                    mkdir -p "\$CONTEXT_DIR/tables"
+                    cp "\$FILE" "\$CONTEXT_DIR/tables/\$BASENAME" 2>/dev/null || true
+                fi
+            fi
+
+            # Register in HTML archive (plots and results only — table outputs are raw data files)
+            if [ "\$IS_TABLE" != "true" ]; then
+                local REG_TMP=\$(mktemp)
+                ${env_exe} -u "${workflow.launchDir}/${params.interactive_plotter_script}" "\$FILE" "\$PROCEDURE_FOLDER" "\$PREFIX" "\$PROJECT_NAME" "\$CONTEXT_PLOT_DIR" 2>&1 | \
+                    while IFS= read -r line; do printf "%s %s\\n" "\$(date '+%Y-%m-%d %H:%M:%S')" "\$line"; done > "\$REG_TMP"
+                ${env_exe} -u "${logWriter}" "\$LOG_FILE" "\$REG_TMP"
+                rm -f "\$REG_TMP"
+            fi
         }
 
         # Detect whether any subfolder contains parquet files.
@@ -868,9 +906,25 @@ process IOInterface {
             # No subfolders — publish root-level parquets.
             for OUT_FILE in *.parquet; do
                 [ -f "\$OUT_FILE" ] || continue
-                # For result processes, skip staged inputs — only publish _result outputs.
-                if [ "\$IS_RESULT" = "true" ]; then
-                    case "\$OUT_FILE" in *_result.parquet) ;; *) continue ;; esac
+                # For result and table processes, skip staged inputs — only publish _result outputs.
+                if [ "\$IS_RESULT" = "true" ] || [ "\$IS_TABLE" = "true" ]; then
+                    case "\$OUT_FILE" in
+                        *_result.parquet) ;;
+                        *)
+                            # Group-level result processes often emit canonical names
+                            # (e.g., *_anova.parquet) without _result suffix.
+                            # Publish those when they are newly produced outputs,
+                            # but still skip any staged input files.
+                            if [ "\$IS_GROUP" = "true" ] && [ "\$IS_RESULT" = "true" ]; then
+                                case "\$STAGED_BASENAMES" in
+                                    *"|\$OUT_FILE|"*) continue ;;
+                                    *) ;;
+                                esac
+                            else
+                                continue
+                            fi
+                        ;;
+                    esac
                 fi
                 _publish_parquet "\$OUT_FILE"
             done

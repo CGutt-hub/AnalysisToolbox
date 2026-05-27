@@ -25,9 +25,13 @@ def main():
 
     df = pl.read_parquet(input_path)
 
-    # Pass through sentinel files from failed upstream processes
+    # Pass through sentinel files from failed upstream processes.
+    # Use pid-based name so finalize_participant's groupTuple maps it to the right participant.
     if '_sentinel' in df.columns:
-        df.write_parquet(f"sentinel_{clean_name}.parquet", compression='snappy')
+        basename = os.path.basename(input_path).replace('.parquet', '')
+        parts = basename.split('_')
+        pid = '_'.join(parts[:2]) if len(parts) >= 2 else 'sentinel'
+        df.write_parquet(f"{pid}_sentinel_{clean_name}.parquet", compression='snappy')
         return
 
     # Extract participant ID from input filename (pattern: EV_NNN_...)

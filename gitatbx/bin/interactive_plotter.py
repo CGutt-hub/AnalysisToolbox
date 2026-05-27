@@ -739,7 +739,17 @@ def create_archive_html(project_name='procedure'):
 
             // Multi-row: each row is a separate condition
             if (rows.length > 1) {{
-                const subL = rows.map(r => String(r.condition || r.title || ''));
+                const subL = rows.map(r => String(r.condition || r.region || r.title || ''));
+                // Line plots: overlay all rows as traces on a single axis (e.g. spectrum per condition)
+                if (plotType === 'line' || plotType === 'line_overlay') {{
+                    const data = rows.map((row, i) => ({{
+                        type: 'scatter', mode: 'lines',
+                        x: toLst(row.x_data), y: toLst(row.y_data),
+                        name: subL[i] || String(i),
+                        line: {{ color: grayN(i, rows.length), width: 1.5 }}, opacity: 0.9
+                    }}));
+                    return {{ data, layout: base, title }};
+                }}
                 const data = rows.map((row, i) => {{
                     const rx = toLst(row.x_data), ry = toLst(row.y_data), rv = toLst(row.y_var);
                     const nested = ry.length > 0 && Array.isArray(ry[0]);

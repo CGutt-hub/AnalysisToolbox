@@ -5,9 +5,9 @@ epochs per condition.  Replaces the earlier circular-phase approach which produc
 uninterpretable wrapped-phase plots.
 
 Outputs per-condition plot-ready parquets with:
-  x_data: frequency axis (Hz, 0â€“max_freq)
+  x_data: frequency axis (Hz, 0–max_freq)
   y_data: mean PSD across epochs (µV²/Hz, linear)
-  y_var:  SEM across epochs (µV²/Hz, linear)
+  y_var:  None (no shaded band — variance across EEG epochs is not meaningful here)
 
 Supports both channel mode (averages all channels) and region mode (per-ROI).
 
@@ -19,6 +19,7 @@ Examples:
     spectrum_analyzer.py eeg_epoched.parquet None '{"Frontal":["F3","F4"],"Parietal":["P3","P4"]}' 45
 """
 import polars as pl, numpy as np, sys, ast, os
+from scipy.signal import welch as scipy_welch
 
 
 def log_info(msg):    print(f"[spectrum] INFO: {msg}")
@@ -62,16 +63,21 @@ def compute_spectrum(ip: str,
     else:
         regions_dict = regions  # type: ignore[assignment]
 
-    # Detect sampling frequency
+    # Detect sampling frequency from first epoch
     first_epoch = df.filter(pl.col('epoch_id') == df['epoch_id'][0])
     times = first_epoch['time'].to_numpy()
     dt = float(times[1] - times[0]) if len(times) > 1 else 1.0 / 256.0
     sfreq = 1.0 / dt
     n_times = len(times)
 
-    freqs = np.fft.rfftfreq(n_times, d=1.0 / sfreq)
-    fmask = (freqs >= 1.0) & (freqs <= max_freq)   # skip DC
-    freq_vals = freqs[fmask].tolist()
+    # Welch segment length = 1 second → exactly 1 Hz frequency resolution,
+    # so the x-axis ticks are natural numbers (1, 2, 3, … Hz).
+    # Enough segments per epoch (>100 at 250 Hz / 120 s) for smooth averaging.
+    nperseg = min(int(sfreq), n_times // 2)
+    # Compute frequency axis from Welch (not rfftfreq) so it exactly matches output
+    _f_ref = scipy_welch(np.zeros(n_times), fs=sfreq, nperseg=nperseg)[0]
+    fmask = (_f_ref >= 1.0) & (_f_ref <= max_freq)
+    freq_vals = _f_ref[fmask].tolist()
 
     epoch_ids = df['epoch_id'].unique().to_list()
     conds = sorted(set(
@@ -85,28 +91,23 @@ def compute_spectrum(ip: str,
     out_folder = os.path.join(os.getcwd(), f"{base}_spectrum")
     os.makedirs(out_folder, exist_ok=True)
 
-    def _psd_for_channels(eids: list, ch_list: list) -> tuple[list, list] | None:
-        """Mean PSD (µV²/Hz) + SEM across epochs for a set of channels."""
+    def _psd_for_channels(eids: list, ch_list: list) -> list | None:
+        """Mean Welch PSD (µV²/Hz) across epochs for a set of channels."""
         epoch_psds = []
         for eid in eids:
             epoch_df = df.filter(pl.col('epoch_id') == eid)
             avail = [ch for ch in ch_list if ch in epoch_df.columns]
             if not avail:
                 continue
-            # Average channels first, then compute PSD
+            # Average channels first, then compute Welch PSD
             composite = np.mean([epoch_df[ch].to_numpy() for ch in avail], axis=0)
-            # One-sided PSD: |FFT|Â² / (N * sfreq)
-            fft_vals = np.fft.rfft(composite)
-            psd = (np.abs(fft_vals) ** 2) / (n_times * sfreq)
-            # Double non-DC bins to account for negative frequencies
-            psd[1:-1] *= 2
+            _, psd = scipy_welch(composite, fs=sfreq, nperseg=nperseg)
             epoch_psds.append(psd[fmask])
         if not epoch_psds:
             return None
         arr = np.array(epoch_psds)           # shape: (n_epochs, n_freqs)
         mean_psd = np.mean(arr, axis=0).tolist()
-        sem_psd  = (np.std(arr, axis=0, ddof=1) / np.sqrt(len(arr))).tolist() if len(arr) > 1 else [0.0] * len(freq_vals)
-        return mean_psd, sem_psd
+        return mean_psd
 
     for idx, cond in enumerate(conds):
         cond_eids = df.filter(pl.col('condition') == cond)['epoch_id'].unique().to_list()
@@ -118,13 +119,13 @@ def compute_spectrum(ip: str,
                 if result is None:
                     log_warning(f"No valid epochs for region '{rname}', condition '{cond}'")
                     continue
-                mean_psd, sem_psd = result
+                mean_psd = result
                 rows.append({
                     'condition': cond,
                     'region': rname,
                     'x_data': freq_vals,
                     'y_data': mean_psd,
-                    'y_var': sem_psd,
+                    'y_var': None,
                     'plot_type': 'line',
                     'x_label': 'Frequency (Hz)',
                     'y_label': 'Power (µV²/Hz)',
@@ -138,12 +139,12 @@ def compute_spectrum(ip: str,
             if result is None:
                 log_warning(f"No valid epochs for condition '{cond}'")
                 continue
-            mean_psd, sem_psd = result
+            mean_psd = result
             pl.DataFrame([{
                 'condition': cond,
                 'x_data': freq_vals,
                 'y_data': mean_psd,
-                'y_var': sem_psd,
+                'y_var': None,
                 'plot_type': 'line',
                 'x_label': 'Frequency (Hz)',
                 'y_label': 'Power (µV²/Hz)',

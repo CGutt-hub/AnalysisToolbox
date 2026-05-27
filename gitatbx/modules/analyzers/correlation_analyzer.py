@@ -89,11 +89,14 @@ def correlation_analyze(
         base_metric = os.path.splitext(os.path.basename(metrics_path))[0]
         metrics_df = _plot_spec_to_tidy(metrics_df, base_metric)
 
-    # Normalise ID column: accept 'condition' as alias for 'trial_id'
+    # Normalise ID column: accept 'condition' as alias for 'trial_id' (metrics and labels)
     if 'condition' in metrics_df.columns and 'trial_id' not in metrics_df.columns:
         metrics_df = metrics_df.rename({'condition': 'trial_id'})
     if 'trial_id' not in metrics_df.columns:
         log_warning("No 'trial_id' or 'condition' column in metrics — cannot join")
+
+    if 'condition' in labels_df.columns and 'trial_id' not in labels_df.columns:
+        labels_df = labels_df.rename({'condition': 'trial_id'})
 
     # ── Join ──────────────────────────────────────────────────────────
     # Labels uses 'trial_id'; deduplicate to avoid cartesian product

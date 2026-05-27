@@ -96,7 +96,7 @@ def compute_plv(
                             pair_label = f"{ch}-{event_name}"
                             epoch_records.append({
                                 'condition': cond,
-                                'epoch_id': int(eid),
+                                'epoch_id': str(eid),
                                 'trial_id': str(cond),
                                 'pair': pair_label,
                                 'value': plv,
@@ -143,7 +143,7 @@ def compute_plv(
                                 pair_label = f"{ch1}-{ch2}"
                                 epoch_records.append({
                                     'condition': cond,
-                                    'epoch_id': int(eid),
+                                    'epoch_id': str(eid),
                                     'trial_id': str(cond),
                                     'pair': pair_label,
                                     'value': plv_val,
@@ -158,7 +158,7 @@ def compute_plv(
 
     # Flat-table mode: one row per trial_id/epoch_id, one column per stream pair.
     # This is join-ready for downstream correlation_analyzer.
-    signal_path = os.path.join(workspace, f"{output_name}_plv.parquet")
+    # ALWAYS output to subfolder, signal_pointer style (for file_finder compatibility)
     if output_format == 'flat_table':
         if len(epoch_df) > 0:
             wide_df = epoch_df.pivot(
@@ -170,11 +170,25 @@ def compute_plv(
         else:
             wide_df = pl.DataFrame({'condition': [], 'epoch_id': [], 'trial_id': []})
 
-        wide_df.write_parquet(signal_path, compression='snappy')
-        print(f"[plv] Output (flat_table): {os.path.basename(signal_path)} ({len(wide_df)} rows)")
+        # Write flat table INTO subfolder (file_finder will extract it)
+        flat_table_path = os.path.join(out_folder, f"{output_name}_plv.parquet")
+        wide_df.write_parquet(flat_table_path, compression='snappy')
+        print(f"[plv] Output (flat_table): {os.path.basename(flat_table_path)} ({len(wide_df)} rows) in subfolder")
+        
+        # Emit signal pointer at root level pointing to subfolder
+        signal_path = os.path.join(workspace, f"{output_name}_plv.parquet")
+        pl.DataFrame({
+            'signal': [1], 
+            'source': [','.join([os.path.basename(p) for p in stream_paths])], 
+            'format': ['flat_table'],
+            'folder_path': [os.path.abspath(out_folder)]
+        }).write_parquet(signal_path, compression='snappy')
+        print(f"[plv] Emitted signal pointer: {os.path.basename(signal_path)} -> {out_folder}")
         return signal_path
 
-    # Default mode: emit per-condition plot files + signal pointer.
+    # Default (signal_pointer) mode: emit per-condition plot files + signal pointer.
+    # This is the same as before for backward compatibility
+    signal_path = os.path.join(workspace, f"{output_name}_plv.parquet")
     if len(epoch_df) > 0:
         cond_summary = epoch_df.group_by(['condition', 'pair']).agg([
             pl.col('value').mean().alias('plv_mean'),

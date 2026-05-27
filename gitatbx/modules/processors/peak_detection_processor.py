@@ -111,4 +111,26 @@ def detect_peaks(ip: str, column: str, fs: float, method: str = 'scipy', height:
     print(f"[peak_detection] Output: {out_file} ({len(result)} peaks)")
     return out_file
 
-if __name__ == '__main__': (lambda a: detect_peaks(a[1], a[2], float(a[3]), a[4] if len(a) > 4 else 'scipy', float(a[5]) if len(a) > 5 and a[5] and a[5] != 'None' else None, float(a[6]) if len(a) > 6 and a[6] and a[6] != 'None' else None) if len(a) >= 4 else (print('[peak_detection] Detect peaks in signal using scipy or neurokit2 (ECG R-peaks).\nUsage: peak_detection_processor.py <input.parquet> <column> <fs> [method=scipy|ecg] [height] [distance_sec]'), sys.exit(1)))(sys.argv)
+def _parse_optional_float(raw: str | None) -> float | None:
+    if raw is None:
+        return None
+    token = str(raw).strip().strip("\"").strip("'").lower()
+    if token in {'', 'none', 'null', 'na', 'nan'}:
+        return None
+    return float(token)
+
+
+if __name__ == '__main__':
+    if len(sys.argv) < 4:
+        print('[peak_detection] Detect peaks in signal using scipy or neurokit2 (ECG R-peaks).\nUsage: peak_detection_processor.py <input.parquet> <column> <fs> [method=scipy|ecg] [height] [distance_sec]')
+        sys.exit(1)
+
+    args = sys.argv
+    detect_peaks(
+        args[1],
+        args[2],
+        float(args[3]),
+        args[4] if len(args) > 4 else 'scipy',
+        _parse_optional_float(args[5]) if len(args) > 5 else None,
+        _parse_optional_float(args[6]) if len(args) > 6 else None,
+    )
