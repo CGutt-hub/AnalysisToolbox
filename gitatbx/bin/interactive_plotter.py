@@ -625,8 +625,16 @@ def create_archive_html(project_name='procedure'):
             const meta = plotMeta[id];
             if (!meta) throw new Error('Unknown plot id: ' + id);
             const pid = (meta.path && meta.path[0]) || 'unknown';
+            const type = String(meta.type || 'plot');
 
-            if (meta.type === 'log') {{
+            function defaultSidecarUrl() {{
+                if (type === 'log') return meta.file || (pid + '/' + pid + '.log.parquet');
+                if (type === 'result') return meta.file || (pid + '/results/' + id + '.parquet');
+                if (type === 'table') return meta.file || (pid + '/tables/' + id + '.parquet');
+                return meta.file || (pid + '/plots/' + id + '.parquet');
+            }}
+
+            if (type === 'log') {{
                 // Path stored in meta.file (relative to archive root) — resolve relative to parent
                 const url = meta.file.startsWith('/') || meta.file.startsWith('http') ? meta.file : '../' + meta.file;
                 const resp = await fetch(url);
@@ -647,7 +655,7 @@ def create_archive_html(project_name='procedure'):
             }}
 
             // Plot: fetch .parquet, decode, build Plotly figure
-            const rawUrl = meta.file || (pid + '/plots/' + id + '.parquet');
+            const rawUrl = defaultSidecarUrl();
             const url = rawUrl.startsWith('/') || rawUrl.startsWith('http') ? rawUrl : '../' + rawUrl;
             const resp = await fetch(url);
             if (!resp.ok) throw new Error('HTTP ' + resp.status + ' fetching ' + url + ' — open via HTTP server (serve_html.ps1 or GitHub Pages)');
@@ -1453,14 +1461,17 @@ def create_archive_html(project_name='procedure'):
                     const logHead = await fetch('../' + logFile, {{ method: 'HEAD' }}).catch(() => null);
                     if (logHead?.ok)
                         meta[pid + '_log'] = {{ title: pid + ' Log', path: [pid, 'log'], type: 'log', file: logFile }};
-                    const plotsResp = await fetch('../' + pid + '/plots/?_=' + Date.now()).catch(() => null);
-                    if (!plotsResp?.ok) continue;
-                    const plotsHtml = await plotsResp.text();
-                    const pqMatches = [...plotsHtml.matchAll(/href="([^"?#]+\\.parquet)"/g)];
-                    for (const m of pqMatches) {{
-                        const plotId = m[1].replace(/\\.parquet$/, '');
-                        const plotName = plotId.startsWith(pid + '_') ? plotId.slice(pid.length + 1) : plotId;
-                        meta[plotId] = {{ title: plotId, path: [pid, plotName], type: 'plot' }};
+                    for (const folder of ['plots', 'tables', 'results']) {{
+                        const folderResp = await fetch('../' + pid + '/' + folder + '/?_=' + Date.now()).catch(() => null);
+                        if (!folderResp?.ok) continue;
+                        const folderHtml = await folderResp.text();
+                        const pqMatches = [...folderHtml.matchAll(/href="([^"?#]+\.parquet)"/g)];
+                        for (const m of pqMatches) {{
+                            const fileName = m[1].replace(/\.parquet$/, '');
+                            const plotName = fileName.startsWith(pid + '_') ? fileName.slice(pid.length + 1) : fileName;
+                            const key = folder === 'tables' ? fileName + '__table' : fileName;
+                            meta[key] = {{ title: fileName, path: [pid, plotName], type: folder === 'tables' ? 'table' : (folder === 'results' ? 'result' : 'plot'), file: pid + '/' + folder + '/' + fileName + '.parquet' }};
+                        }}
                     }}
                 }}
                 const gHead = await fetch('{project_name}.log.parquet', {{ method: 'HEAD' }}).catch(() => null);
@@ -1530,6 +1541,10 @@ def update_archive(archive_path, participant_id, plot_id, plot_title, tree_path,
     archive_dir = os.path.dirname(archive_path)
     archive_root = os.path.dirname(archive_dir) if os.path.basename(archive_dir) == '.bin' else archive_dir
     os.makedirs(archive_dir, exist_ok=True)
+    rel_norm = (relative_file or '').replace('\\', '/')
+    is_table = '/tables/' in rel_norm or rel_norm.endswith('/tables')
+    is_result = '/results/' in rel_norm or rel_norm.endswith('/results')
+    archive_plot_id = f'{plot_id}__table' if is_table else plot_id
     
     # Lock lives next to the HTML — always accessible
     import hashlib, time
@@ -1553,11 +1568,11 @@ def update_archive(archive_path, participant_id, plot_id, plot_title, tree_path,
         existing_meta = load_or_create_archive(archive_path)
         
         # Update metadata entry
-        existing_meta[plot_id] = {
+        existing_meta[archive_plot_id] = {
             'title': plot_title,
             'path': tree_path,
-            'type': 'plot',
-            'file': relative_file or f'{participant_id}/plots/{plot_id}.parquet'
+            'type': 'table' if is_table else ('result' if is_result else 'plot'),
+            'file': relative_file or f'{participant_id}/{"tables" if is_table else ("results" if is_result else "plots")}/{plot_id}.parquet'
         }
         # Write {project}_meta.json inside .bin/ (polled by open browser tabs for live updates)
         _write_meta_json(archive_dir, existing_meta, _meta_filename(archive_path))

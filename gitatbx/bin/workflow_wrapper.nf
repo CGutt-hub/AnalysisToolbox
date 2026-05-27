@@ -82,8 +82,12 @@ workflow participant_discovery {
         if (params.l2_analyses) {
             def l2_dir  = new File("${workflow.launchDir}/${params.output_dir}", "${params.project_name}_l2")
             def l2_plots_dir = new File(l2_dir, "plots")
+            def l2_tables_dir = new File(l2_dir, "tables")
+            def l2_results_dir = new File(l2_dir, "results")
             l2_dir.mkdirs()
             l2_plots_dir.mkdirs()
+            l2_tables_dir.mkdirs()
+            l2_results_dir.mkdirs()
             // l2 log is a .log.parquet written live by IOInterface bash block — no text file needed here
         }
 
@@ -874,14 +878,12 @@ except Exception:
                 fi
             fi
 
-            # Register in HTML archive (plots and results only — table outputs are raw data files)
-            if [ "\$IS_TABLE" != "true" ]; then
-                local REG_TMP=\$(mktemp)
-                ${env_exe} -u "${workflow.launchDir}/${params.interactive_plotter_script}" "\$FILE" "\$PROCEDURE_FOLDER" "\$PREFIX" "\$PROJECT_NAME" "\$CONTEXT_PLOT_DIR" 2>&1 | \
-                    while IFS= read -r line; do printf "%s %s\\n" "\$(date '+%Y-%m-%d %H:%M:%S')" "\$line"; done > "\$REG_TMP"
-                ${env_exe} -u "${logWriter}" "\$LOG_FILE" "\$REG_TMP"
-                rm -f "\$REG_TMP"
-            fi
+            # Register all published parquets in the HTML archive, including raw tables.
+            local REG_TMP=$(mktemp)
+            ${env_exe} -u "${workflow.launchDir}/${params.interactive_plotter_script}" "\$FILE" "\$PROCEDURE_FOLDER" "\$PREFIX" "\$PROJECT_NAME" "\$CONTEXT_PLOT_DIR" 2>&1 | \
+                while IFS= read -r line; do printf "%s %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "\$line"; done > "\$REG_TMP"
+            ${env_exe} -u "${logWriter}" "\$LOG_FILE" "\$REG_TMP"
+            rm -f "\$REG_TMP"
         }
 
         # Detect whether any subfolder contains parquet files.
