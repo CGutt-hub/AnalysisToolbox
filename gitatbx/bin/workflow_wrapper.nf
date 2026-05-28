@@ -847,9 +847,13 @@ process IOInterface {
         _publish_parquet() {
             local FILE="\$1"
             local BASENAME=\$(basename "\$FILE")
-            # For result and table processes, strip _result suffix so published file has clean name
+            # For result and table processes, strip _result suffix so published file has clean name.
+            # Only add .parquet back when _result.parquet was actually present; otherwise keep name as-is
+            # to avoid producing double-extension files (e.g. foo.parquet.parquet).
             if [ "\$IS_RESULT" = "true" ] || [ "\$IS_TABLE" = "true" ]; then
-                BASENAME="\${BASENAME%_result.parquet}.parquet"
+                case "\$BASENAME" in
+                    *_result.parquet) BASENAME="\${BASENAME%_result.parquet}.parquet" ;;
+                esac
                 # Copy file to results/ or tables/ folder for curated outputs
                 mkdir -p "\$CONTEXT_PLOT_DIR"
                 cp "\$FILE" "\$CONTEXT_PLOT_DIR/\$BASENAME" 2>/dev/null || true
@@ -914,9 +918,11 @@ except Exception:
                         *_result.parquet) ;;
                         *)
                             # Group-level result processes often emit canonical names
-                            # (e.g., *_anova.parquet) without _result suffix.
-                            # Publish those when they are newly produced outputs,
-                            # but still skip any staged input files.
+                            # (e.g., *_anova.parquet, *_summary.parquet) without _result suffix.
+                            # Publish only those curated result files to results/; raw combined
+                            # data tables (e.g. *_binned.parquet) are skipped here — they are
+                            # not useful in results/ and are already available in per-participant
+                            # tables/ folders.
                             if [ "\$IS_GROUP" = "true" ] && [ "\$IS_RESULT" = "true" ]; then
                                 case "\$STAGED_BASENAMES" in
                                     *"|\$OUT_FILE|"*) continue ;;
