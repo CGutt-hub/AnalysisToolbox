@@ -923,7 +923,7 @@ except Exception:
                             # data tables (e.g. *_binned.parquet) are skipped here — they are
                             # not useful in results/ and are already available in per-participant
                             # tables/ folders.
-                            if [ "\$IS_GROUP" = "true" ] && [ "\$IS_RESULT" = "true" ]; then
+                            if [ "\$IS_GROUP" = "true" ] && { [ "\$IS_RESULT" = "true" ] || [ "\$IS_TABLE" = "true" ]; }; then
                                 case "\$STAGED_BASENAMES" in
                                     *"|\$OUT_FILE|"*) continue ;;
                                     *) ;;
