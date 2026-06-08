@@ -83,6 +83,18 @@ def correlation_analyze(
     metrics_df = pl.read_parquet(metrics_path)
     labels_df  = pl.read_parquet(labels_path)
 
+    # ── Resolve signal pointer files (folder of per-condition epoch parquets) ──
+    if 'signal' in metrics_df.columns and 'folder_path' in metrics_df.columns:
+        import glob as _glob
+        folder = str(metrics_df['folder_path'][0])
+        log_info(f"Detected signal file — resolving from folder: {folder}")
+        data_files = sorted(_glob.glob(os.path.join(folder, "*.parquet")))
+        if not data_files:
+            log_warning(f"Signal folder is empty: {folder}, no data to correlate")
+        else:
+            metrics_df = pl.concat([pl.read_parquet(f) for f in data_files], how='diagonal')
+            log_info(f"Loaded {len(data_files)} files from signal folder ({len(metrics_df)} rows)")
+
     # ── Normalise input format ──────────────────────────────────────────
     if _is_plot_spec(metrics_df):
         log_info("Detected plot-spec format — converting to tidy table")

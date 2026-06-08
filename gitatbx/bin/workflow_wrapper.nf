@@ -924,6 +924,9 @@ except Exception:
                             # not useful in results/ and are already available in per-participant
                             # tables/ folders.
                             if [ "\$IS_GROUP" = "true" ] && { [ "\$IS_RESULT" = "true" ] || [ "\$IS_TABLE" = "true" ]; }; then
+                                case "\$OUT_FILE" in
+                                    *_binned.parquet) continue ;;
+                                esac
                                 case "\$STAGED_BASENAMES" in
                                     *"|\$OUT_FILE|"*) continue ;;
                                     *) ;;

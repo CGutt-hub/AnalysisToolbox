@@ -77,8 +77,8 @@ def bootstrap_analyze(ip: str, group_col: str = 'condition', sample_col: str | N
         if not candidates:
             print(f"[bootstrap] ERROR: No value column found"); sys.exit(1)
         value_col = candidates[0]
-    # 'auto_multi' is handled after group detection (bootstraps all non-meta columns)
-    if value_col != 'auto_multi' and value_col not in df.columns:
+    # 'auto_multi' and 'auto_multi_by_col' are handled in their own blocks below
+    if value_col not in ('auto_multi', 'auto_multi_by_col') and value_col not in df.columns:
         print(f"[bootstrap] ERROR: Value column '{value_col}' not found"); sys.exit(1)
     
     print(f"[bootstrap] Columns: group={group_col}, sample={sample_col}, value={value_col}")
@@ -98,7 +98,11 @@ def bootstrap_analyze(ip: str, group_col: str = 'condition', sample_col: str | N
 
     groups = sorted(df[group_col].unique().to_list())
     print(f"[bootstrap] Processing {len(groups)} groups")
-    
+
+    # auto_multi_by_col is handled in its own block below; skip the per-group loop.
+    if value_col == 'auto_multi_by_col':
+        groups = []  # prevents the per-group loop from running
+
     for idx, grp in enumerate(groups):
         grp_df = df.filter(pl.col(group_col) == grp)
         
@@ -167,12 +171,69 @@ def bootstrap_analyze(ip: str, group_col: str = 'condition', sample_col: str | N
             'y_label': [y_label],
             'y_ticks': [y_lim] if y_lim is not None else [None]
         }).write_parquet(os.path.join(out_folder, f"{base}_{suffix}{idx+1}.parquet"))
-    
+
+    # ── auto_multi_by_col: pivot so each output file = one column (band/ROI),
+    # x_data = conditions.  This makes concatenating_processor produce
+    # x_data=conditions + labels=bands, matching the pilot's per-band format.
+    if value_col == 'auto_multi_by_col':
+        groups_bc = sorted(df[group_col].unique().to_list())
+        meta_bc = {'time', 'sfreq', group_col, sample_col, 'source', 'folder_path', 'signal', 'conditions'}
+        cols_bc = sorted([c for c in df.columns if c not in meta_bc])
+        if not cols_bc:
+            log_error("auto_multi_by_col: no value columns found"); sys.exit(1)
+        print(f"[bootstrap] auto_multi_by_col: {cols_bc} across {len(groups_bc)} conditions")
+        for cidx, vcol in enumerate(cols_bc):
+            cond_labels, means, errors, ci_los, ci_his = [], [], [], [], []
+            for grp in groups_bc:
+                grp_df = df.filter(pl.col(group_col) == grp)
+                sample_agg = grp_df.group_by(sample_col).agg(pl.col(vcol).mean().alias('mean_val'))
+                sample_vals = sample_agg['mean_val'].to_numpy().astype(float)
+                n_s = len(sample_vals)
+                if n_s < 2:
+                    log_warning(f"{vcol}/{grp}: <2 samples, skipping"); continue
+                rng = np.random.default_rng(seed=42)
+                boot_means = np.array([np.mean(rng.choice(sample_vals, size=n_s, replace=True)) for _ in range(n_boot)])
+                obs = float(np.mean(sample_vals))
+                if ci_method == 'percentile':
+                    clo, chi = float(np.percentile(boot_means, 100*alpha/2)), float(np.percentile(boot_means, 100*(1-alpha/2)))
+                elif ci_method == 'bca':
+                    z0 = stats.norm.ppf(np.sum(boot_means < obs) / n_boot)
+                    jm = np.array([np.mean(np.delete(sample_vals, i)) for i in range(n_s)])
+                    jmean = np.mean(jm)
+                    num, denom = np.sum((jmean - jm)**3), 6*(np.sum((jmean - jm)**2)**1.5)
+                    a = num/denom if denom > 0 else 0
+                    zl, zu = stats.norm.ppf(alpha/2), stats.norm.ppf(1-alpha/2)
+                    pl_ = stats.norm.cdf(z0+(z0+zl)/(1-a*(z0+zl))) if abs(a*(z0+zl)) < 1 else alpha/2
+                    pu_ = stats.norm.cdf(z0+(z0+zu)/(1-a*(z0+zu))) if abs(a*(z0+zu)) < 1 else 1-alpha/2
+                    clo, chi = float(np.percentile(boot_means, 100*pl_)), float(np.percentile(boot_means, 100*pu_))
+                else:
+                    z_c, bse = stats.norm.ppf(1-alpha/2), float(np.std(boot_means, ddof=1))
+                    clo, chi = obs - z_c*bse, obs + z_c*bse
+                err = max(abs(chi - obs), abs(obs - clo))
+                cond_labels.append(str(grp)); means.append(obs); errors.append(err)
+                ci_los.append(clo); ci_his.append(chi)
+                print(f"[bootstrap]   {vcol}/{grp}: {obs:.3f} CI=[{clo:.3f},{chi:.3f}] (n={n_s})")
+            if not means:
+                log_warning(f"{vcol}: no conditions had enough samples, skipping"); continue
+            pl.DataFrame({
+                'condition': [vcol],
+                'x_data': [cond_labels],
+                'y_data': [means],
+                'y_var': [errors],
+                'ci_lower': [ci_los],
+                'ci_upper': [ci_his],
+                'plot_type': ['bar'],
+                'x_label': ['Condition'],
+                'y_label': [y_label],
+                'y_ticks': [y_lim] if y_lim is not None else [None]
+            }).write_parquet(os.path.join(out_folder, f"{base}_{suffix}col{cidx+1}.parquet"))
+
     signal_path = os.path.join(os.getcwd(), f"{base}_{suffix}.parquet")
+    n_outputs = len(cols_bc) if value_col == 'auto_multi_by_col' else len(groups)
     pl.DataFrame({
         'signal': [1],
         'source': [os.path.basename(ip)],
-        'conditions': [len(groups)],
+        'conditions': [n_outputs],
         'folder_path': [os.path.abspath(out_folder)]
     }).write_parquet(signal_path, compression='snappy')
     print(f"[bootstrap] Output: {signal_path}")
