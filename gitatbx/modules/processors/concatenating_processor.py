@@ -213,17 +213,24 @@ def _parse_items(items: list[str]) -> tuple[list[str], list[str]]:
     return files, labels
 
 
-if __name__ == '__main__': (lambda a:
-    (lambda items, out_base: (
-        (lambda files, labels: (
-            (lambda pid, out_path: (
-                (lambda result: (
-                    result.write_parquet(out_path, compression='snappy'),
-                    print(f"[concatenating] Concatenated {len(files)} files -> {out_path}"),
-                    print(out_path)
-                ))(concat_generic(files, labels))
-            ))(extract_pid(files[0]) if files else '', 
-               os.path.join(os.getcwd(), f"{extract_pid(files[0]) + '_' if files and extract_pid(files[0]) else ''}{out_base}.parquet"))
-        ))(*_parse_items(items))
-    ))(a[1:-1], a[-1]) if len(a) >= 3 else (print(f"Aggregate multiple condition parquets into single plot-ready output.\n[concatenating] Usage: python {a[0]} <path1> <path2> ... <out_basename> OR <label1:path1> <label2:path2> ... <out_basename> OR labels=L1,L2,... <path1> <path2> ... <out_basename>"), sys.exit(1))
-)(sys.argv)
+if __name__ == '__main__':
+    _a = sys.argv
+    if len(_a) < 3:
+        print(
+            f"Aggregate multiple condition parquets into single plot-ready output.\n"
+            f"[concatenating] Usage: python {_a[0]} <path1> <path2> ... <out_basename> "
+            f"OR <label1:path1> <label2:path2> ... <out_basename> "
+            f"OR labels=L1,L2,... <path1> <path2> ... <out_basename>"
+        )
+        sys.exit(1)
+    _items, _out_base = _a[1:-1], _a[-1]
+    _files, _labels = _parse_items(_items)
+    _pid = extract_pid(_files[0]) if _files else ''
+    _out_path = os.path.join(
+        os.getcwd(),
+        f"{_pid + '_' if _files and _pid else ''}{_out_base}.parquet",
+    )
+    _result = concat_generic(_files, _labels)
+    _result.write_parquet(_out_path, compression='snappy')
+    print(f"[concatenating] Concatenated {len(_files)} files -> {_out_path}")
+    print(_out_path)

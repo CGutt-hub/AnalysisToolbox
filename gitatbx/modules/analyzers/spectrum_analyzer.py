@@ -1,22 +1,28 @@
-﻿"""Power Spectrum Analyzer - Mean power spectral density (dB) from epoched EEG data.
+"""Power Spectrum Analyzer - Mean power spectral density from epoched EEG data.
 
-Takes epoch-level EEG data, computes per-epoch Welch/FFT PSD, then averages across
-epochs per condition.  Replaces the earlier circular-phase approach which produced
-uninterpretable wrapped-phase plots.
+Takes epoch-level EEG data, computes per-epoch Welch PSD, then averages across
+epochs per condition.
 
 Outputs per-condition plot-ready parquets with:
-  x_data: frequency axis (Hz, 0–max_freq)
-  y_data: mean PSD across epochs (µV²/Hz, linear)
-  y_var:  None (no shaded band — variance across EEG epochs is not meaningful here)
+  x_data: frequency axis (Hz, 0-max_freq)
+  y_data: mean PSD across epochs (uV2/Hz, linear)
+  y_var:  None
 
 Supports both channel mode (averages all channels) and region mode (per-ROI).
 
+Optional label binning: when a labels parquet is supplied the 'condition' column
+(which may contain raw trial IDs) is mapped to valence/arousal condition bins before
+grouping.  Each epoch contributes to both its valence bin AND its arousal bin
+independently.
+
 Usage:
-    phase_analyzer.py <epochs.parquet> [channels] [regions_dict] [max_freq=45]
+    spectrum_analyzer.py <epochs.parquet> [channels|None] [regions_dict|None]
+        [max_freq=45] [labels.parquet|None] [val_thr=5] [ar_thr=5] [neutral_band=1.0]
 
 Examples:
     spectrum_analyzer.py eeg_epoched.parquet None None 45
-    spectrum_analyzer.py eeg_epoched.parquet None '{"Frontal":["F3","F4"],"Parietal":["P3","P4"]}' 45
+    spectrum_analyzer.py eeg_epoched.parquet None '{"Frontal":["F3","F4"]}' 45
+    spectrum_analyzer.py eeg_windowed.parquet None None 45 labels.parquet 5 5 1.0
 """
 import polars as pl, numpy as np, sys, ast, os
 from scipy.signal import welch as scipy_welch
@@ -27,17 +33,64 @@ def log_warning(msg): print(f"[spectrum] WARNING: {msg}")
 def log_error(msg):   print(f"[spectrum] ERROR: {msg}")
 
 
+def _build_condition_map(labels_path: str,
+                         val_thr: float,
+                         ar_thr: float,
+                         neutral_band: float) -> dict:
+    """Return {trial_id: [bin_label, ...]} from a labels parquet.
+
+    Each trial maps to one valence bin AND one arousal bin so that PSD
+    averages are computed independently per dimension.
+    """
+    lbl = pl.read_parquet(labels_path)
+    required = {'trial_id', 'valence', 'arousal'}
+    missing = required - set(lbl.columns)
+    if missing:
+        log_error(f"Labels parquet missing columns: {missing}"); sys.exit(1)
+
+    mapping = {}
+    for row in lbl.select(['trial_id', 'valence', 'arousal']).iter_rows(named=True):
+        tid = str(row['trial_id'])
+        v   = float(row['valence'])
+        a   = float(row['arousal'])
+        bins = []
+        if v >= val_thr + neutral_band:
+            bins.append('valence_high')
+        elif v <= val_thr - neutral_band:
+            bins.append('valence_low')
+        elif neutral_band > 0:
+            bins.append('valence_neutral')
+        if a >= ar_thr + neutral_band:
+            bins.append('arousal_high')
+        elif a <= ar_thr - neutral_band:
+            bins.append('arousal_low')
+        elif neutral_band > 0:
+            bins.append('arousal_neutral')
+        mapping[tid] = bins
+    return mapping
+
+
 def compute_spectrum(ip: str,
-                  channels: list | None = None,
-                  regions: dict | None = None,
-                  max_freq: float = 45.0) -> str:
-    """Compute mean power spectral density (µV²/Hz) per condition from epoched EEG.
+                     channels=None,
+                     regions=None,
+                     max_freq: float = 45.0,
+                     labels_path=None,
+                     val_thr: float = 5.0,
+                     ar_thr: float = 5.0,
+                     neutral_band: float = 1.0) -> str:
+    """Compute mean PSD (uV2/Hz) per condition from epoched EEG.
 
     Args:
-        ip:        Input parquet [condition, epoch_id, time, channel_cols...]
-        channels:  Optional list of channels to use (ignored when regions given)
-        regions:   Optional dict of ROI â†’ channel list for per-region output
-        max_freq:  Upper frequency limit for output (default 45 Hz)
+        ip:           Input parquet [condition, epoch_id, time, channel_cols...]
+        channels:     Optional list of channels (ignored when regions given)
+        regions:      Optional dict of ROI -> channel list
+        max_freq:     Upper frequency limit (default 45 Hz)
+        labels_path:  Optional labels parquet [trial_id, valence, arousal].
+                      When supplied, the condition column (trial IDs) is replaced
+                      by valence/arousal bins before grouping.
+        val_thr:      Valence threshold for binning
+        ar_thr:       Arousal threshold for binning
+        neutral_band: Half-width of neutral zone around threshold
 
     Returns:
         Path to signal file pointing at per-condition output folder.
@@ -49,68 +102,84 @@ def compute_spectrum(ip: str,
     df = pl.read_parquet(ip)
 
     if len(df) == 0:
-        log_error("Empty input â€” no epochs to process, halting branch.")
+        log_error("Empty input -- no epochs to process, halting branch.")
         sys.exit(1)
+
+    # -- Optional label binning --
+    condition_map = None
+    if labels_path and labels_path not in ('None', 'null', ''):
+        if not os.path.exists(labels_path):
+            log_error(f"Labels file not found: {labels_path}"); sys.exit(1)
+        condition_map = _build_condition_map(labels_path, val_thr, ar_thr, neutral_band)
+        all_bins = sorted(set(b for bins in condition_map.values() for b in bins))
+        log_info(f"Label binning: {len(condition_map)} trials -> {all_bins}")
 
     ch_names = [c for c in df.columns if c not in ('condition', 'epoch_id', 'time')]
 
-    # Determine mode
     region_mode = isinstance(regions, dict) and len(regions) > 0
     if not region_mode:
         if channels:
             ch_names = [c for c in ch_names if c in channels]
-        regions_dict: dict = {}
+        regions_dict = {}
     else:
-        regions_dict = regions  # type: ignore[assignment]
+        regions_dict = regions
 
-    # Detect sampling frequency from first epoch
+    # Detect sampling frequency
     first_epoch = df.filter(pl.col('epoch_id') == df['epoch_id'][0])
     times = first_epoch['time'].to_numpy()
     dt = float(times[1] - times[0]) if len(times) > 1 else 1.0 / 256.0
     sfreq = 1.0 / dt
     n_times = len(times)
 
-    # Welch segment length = 1 second → exactly 1 Hz frequency resolution,
-    # so the x-axis ticks are natural numbers (1, 2, 3, … Hz).
-    # Enough segments per epoch (>100 at 250 Hz / 120 s) for smooth averaging.
     nperseg = min(int(sfreq), n_times // 2)
-    # Compute frequency axis from Welch (not rfftfreq) so it exactly matches output
     _f_ref = scipy_welch(np.zeros(n_times), fs=sfreq, nperseg=nperseg)[0]
     fmask = (_f_ref >= 1.0) & (_f_ref <= max_freq)
     freq_vals = _f_ref[fmask].tolist()
 
     epoch_ids = df['epoch_id'].unique().to_list()
-    conds = sorted(set(
-        str(df.filter(pl.col('epoch_id') == eid)['condition'][0])
-        for eid in epoch_ids
-    ))
 
+    # Build condition -> epoch_ids (with optional bin remapping)
+    if condition_map is not None:
+        cond_to_eids = {}
+        skipped = 0
+        for eid in epoch_ids:
+            trial_id = str(df.filter(pl.col('epoch_id') == eid)['condition'][0])
+            bins = condition_map.get(trial_id, [])
+            if not bins:
+                skipped += 1
+            for cbin in bins:
+                cond_to_eids.setdefault(cbin, []).append(eid)
+        if skipped:
+            log_warning(f"{skipped} epoch(s) had no matching label -- skipped")
+    else:
+        cond_to_eids = {}
+        for eid in epoch_ids:
+            c = str(df.filter(pl.col('epoch_id') == eid)['condition'][0])
+            cond_to_eids.setdefault(c, []).append(eid)
+
+    conds = sorted(cond_to_eids.keys())
     log_info(f"Data: {len(epoch_ids)} epochs, {len(conds)} conditions, {sfreq:.1f} Hz")
 
     base = os.path.splitext(os.path.basename(ip))[0]
     out_folder = os.path.join(os.getcwd(), f"{base}_spectrum")
     os.makedirs(out_folder, exist_ok=True)
 
-    def _psd_for_channels(eids: list, ch_list: list) -> list | None:
-        """Mean Welch PSD (µV²/Hz) across epochs for a set of channels."""
+    def _psd_for_channels(eids, ch_list):
         epoch_psds = []
         for eid in eids:
             epoch_df = df.filter(pl.col('epoch_id') == eid)
             avail = [ch for ch in ch_list if ch in epoch_df.columns]
             if not avail:
                 continue
-            # Average channels first, then compute Welch PSD
             composite = np.mean([epoch_df[ch].to_numpy() for ch in avail], axis=0)
             _, psd = scipy_welch(composite, fs=sfreq, nperseg=nperseg)
             epoch_psds.append(psd[fmask])
         if not epoch_psds:
             return None
-        arr = np.array(epoch_psds)           # shape: (n_epochs, n_freqs)
-        mean_psd = np.mean(arr, axis=0).tolist()
-        return mean_psd
+        return np.mean(np.array(epoch_psds), axis=0).tolist()
 
     for idx, cond in enumerate(conds):
-        cond_eids = df.filter(pl.col('condition') == cond)['epoch_id'].unique().to_list()
+        cond_eids = cond_to_eids[cond]
 
         if region_mode:
             rows = []
@@ -119,16 +188,15 @@ def compute_spectrum(ip: str,
                 if result is None:
                     log_warning(f"No valid epochs for region '{rname}', condition '{cond}'")
                     continue
-                mean_psd = result
                 rows.append({
                     'condition': cond,
                     'region': rname,
                     'x_data': freq_vals,
-                    'y_data': mean_psd,
+                    'y_data': result,
                     'y_var': None,
                     'plot_type': 'line',
                     'x_label': 'Frequency (Hz)',
-                    'y_label': 'Power (µV²/Hz)',
+                    'y_label': 'Power (uV2/Hz)',
                     'y_ticks': None,
                 })
             if rows:
@@ -139,15 +207,14 @@ def compute_spectrum(ip: str,
             if result is None:
                 log_warning(f"No valid epochs for condition '{cond}'")
                 continue
-            mean_psd = result
             pl.DataFrame([{
                 'condition': cond,
                 'x_data': freq_vals,
-                'y_data': mean_psd,
+                'y_data': result,
                 'y_var': None,
                 'plot_type': 'line',
                 'x_label': 'Frequency (Hz)',
-                'y_label': 'Power (µV²/Hz)',
+                'y_label': 'Power (uV2/Hz)',
                 'y_ticks': None,
             }]).write_parquet(os.path.join(out_folder, f"{base}_spectrum{idx+1}.parquet"))
 
@@ -166,14 +233,36 @@ def compute_spectrum(ip: str,
 
 
 if __name__ == '__main__':
-    (lambda a: compute_spectrum(
-        a[1],
-        ast.literal_eval(a[2]) if len(a) > 2 and a[2] not in ('None', 'null', '') else None,
-        ast.literal_eval(a[3]) if len(a) > 3 and a[3] not in ('None', 'null', '') else None,
-        float(a[4]) if len(a) > 4 and a[4] else 45.0,
-    ) if len(a) >= 2 else (
-        print('[spectrum] Mean power spectrum (µV²/Hz) per condition. Plot-ready output.'),
-        print('[spectrum] Usage: spectrum_analyzer.py <epochs.parquet> [channels] [regions_dict] [max_freq=45]'),
-        sys.exit(1),
-    ))(sys.argv)
+    a = sys.argv
+    if len(a) < 2:
+        print('[spectrum] Mean PSD per condition. Plot-ready output.')
+        print('[spectrum] Usage: spectrum_analyzer.py <epochs.parquet>')
+        print('[spectrum]   [labels.parquet|None] [channels|None] [regions_dict|None]')
+        print('[spectrum]   [max_freq=45] [val_thr=5] [ar_thr=5] [neutral_band=1.0]')
+        print('[spectrum] When the second positional arg is an existing .parquet file it')
+        print('[spectrum] is treated as a labels file; otherwise it is treated as channels.')
+        sys.exit(1)
 
+    epochs = a[1]
+
+    # Auto-detect whether the second arg is a labels file (existing parquet)
+    # or a channels specification string.  This keeps backward-compatibility with
+    # the EV1 pipeline which passes channels as the second positional arg.
+    idx = 2
+    labels = None
+    if len(a) > 2 and a[2].endswith('.parquet') and os.path.exists(a[2]):
+        labels = a[2]
+        idx = 3   # labels consumed; channels/regions/max_freq follow
+
+    def _get(i, default=None):
+        v = a[i] if len(a) > i else None
+        return None if v in (None, 'None', 'null', '') else v
+
+    channels = ast.literal_eval(_get(idx)) if _get(idx) else None
+    regions  = ast.literal_eval(_get(idx + 1)) if _get(idx + 1) else None
+    max_freq = float(_get(idx + 2)) if _get(idx + 2) else 45.0
+    val_thr  = float(_get(idx + 3)) if _get(idx + 3) else 5.0
+    ar_thr   = float(_get(idx + 4)) if _get(idx + 4) else 5.0
+    nb       = float(_get(idx + 5)) if _get(idx + 5) else 1.0
+
+    compute_spectrum(epochs, channels, regions, max_freq, labels, val_thr, ar_thr, nb)

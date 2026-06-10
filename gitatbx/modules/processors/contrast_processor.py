@@ -49,7 +49,7 @@ def contrast_process(ip: str, contrasts_str: str) -> str:
                              'se': pl.Float64, 'tvalue': pl.Float64}).write_parquet(out_file, compression='snappy')
         return out_file
     result_df = pl.DataFrame(results)
-    result_df = pl.DataFrame(results)
+    result_df = result_df.with_columns(pl.lit('bar').alias('plot_type'))
     result_df.write_parquet(out_file, compression='snappy')
     print(f"[contrast] Output: {out_file} ({len(results)} rows)")
     return out_file

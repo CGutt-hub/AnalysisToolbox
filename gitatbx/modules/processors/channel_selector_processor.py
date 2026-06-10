@@ -1,7 +1,5 @@
 """Channel Selector Processor - Select channels by pattern, indices, or quality criteria."""
-import sys, os, mne, warnings, re, polars as pl
-import numpy as np
-from typing import cast
+import sys, os, mne, warnings, re
 warnings.filterwarnings('ignore', message='.*does not conform to MNE naming conventions.*')
 
 # Logging helpers
