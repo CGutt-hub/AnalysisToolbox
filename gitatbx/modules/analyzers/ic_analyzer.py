@@ -1,6 +1,5 @@
 """ICA Analyzer - Perform ICA on EEG data, output cleaned .fif and component variance."""
-import polars as pl, mne, sys, os, json, warnings
-import numpy as np
+import polars as pl, mne, sys, os, json, warnings, numpy as np
 warnings.filterwarnings('ignore', message='.*does not conform to MNE naming conventions.*')
 
 def _interpolate_channels(raw: mne.io.BaseRaw, channels: list[str]) -> mne.io.BaseRaw:

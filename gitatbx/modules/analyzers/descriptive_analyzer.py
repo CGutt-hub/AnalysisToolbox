@@ -5,12 +5,7 @@ Output: parquet with [channel, condition, mean, std, sem, median, iqr, min, max,
                        skewness, kurtosis, n, ci_95_low, ci_95_high]
 """
 from __future__ import annotations
-
-import os
-import sys
-
-import numpy as np
-import polars as pl
+import os, sys, numpy as np, polars as pl
 from scipy.stats import kurtosis, sem as scipy_sem, skew
 
 _META = {'condition', 'epoch_id', 'time', 'sfreq'}

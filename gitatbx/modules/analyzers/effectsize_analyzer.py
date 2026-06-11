@@ -8,12 +8,7 @@ Supports:
   eta_sq     — proportion of variance explained (2+ conditions, from ANOVA SS)
 """
 from __future__ import annotations
-
-import os
-import sys
-
-import numpy as np
-import polars as pl
+import os, sys, numpy as np, polars as pl
 
 _META = {'condition', 'epoch_id', 'time', 'sfreq'}
 

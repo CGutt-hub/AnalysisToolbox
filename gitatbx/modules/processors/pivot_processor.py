@@ -177,6 +177,12 @@ def multi_file_to_wide(files: list[str],
         else:
             actual_col = value_col
 
+        if 'condition' not in df.columns and 'x_data' in df.columns:
+            try:
+                df = df.explode(['x_data', actual_col]).rename({'x_data': 'condition'})
+            except Exception as e:
+                log_warning(f"Could not explode x_data in {fpath}: {e}, skipping"); continue
+
         if 'condition' not in df.columns:
             log_warning(f"No 'condition' column in {fpath}, skipping"); continue
 
@@ -230,14 +236,15 @@ if __name__ == '__main__':
         print('[pivot]          [--col-prefix <str>] [--auto-prefix] [--out-base <stem>]')
         sys.exit(1)
 
-    if a[0] == 'multi_file_to_wide':
+    if 'multi_file_to_wide' in a:
+        a = [x for x in a if x != 'multi_file_to_wide']
         files: list[str] = []
         value_col = 'y_data'
         conditions = None
         col_prefix = ''
         auto_prefix = False
         out_base = 'l2_participant_table'
-        i = 1
+        i = 0
         while i < len(a):
             if a[i] == '--value-col' and i + 1 < len(a):
                 value_col = a[i + 1]; i += 2

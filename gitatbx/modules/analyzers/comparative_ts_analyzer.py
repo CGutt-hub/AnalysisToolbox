@@ -9,13 +9,7 @@ Input:  A trigger parquet (the latest participant's data) — ensures this proce
 Output: comparative.parquet          — OLS results per group × indicator
 """
 from __future__ import annotations
-
-import glob
-import os
-import sys
-
-import numpy as np
-import polars as pl
+import glob, os, sys, numpy as np, polars as pl
 from scipy.stats import linregress
 
 TAG = "comparative_ts"

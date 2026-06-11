@@ -15,9 +15,24 @@ Consolidate-L2 mode (--consolidate-l2):
                    t-test vs 0.  Outputs a group-level heatmap (mean r) plus a
                    flat summary table.  Use this to aggregate within-participant
                    correlation results up to the group level (L2).
+
+Correlate-ratings mode (--correlate-ratings):
+                   Correlates per-trial physiology metrics against continuous
+                   ratings (e.g. DEAP valence/arousal) using Spearman (default)
+                   or Pearson.  Accepts flat tidy tables or plot-spec parquets
+                   (amplitude_analyzer / hrv_analyzer output) as the metrics
+                   file, and resolves signal pointer files automatically.
+                   Outputs a table plot-spec parquet.
+
+Usage:
+    correl_analyzer.py <file1.parquet> [file2.parquet ...] [y_lim]
+    correl_analyzer.py --consolidate-l2 <out_base> <file1.parquet> ...
+    correl_analyzer.py <metrics.parquet> <labels.parquet> \\
+        --correlate-ratings [rating_cols] [metric_cols] [method=spearman]
 """
-import polars as pl, polars.selectors as cs, sys, os, numpy as np
-from scipy.stats import pearsonr, ttest_1samp
+import polars as pl, polars.selectors as cs, sys, os, numpy as np, glob as _glob
+from scipy.stats import pearsonr, ttest_1samp, spearmanr
+from scipy import stats as _scipy_stats
 
 def log_info(msg):    print(f"[correl] INFO: {msg}")
 def log_warning(msg): print(f"[correl] WARNING: {msg}")
@@ -203,12 +218,157 @@ def consolidate_l2(files: list, out_base: str = 'l2_correl') -> str:
     return heatmap_path
 
 
+# ── Ratings-mode helpers ─────────────────────────────────────────────────────
+
+def _is_plot_spec(df: pl.DataFrame) -> bool:
+    return 'x_data' in df.columns and 'y_data' in df.columns
+
+
+def _plot_spec_to_tidy(df: pl.DataFrame, metric_name: str | None = None) -> pl.DataFrame:
+    """Convert a plot-spec parquet (bar type) to a tidy table with trial_id + metric columns."""
+    rows = []
+    for record in df.to_dicts():
+        x_lst = record.get('x_data', [])
+        y_lst = record.get('y_data', [])
+        if not x_lst and not y_lst:
+            continue
+        if isinstance(x_lst, list) and isinstance(y_lst, list) and len(x_lst) == len(y_lst):
+            for x_val, y_val in zip(x_lst, y_lst):
+                try:
+                    rows.append({'trial_id': str(x_val), metric_name or 'value': float(y_val)})
+                except (TypeError, ValueError):
+                    pass
+        elif isinstance(y_lst, list) and len(y_lst) == 1:
+            try:
+                cond = record.get('condition', '')
+                rows.append({'trial_id': cond, metric_name or 'value': float(y_lst[0])})
+            except (TypeError, ValueError):
+                pass
+        elif not isinstance(y_lst, list):
+            try:
+                cond = record.get('condition', '')
+                rows.append({'trial_id': cond, metric_name or 'value': float(y_lst)})
+            except (TypeError, ValueError):
+                pass
+    return pl.DataFrame(rows) if rows else pl.DataFrame({'trial_id': [], metric_name or 'value': []})
+
+
+def correlation_analyze(
+    metrics_path: str,
+    labels_path: str,
+    rating_cols: list | None = None,
+    metric_cols: list | None = None,
+    method: str = 'spearman',
+) -> str:
+    """Correlate per-trial physiology metrics against continuous ratings.
+
+    Accepts flat tidy tables or plot-spec parquets.  Resolves signal pointer
+    files automatically.  Outputs a table plot-spec parquet.
+    """
+    log_info(f"Correlating {os.path.basename(metrics_path)} x {os.path.basename(labels_path)}")
+    metrics_df = pl.read_parquet(metrics_path)
+    labels_df  = pl.read_parquet(labels_path)
+
+    # Resolve signal pointer (folder of per-condition epoch parquets)
+    if 'signal' in metrics_df.columns and 'folder_path' in metrics_df.columns:
+        folder = str(metrics_df['folder_path'][0])
+        log_info(f"Detected signal file — resolving from folder: {folder}")
+        data_files = sorted(_glob.glob(os.path.join(folder, "*.parquet")))
+        if not data_files:
+            log_warning(f"Signal folder is empty: {folder}")
+        else:
+            metrics_df = pl.concat([pl.read_parquet(f) for f in data_files], how='diagonal')
+            log_info(f"Loaded {len(data_files)} files from signal folder ({len(metrics_df)} rows)")
+
+    # Normalise plot-spec format to tidy
+    if _is_plot_spec(metrics_df):
+        log_info("Detected plot-spec format — converting to tidy table")
+        base_metric = os.path.splitext(os.path.basename(metrics_path))[0]
+        metrics_df = _plot_spec_to_tidy(metrics_df, base_metric)
+
+    # Normalise id column
+    if 'condition' in metrics_df.columns and 'trial_id' not in metrics_df.columns:
+        metrics_df = metrics_df.rename({'condition': 'trial_id'})
+    if 'condition' in labels_df.columns and 'trial_id' not in labels_df.columns:
+        labels_df = labels_df.rename({'condition': 'trial_id'})
+
+    labels_df = labels_df.unique(subset=['trial_id'])
+    merged = metrics_df.join(labels_df, on='trial_id', how='inner')
+    log_info(f"Joined {len(merged)} rows (metrics n={len(metrics_df)}, labels n={len(labels_df)})")
+    if len(merged) == 0:
+        log_warning("No matching trial_ids — check that conditions are named 'trial_NN'")
+
+    if rating_cols is None:
+        rating_cols = [c for c in ('valence', 'arousal', 'dominance', 'liking')
+                       if c in merged.columns]
+    else:
+        rating_cols = [c for c in rating_cols if c in merged.columns]
+
+    id_cols = {'trial_id', 'condition', 'epoch_id', 'source',
+               'valence', 'arousal', 'dominance', 'liking'}
+    numeric_types = (pl.Float32, pl.Float64, pl.Int32, pl.Int64, pl.Int16, pl.Int8,
+                     pl.UInt32, pl.UInt64, pl.UInt16, pl.UInt8)
+    if metric_cols is None:
+        metric_cols = [c for c in metrics_df.columns
+                       if c not in id_cols and merged[c].dtype in numeric_types]
+    else:
+        metric_cols = [c for c in metric_cols if c in merged.columns]
+
+    log_info(f"Metrics: {metric_cols}  |  Ratings: {rating_cols}  |  N={len(merged)}  |  method={method}")
+
+    corr_fn = _scipy_stats.spearmanr if method == 'spearman' else _scipy_stats.pearsonr
+    records = []
+    for mc in metric_cols:
+        row: dict = {'metric': mc}
+        valid_mask = merged[mc].is_not_null()
+        x = merged.filter(valid_mask)[mc].to_numpy()
+        for rc in rating_cols:
+            y = merged.filter(valid_mask)[rc].to_numpy()
+            if len(x) < 5:
+                r, p = float('nan'), float('nan')
+            else:
+                result = corr_fn(x, y)
+                r, p = float(result.statistic), float(result.pvalue)
+            row[f'{rc}_r']   = round(r, 4)
+            row[f'{rc}_p']   = round(p, 4)
+            row[f'{rc}_sig'] = '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else ''
+        records.append(row)
+
+    result_df = pl.DataFrame(records) if records else pl.DataFrame()
+    col_order = ['metric'] + [
+        f for rc in rating_cols
+        for f in (f'{rc}_r', f'{rc}_p', f'{rc}_sig')
+        if f in (result_df.columns if records else [])
+    ]
+    available_cols = [c for c in col_order if c in result_df.columns]
+    table_rows = result_df.select(available_cols).to_dicts() if records else []
+
+    base = os.path.splitext(os.path.basename(metrics_path))[0]
+    out_path = os.path.join(os.getcwd(), f"{base}_correlation.parquet")
+    pl.DataFrame({
+        'condition': ['correlation'],
+        'x_data':    [available_cols],
+        'y_data':    [[[str(v) for v in row.values()] for row in table_rows]],
+        'y_var':     [[[]]],
+        'plot_type': ['table'],
+        'x_label':   ['Metric'],
+        'y_label':   [f'{method.capitalize()} correlation (N={len(merged)})'],
+        'y_ticks':   [''],
+    }).write_parquet(out_path, compression='snappy')
+    log_info(f"Output: {out_path}")
+    print(out_path)
+    return out_path
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+
 if __name__ == '__main__':
     a = sys.argv
     if len(a) < 2:
         print('[correl] Pairwise Pearson correlations as heatmap.')
         print('[correl] Usage: correl_analyzer.py <file1.parquet> [file2.parquet ...] [y_lim]')
         print('[correl]        correl_analyzer.py --consolidate-l2 <out_base> <file1.parquet> ...')
+        print('[correl]        correl_analyzer.py <metrics.parquet> <labels.parquet> --correlate-ratings [rating_cols] [metric_cols] [method]')
         sys.exit(1)
 
     if a[1] == '--consolidate-l2':
@@ -220,6 +380,16 @@ if __name__ == '__main__':
         if not files:
             log_error("No valid parquet files provided"); sys.exit(1)
         consolidate_l2(files, out_base)
+    elif '--correlate-ratings' in a:
+        if len(a) < 3:
+            log_error("--correlate-ratings requires: <metrics.parquet> <labels.parquet> --correlate-ratings [rating_cols] [metric_cols] [method]")
+            sys.exit(1)
+        idx   = a.index('--correlate-ratings')
+        after = a[idx + 1:]
+        r_cols = after[0].split(',') if after and after[0] not in ('None', '') else None
+        m_cols = after[1].split(',') if len(after) > 1 and after[1] not in ('None', '') else None
+        meth   = after[2] if len(after) > 2 and after[2] not in ('None', '') else 'spearman'
+        correlation_analyze(a[1], a[2], r_cols, m_cols, meth)
     else:
         files, rest = [], []
         for arg in a[1:]:
