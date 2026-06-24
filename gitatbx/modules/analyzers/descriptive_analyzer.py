@@ -52,7 +52,7 @@ def descriptive_analyze(ip: str) -> str:
     result_df = pl.DataFrame(results)
     base = os.path.splitext(os.path.basename(ip))[0]
     out_file = f"{base}_descriptive.parquet"
-    result_df.write_parquet(out_file, compression='snappy')
+    result_df.write_parquet(out_file, compression='gzip')
     print(f"[descriptive] Output: {out_file} ({len(results)} rows)")
     return out_file
 

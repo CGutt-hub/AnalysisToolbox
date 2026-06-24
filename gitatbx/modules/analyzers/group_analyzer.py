@@ -159,7 +159,7 @@ def analyze_groups(ip: str, groups_config: str, y_lim: float | None = None,
         'conditions': [len(conditions)],
         'groups': [group_names],
         'folder_path': [os.path.abspath(out_folder)]
-    }).write_parquet(signal_path, compression='snappy')
+    }).write_parquet(signal_path, compression='gzip')
     
     print(f"[group] Output: {signal_path}")
     return signal_path

@@ -130,7 +130,7 @@ def determine_needed_channels(sels: list[str], all_channels: list[str]) -> list[
     return [c for c in all_channels if c in needed] if needed else all_channels
 
 def save_fif(od: pl.DataFrame, pp: str, fp: str, chs: list[str], t: np.ndarray | None, sf: float, ch_types: dict[str, str] | None) -> None:
-    od.write_parquet(pp, compression='snappy')
+    od.write_parquet(pp, compression='gzip')
     print(f"[extracting] {os.path.basename(pp)} cols={od.columns}")
     if not chs:
         mne.io.RawArray(np.array([[0.0]]), mne.create_info(['empty'], 1.0, ch_types='misc'), verbose=False).save(fp, overwrite=True, verbose=False)
@@ -213,7 +213,7 @@ def run(ip: str, sels: list[str]) -> str:
         'source': [os.path.basename(ip)],
         'streams': [len(sels)],
         'folder_path': [os.path.abspath(of)]
-    }).write_parquet(signal_path, compression='snappy')
+    }).write_parquet(signal_path, compression='gzip')
     
     print(f"[extracting] Extraction finished: {b}_extr.parquet")
     return signal_path

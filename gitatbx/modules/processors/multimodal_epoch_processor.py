@@ -53,7 +53,7 @@ def process(eeg_file: str, hrv_file: str) -> str:
 
     base = os.path.splitext(os.path.basename(eeg_file))[0]
     out_file = os.path.join(os.getcwd(), f"{base}_multimodal.parquet")
-    joined.write_parquet(out_file, compression='snappy')
+    joined.write_parquet(out_file, compression='gzip')
     print(f"[multimodal] Output: {out_file}")
     print(out_file)
     return out_file

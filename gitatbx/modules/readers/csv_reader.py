@@ -17,7 +17,7 @@ if __name__ == "__main__":
             (log_warning("CSV has no columns") if df.width == 0 else None) or
             (log_warning(f"CSV has only {df.height} row(s)") if 0 < df.height < 5 else None) or
             (log_info(f"Loaded {df.height} rows, {df.width} columns") if df.height >= 1000 else None) or
-            df.write_parquet(get_output_filename(input_csv, compression='snappy')) or
+            df.write_parquet(get_output_filename(input_csv, compression='gzip')) or
             print(f"[csv_reader] Parquet file saved: {get_output_filename(input_csv)}")
         )(pl.read_csv(input_csv))
     )

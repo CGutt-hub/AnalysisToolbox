@@ -80,7 +80,7 @@ def pivot_process(ip: str, direction: str = 'long_to_wide',
 
     base = os.path.splitext(os.path.basename(ip))[0]
     out_file = f"{base}_{suffix}.parquet"
-    df_out.write_parquet(out_file, compression='snappy')
+    df_out.write_parquet(out_file, compression='gzip')
     log_info(f"Output: {out_file} — shape {df_out.shape}")
     return out_file
 
@@ -218,7 +218,7 @@ def multi_file_to_wide(files: list[str],
         log_info(f"Modalities merged: {modalities}")
 
     out_path = os.path.join(os.getcwd(), f"{out_base}.parquet")
-    out_df.write_parquet(out_path, compression='snappy')
+    out_df.write_parquet(out_path, compression='gzip')
     log_info(f"Output: {out_path}")
     print(out_path)
     return out_path

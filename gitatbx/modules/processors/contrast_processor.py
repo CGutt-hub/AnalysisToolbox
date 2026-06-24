@@ -46,11 +46,11 @@ def contrast_process(ip: str, contrasts_str: str) -> str:
     if not results:
         print(f"[contrast] No results (empty input) — writing empty output: {out_file}")
         pl.DataFrame(schema={'channel': pl.Utf8, 'contrast': pl.Utf8, 'value': pl.Float64,
-                             'se': pl.Float64, 'tvalue': pl.Float64}).write_parquet(out_file, compression='snappy')
+                             'se': pl.Float64, 'tvalue': pl.Float64}).write_parquet(out_file, compression='gzip')
         return out_file
     result_df = pl.DataFrame(results)
     result_df = result_df.with_columns(pl.lit('bar').alias('plot_type'))
-    result_df.write_parquet(out_file, compression='snappy')
+    result_df.write_parquet(out_file, compression='gzip')
     print(f"[contrast] Output: {out_file} ({len(results)} rows)")
     return out_file
 

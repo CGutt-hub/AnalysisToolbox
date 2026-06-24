@@ -91,9 +91,9 @@ def correl_analyze(files: list, y_lim=None) -> str:
                 b = df[c2].drop_nulls().to_numpy()
                 mn = min(len(a), len(b))
                 if mn < 2: continue
-                r, p = pearsonr(a[:mn], b[:mn])
-                r_matrix[i][j] = r_matrix[j][i] = float(r)
-                p_matrix[i][j] = p_matrix[j][i] = float(p)
+                _pr = pearsonr(a[:mn], b[:mn])
+                r_matrix[i][j] = r_matrix[j][i] = float(_pr.statistic)  # type: ignore[arg-type]
+                p_matrix[i][j] = p_matrix[j][i] = float(_pr.pvalue)  # type: ignore[arg-type]
 
     base = os.path.splitext(os.path.basename(files[0]))[0]
     out_file = os.path.join(os.getcwd(), f"{base}_correl.parquet")
@@ -105,7 +105,7 @@ def correl_analyze(files: list, y_lim=None) -> str:
         'x_label':  'Measure',
         'y_label':  'Measure',
         'y_ticks':  y_lim,
-    }]).write_parquet(out_file, compression='snappy')
+    }]).write_parquet(out_file, compression='gzip')
     log_info(f"Output: {out_file} ({n} variables)")
     print(out_file)
     return out_file
@@ -176,12 +176,15 @@ def consolidate_l2(files: list, out_base: str = 'l2_correl') -> str:
 
             # One-sample t-test vs 0
             if n_part > 1:
-                t_stat, p_val = ttest_1samp(r_vals, 0.0)
+                _tt = ttest_1samp(r_vals, 0.0)
+                t_stat: float = float(_tt.statistic)  # type: ignore[arg-type]
+                p_val: float = float(_tt.pvalue)  # type: ignore[arg-type]
             else:
-                t_stat, p_val = float('nan'), float('nan')
+                t_stat = float('nan')
+                p_val = float('nan')
 
             mean_r_matrix[i][j] = mean_r_matrix[j][i] = mean_r
-            p_matrix[i][j] = p_matrix[j][i] = float(p_val)
+            p_matrix[i][j] = p_matrix[j][i] = p_val
 
             summary_rows.append({
                 'var_a':    var_names[i],
@@ -191,8 +194,8 @@ def consolidate_l2(files: list, out_base: str = 'l2_correl') -> str:
                 'se_r':     se_r,
                 'ci_lower': ci_lo,
                 'ci_upper': ci_hi,
-                't':        float(t_stat),
-                'p':        float(p_val),
+                't':        t_stat,
+                'p':        p_val,
                 'sig':      p_val < 0.05,
             })
 
@@ -206,11 +209,11 @@ def consolidate_l2(files: list, out_base: str = 'l2_correl') -> str:
         'x_label':   'Measure',
         'y_label':   'Measure',
         'y_ticks':   None,
-    }]).write_parquet(heatmap_path, compression='snappy')
+    }]).write_parquet(heatmap_path, compression='gzip')
 
     # Summary table output
     summary_path = os.path.join(os.getcwd(), f"{out_base}_summary.parquet")
-    pl.DataFrame(summary_rows).write_parquet(summary_path, compression='snappy')
+    pl.DataFrame(summary_rows).write_parquet(summary_path, compression='gzip')
 
     log_info(f"Heatmap: {heatmap_path}")
     log_info(f"Summary: {summary_path}")
@@ -327,8 +330,8 @@ def correlation_analyze(
             if len(x) < 5:
                 r, p = float('nan'), float('nan')
             else:
-                result = corr_fn(x, y)
-                r, p = float(result.statistic), float(result.pvalue)
+                _cr = corr_fn(x, y)
+                r, p = float(_cr[0]), float(_cr[1])  # type: ignore[arg-type]
             row[f'{rc}_r']   = round(r, 4)
             row[f'{rc}_p']   = round(p, 4)
             row[f'{rc}_sig'] = '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else ''
@@ -354,7 +357,7 @@ def correlation_analyze(
         'x_label':   ['Metric'],
         'y_label':   [f'{method.capitalize()} correlation (N={len(merged)})'],
         'y_ticks':   [''],
-    }).write_parquet(out_path, compression='snappy')
+    }).write_parquet(out_path, compression='gzip')
     log_info(f"Output: {out_path}")
     print(out_path)
     return out_path
@@ -391,8 +394,11 @@ if __name__ == '__main__':
         meth   = after[2] if len(after) > 2 and after[2] not in ('None', '') else 'spearman'
         correlation_analyze(a[1], a[2], r_cols, m_cols, meth)
     else:
+        _TOKENS = {'terminal', 'group_log', 'result', 'table'}
         files, rest = [], []
         for arg in a[1:]:
+            if arg in _TOKENS:
+                continue
             (files if os.path.exists(arg) else rest).append(arg)
         y_lim = float(rest[0]) if rest and rest[0].lower() != 'none' else None
         correl_analyze(files, y_lim)

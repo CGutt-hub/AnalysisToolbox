@@ -115,7 +115,7 @@ def comparative_ts_analyze(
             'y_label': [ind.replace('_', ' ').title()],
         })
         ind_path = f"{base}_{ind}.parquet"
-        ind_out.write_parquet(ind_path, compression='snappy')
+        ind_out.write_parquet(ind_path, compression='gzip')
         print(f"[{TAG}] Overlay: {ind_path}")
 
     # ── OLS per group × indicator ──────────────────────────────────────────
@@ -154,7 +154,7 @@ def comparative_ts_analyze(
 
     result_df = pl.DataFrame(records) if records else pl.DataFrame()
     out_file = f"{base}_comparative.parquet"
-    result_df.write_parquet(out_file, compression='snappy')
+    result_df.write_parquet(out_file, compression='gzip')
 
     sig_count = sum(1 for r in records if r.get('significant'))
     print(f"[{TAG}] Output: {out_file} "

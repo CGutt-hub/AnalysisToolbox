@@ -235,7 +235,7 @@ def bootstrap_analyze(ip: str, group_col: str = 'condition', sample_col: str | N
         'source': [os.path.basename(ip)],
         'conditions': [n_outputs],
         'folder_path': [os.path.abspath(out_folder)]
-    }).write_parquet(signal_path, compression='snappy')
+    }).write_parquet(signal_path, compression='gzip')
     print(f"[bootstrap] Output: {signal_path}")
     return signal_path
 

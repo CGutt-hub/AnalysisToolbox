@@ -9,7 +9,7 @@ def map_join(ip_a: str, ip_b: str, key_a: str, key_b: str) -> str:
     if key_b not in df_b.columns: print(f"[mapping] Error: Key '{key_b}' not in {ip_b}"); sys.exit(1)
     mapped = df_a.join(df_b, left_on=key_a, right_on=key_b, how='inner')
     out = f"{os.path.splitext(os.path.basename(ip_a))[0]}_mapping.parquet"
-    mapped.write_parquet(out, compression='snappy')
+    mapped.write_parquet(out, compression='gzip')
     print(f"[mapping] Output: {out} ({mapped.shape})")
     return out
 

@@ -36,7 +36,7 @@ def reject_samples(ip: str, columns: list | None = None, criterion: str = 'ampli
     # Output cleaned data
     out_file = ip.replace('.parquet', '_rej.parquet')
     df_clean = df.filter(mask)
-    df_clean.write_parquet(out_file, compression='snappy')
+    df_clean.write_parquet(out_file, compression='gzip')
     print(f"[rejection] Output: {out_file}")
     return out_file
 

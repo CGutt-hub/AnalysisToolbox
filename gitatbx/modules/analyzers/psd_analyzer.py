@@ -229,7 +229,7 @@ def compute_psd(ip: str, bands: dict, channels: list | None = None, regions: dic
         'source': [os.path.basename(ip)],
         'conditions': [len(conds)],
         'folder_path': [os.path.abspath(out_folder)]
-    }).write_parquet(signal_path, compression='snappy')
+    }).write_parquet(signal_path, compression='gzip')
     
     print(f"[psd] Output: {signal_path}")
     return signal_path

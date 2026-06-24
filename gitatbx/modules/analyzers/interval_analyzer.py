@@ -172,7 +172,7 @@ def analyze_intervals(ip: str, event_col: str | None = None, y_lim: float | None
             })
             
             out_path = os.path.join(out_folder, f"{base}_{suffix}{idx+1}.parquet")
-            output.write_parquet(out_path, compression='snappy')
+            output.write_parquet(out_path, compression='gzip')
             print(f"[interval]   {cond}: SDNN={sdnn_mean:.2f}±{sdnn_sem:.2f}, RMSSD={rmssd_mean:.2f}±{rmssd_sem:.2f} ({len(sdnn_vals)} epochs)")
     
     signal_path = os.path.join(os.getcwd(), f"{base}_{suffix}.parquet")
@@ -190,7 +190,7 @@ def analyze_intervals(ip: str, event_col: str | None = None, y_lim: float | None
             sdnn_out = epoch_df.select(['condition', 'epoch_id', pl.col('SDNN').alias('value')]).with_columns(pl.lit('SDNN').alias('metric'))
             rmssd_out = epoch_df.select(['condition', 'epoch_id', pl.col('RMSSD').alias('value')]).with_columns(pl.lit('RMSSD').alias('metric'))
             out_df = pl.concat([sdnn_out, rmssd_out])
-        out_df.write_parquet(signal_path, compression='snappy')
+        out_df.write_parquet(signal_path, compression='gzip')
         print(f"[interval] Output (flat_table): {signal_path} ({len(out_df)} rows for joining)")
     else:
         # Default: signal pointer format. Per-condition epoch files written to subfolder;
@@ -200,7 +200,7 @@ def analyze_intervals(ip: str, event_col: str | None = None, y_lim: float | None
             'source': [os.path.basename(ip)],
             'conditions': [len(conditions)],
             'folder_path': [os.path.abspath(out_folder)]
-        }).write_parquet(signal_path, compression='snappy')
+        }).write_parquet(signal_path, compression='gzip')
         print(f"[interval] Output (signal_pointer): {signal_path}")
 
     return signal_path

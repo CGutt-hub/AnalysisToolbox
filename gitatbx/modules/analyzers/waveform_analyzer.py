@@ -71,7 +71,7 @@ def analyze_waveform(ip: str, y_lim: float | None = None, y_label: str = 'Mean a
         })
         
         out_path = os.path.join(out_folder, f"{base}_{suffix}{idx+1}.parquet")
-        output.write_parquet(out_path, compression='snappy')
+        output.write_parquet(out_path, compression='gzip')
         print(f"[waveform]   {cond}: {len(result)} points -> {os.path.basename(out_path)}")
     
     signal_path = os.path.join(os.getcwd(), f"{base}_{suffix}.parquet")
@@ -80,7 +80,7 @@ def analyze_waveform(ip: str, y_lim: float | None = None, y_label: str = 'Mean a
         'source': [os.path.basename(ip)],
         'conditions': [len(conditions)],
         'folder_path': [os.path.abspath(out_folder)]
-    }).write_parquet(signal_path, compression='snappy')
+    }).write_parquet(signal_path, compression='gzip')
     
     print(f"[waveform] Output: {signal_path}")
     return signal_path

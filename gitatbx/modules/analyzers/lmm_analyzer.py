@@ -240,14 +240,14 @@ def lmm_analyze(files: list[str], dv: str = 'auto', group_col: str = 'condition'
     # ── Summary table (flat rows, one per DV) ─────────────────────────────
     out_file = os.path.join(os.getcwd(), f"{stem}_lmm.parquet")
     flat_rows = [{k: v for k, v in r.items() if k != 'contrasts'} for r in rows]
-    pl.DataFrame(flat_rows).write_parquet(out_file, compression='snappy')
+    pl.DataFrame(flat_rows).write_parquet(out_file, compression='gzip')
     log_info(f"Summary output: {out_file}")
     print(out_file)
 
     # ── Contrasts table (flat, not plot-spec — raw data) ──────────────────
     if all_contrasts:
         contrasts_file = os.path.join(os.getcwd(), f"{stem}_lmm_contrasts.parquet")
-        pl.DataFrame(all_contrasts).write_parquet(contrasts_file, compression='snappy')
+        pl.DataFrame(all_contrasts).write_parquet(contrasts_file, compression='gzip')
         log_info(f"Contrasts output: {contrasts_file}")
 
     return out_file
@@ -318,7 +318,7 @@ def consolidate_l2_lmm(files: list[str], out_base: str,
         result = result.sort(['modality', 'dv'])
 
     out_file = os.path.join(os.getcwd(), f'{out_base}.parquet')
-    result.write_parquet(out_file, compression='snappy')
+    result.write_parquet(out_file, compression='gzip')
     log_info(f"L2 LMM consolidation output: {out_file}")
     print(out_file)
     return out_file
@@ -347,8 +347,7 @@ def contextual_lmm(files: list[str],
     or pass explicit modality strings (e.g. 'eda', 'hrv', 'fai').
     """
     _META = {'condition', 'epoch_id', 'participant_id', 'region', 'source',
-             'sub_epoch_id', 'window_id', 'trial_id', 'plot_type', 'x_label',
-             'y_label', 'x_data', 'y_ticks', 'y_var', 'y_data'}
+             'sub_epoch_id', 'window_id', 'trial_id'}
     _NUMERIC = (pl.Float32, pl.Float64, pl.Int32, pl.Int64, pl.Int16, pl.Int8,
                 pl.UInt32, pl.UInt64, pl.UInt16, pl.UInt8)
 
@@ -484,10 +483,10 @@ def contextual_lmm(files: list[str],
             p_lrt    = float(chi2_dist.sf(lrt_chi2, lrt_df))
             r2_m, r2_c, icc = _nakagawa_r2(mdf_full)
 
-            def _coef(name_fragment):
-                for k in mdf_full.params.index:
+            def _coef(name_fragment, _mdf=mdf_full):
+                for k in _mdf.params.index:
                     if name_fragment in k:
-                        return float(mdf_full.params[k]), float(mdf_full.pvalues[k])
+                        return float(_mdf.params[k]), float(_mdf.pvalues[k])
                 return float('nan'), float('nan')
 
             beta_w, p_w = _coef(within_col)
@@ -519,7 +518,7 @@ def contextual_lmm(files: list[str],
 
     # ── Output as flat table — one row per DV×covariate pair ───────────────
     out_file = os.path.join(os.getcwd(), f'{out_base}.parquet')
-    pl.DataFrame(rows).write_parquet(out_file, compression='snappy')
+    pl.DataFrame(rows).write_parquet(out_file, compression='gzip')
     log_info(f"Output: {out_file} — {len(rows)} DV×covariate pair(s)")
     print(out_file)
     return out_file

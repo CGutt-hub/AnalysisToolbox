@@ -31,7 +31,7 @@ def main():
         basename = os.path.basename(input_path).replace('.parquet', '')
         parts = basename.split('_')
         pid = '_'.join(parts[:2]) if len(parts) >= 2 else 'sentinel'
-        df.write_parquet(f"{pid}_sentinel_{clean_name}.parquet", compression='snappy')
+        df.write_parquet(f"{pid}_sentinel_{clean_name}.parquet", compression='gzip')
         return
 
     # Extract participant ID from input filename (pattern: EV_NNN_...)
@@ -40,7 +40,7 @@ def main():
     pid = '_'.join(parts[:2]) if len(parts) >= 2 else 'result'
 
     output_name = f"{pid}_{clean_name}_result.parquet"
-    df.write_parquet(output_name, compression='snappy')
+    df.write_parquet(output_name, compression='gzip')
     print(f"[result_collector] {basename} -> {output_name}")
 
 

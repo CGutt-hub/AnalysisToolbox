@@ -17,7 +17,7 @@ def _empty(base: str, suffix: str) -> str:
     out = f"{base}_{suffix}.parquet"
     pl.DataFrame(schema={'channel': pl.Utf8, 'condition': pl.Utf8, 'beta': pl.Float64,
                          'tvalue': pl.Float64, 'pvalue': pl.Float64, 'se': pl.Float64}
-                 ).write_parquet(out, compression='snappy')
+                 ).write_parquet(out, compression='gzip')
     print(f"[ols] Empty output (no upstream data): {out}"); return out
 
 def ols_process(ip: str) -> str:
@@ -57,7 +57,7 @@ def ols_process(ip: str) -> str:
 
     result_df = pl.DataFrame(results)
     out_file = f"{base}_ols.parquet"
-    result_df.write_parquet(out_file, compression='snappy')
+    result_df.write_parquet(out_file, compression='gzip')
 
     print(f"[ols] Output: {out_file} ({len(results)} rows)")
     return out_file

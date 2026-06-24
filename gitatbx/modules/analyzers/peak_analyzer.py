@@ -109,12 +109,12 @@ def analyze_peaks(ip: str, method: str = 'max_abs', time_window: str | None = No
         })
         
         out_path = os.path.join(out_folder, f"{base}_{suffix}{idx+1}.parquet")
-        output.write_parquet(out_path, compression='snappy')
+        output.write_parquet(out_path, compression='gzip')
         print(f"[peak]   {cond}: {len(peak_results)} channels -> {os.path.basename(out_path)}")
         
         # Also save detailed per-channel results
         detail_path = os.path.join(out_folder, f"{base}_{suffix}{idx+1}_detail.parquet")
-        pl.DataFrame(peak_results).write_parquet(detail_path, compression='snappy')
+        pl.DataFrame(peak_results).write_parquet(detail_path, compression='gzip')
     
     signal_path = os.path.join(os.getcwd(), f"{base}_{suffix}.parquet")
     pl.DataFrame({
@@ -122,7 +122,7 @@ def analyze_peaks(ip: str, method: str = 'max_abs', time_window: str | None = No
         'source': [os.path.basename(ip)],
         'conditions': [len(conditions)],
         'folder_path': [os.path.abspath(out_folder)]
-    }).write_parquet(signal_path, compression='snappy')
+    }).write_parquet(signal_path, compression='gzip')
     
     print(f"[peak] Output: {signal_path}")
     return signal_path

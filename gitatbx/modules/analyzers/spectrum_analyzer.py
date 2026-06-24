@@ -226,7 +226,7 @@ def compute_spectrum(ip: str,
         'source': [os.path.basename(ip)],
         'conditions': [len(conds)],
         'folder_path': [os.path.abspath(out_folder)],
-    }).write_parquet(signal_path, compression='snappy')
+    }).write_parquet(signal_path, compression='gzip')
 
     log_info(f"Output: {signal_path}")
     return signal_path

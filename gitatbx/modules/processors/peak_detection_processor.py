@@ -107,7 +107,7 @@ def detect_peaks(ip: str, column: str, fs: float, method: str = 'scipy', height:
         elif len(peaks) > len(sig) * 0.5:
             log_warning(f"{len(peaks)} peaks detected ({len(peaks)/len(sig)*100:.1f}% of samples), may be over-detecting")
 
-    result.write_parquet(out_file, compression='snappy')
+    result.write_parquet(out_file, compression='gzip')
     print(f"[peak_detection] Output: {out_file} ({len(result)} peaks)")
     return out_file
 

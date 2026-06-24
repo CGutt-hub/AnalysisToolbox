@@ -55,7 +55,7 @@ def filter_signal(ip: str, col: str | None, lf: str, hf: str, fs: float = 1000.0
     result = pl.DataFrame({'time': df['time'] if 'time' in df.columns else np.arange(len(filtered))/float(fs), target.lower(): filtered, 'sfreq': [float(fs)]*len(filtered)})
     base = os.path.splitext(os.path.basename(ip))[0]
     out_file = f"{base}_filt.parquet"
-    result.write_parquet(out_file, compression='snappy')
+    result.write_parquet(out_file, compression='gzip')
     print(f"[filtering] Output: {out_file}")
     return out_file
 

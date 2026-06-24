@@ -231,6 +231,6 @@ if __name__ == '__main__':
         f"{_pid + '_' if _files and _pid else ''}{_out_base}.parquet",
     )
     _result = concat_generic(_files, _labels)
-    _result.write_parquet(_out_path, compression='snappy')
+    _result.write_parquet(_out_path, compression='gzip')
     print(f"[concatenating] Concatenated {len(_files)} files -> {_out_path}")
     print(_out_path)

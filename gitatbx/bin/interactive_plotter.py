@@ -1639,7 +1639,7 @@ def add_log_to_archive(archive_path, participant_id, log_path, log_name):
         # (each participant's finalization appends to EV.log before calling
         # add-log), so we just overwrite the parquet with the current snapshot.
         # Non-global text logs are rare (legacy) — also overwrite to be safe.
-        pl.DataFrame({'content': log_content.splitlines()}).write_parquet(sidecar_path, compression='snappy')
+        pl.DataFrame({'content': log_content.splitlines()}).write_parquet(sidecar_path, compression='gzip')
 
     # Lock lives next to HTML
     import hashlib, time
@@ -1805,8 +1805,8 @@ def run(inp, out_dir, pre, project_name='procedure', sidecar_dir=None):
     participant_plots_dir = os.path.abspath(sidecar_dir)
     os.makedirs(participant_plots_dir, exist_ok=True)
     sidecar_dest = os.path.join(participant_plots_dir, f'{pre}.parquet')
-    # Write as snappy (natively supported by hyparquet in browser, no addon needed)
-    df.write_parquet(sidecar_dest, compression='snappy')
+    # Write as GZIP (supported by hyparquet in browser)
+    df.write_parquet(sidecar_dest, compression='gzip')
     sidecar_size = os.path.getsize(sidecar_dest)
     # Safety guard: refuse to keep parquets > 5 MB in plots/ (prevents repo bloat)
     max_plot_bytes = 5 * 1024 * 1024

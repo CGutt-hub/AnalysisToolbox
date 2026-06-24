@@ -164,7 +164,7 @@ def analyze_amplitude(ip: str, method: str = 'peak_baseline', y_lim: float | Non
         'source': [os.path.basename(ip)],
         'conditions': [len(conditions)],
         'folder_path': [os.path.abspath(out_folder)]
-    }).write_parquet(signal_path, compression='snappy')
+    }).write_parquet(signal_path, compression='gzip')
     
     print(f"[amplitude] Output: {signal_path}")
     return signal_path

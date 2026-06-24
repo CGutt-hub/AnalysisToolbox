@@ -41,7 +41,7 @@ def filter_rows(ip: str, col: str, val: str, drop_col: bool = False) -> str:
 
     base = os.path.splitext(os.path.basename(ip))[0]
     out = f"{base}_{val.lower().replace(' ', '_')}_filter.parquet"
-    filtered.write_parquet(out, compression='snappy')
+    filtered.write_parquet(out, compression='gzip')
     log_info(f"Output: {out}")
     return out
 

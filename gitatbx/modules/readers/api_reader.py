@@ -146,7 +146,7 @@ def api_read(ip: str, endpoints_path: str | None = None) -> str:
 
     df = pl.DataFrame(records)
     out_file = f"{pid}_api.parquet"
-    df.write_parquet(out_file, compression="snappy")
+    df.write_parquet(out_file, compression="gzip")
 
     yr_min, yr_max = df["year"].min(), df["year"].max()
     log_info(f"Output: {out_file} ({len(records)} records, {len(indicators)} indicators, {yr_min}\u2013{yr_max})")

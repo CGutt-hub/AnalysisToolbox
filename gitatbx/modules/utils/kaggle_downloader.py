@@ -127,7 +127,7 @@ def download(
         pl.DataFrame({
             'participant_id': [pid],
             path_col:         [os.path.abspath(fpath)],
-        }).write_parquet(trigger, compression='snappy')
+        }).write_parquet(trigger, compression='gzip')
         print(trigger)
         trigger_paths.append(trigger)
 

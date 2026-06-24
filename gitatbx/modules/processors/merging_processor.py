@@ -16,7 +16,7 @@ def merge_columns(ip: list[str], keys: list[str], output_suffix: str = 'merged')
         if missing: print(f"[merging] Error: Keys {missing} not in {ip[i]}"); sys.exit(1)
     merged = functools.reduce(lambda acc, df: acc.join(df, on=keys, how='inner', suffix='_mod'), dfs[1:], dfs[0])
     out_file = f"{os.path.splitext(os.path.basename(ip[0]))[0]}_{output_suffix}.parquet"
-    merged.write_parquet(out_file, compression='snappy')
+    merged.write_parquet(out_file, compression='gzip')
     print(f"[merging] Output: {out_file} ({merged.shape})")
     return out_file
 
@@ -146,7 +146,7 @@ def merge_plot_data(ip: list[str], prefixes: list[str] | None = None, output_suf
         'x_label': ['Measure'],
         'y_label': [first_row.get('y_label', 'Value')],
         'y_ticks': [first_row.get('y_ticks')]
-    }).write_parquet(concat_path, compression='snappy')
+    }).write_parquet(concat_path, compression='gzip')
     print(f"[merging] Concatenated output: {concat_path}")
     print(concat_path)
     return concat_path

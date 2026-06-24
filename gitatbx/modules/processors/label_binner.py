@@ -232,7 +232,7 @@ def bin_physiology(
 
     base      = os.path.splitext(os.path.basename(phys_path))[0]
     out_path  = os.path.join(os.getcwd(), f"{base}_binned.parquet")
-    combined.write_parquet(out_path, compression='snappy')
+    combined.write_parquet(out_path, compression='gzip')
     n_conds = 6 if neutral_band > 0 else 4
     log_info(f"Output ({len(combined)} rows, {n_conds} conditions): {out_path}")
     print(out_path)

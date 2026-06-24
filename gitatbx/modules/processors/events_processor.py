@@ -114,7 +114,7 @@ if __name__ == '__main__': (lambda a:
                             print(f"[events] Global offset: {offset:.1f} time units"),
                             print(f"[events] Aligned {len(epochs)} epochs: {', '.join(f'{c}({sum(1 for cond,_,_ in epochs if cond==c)})' for c in sorted(set(cond for cond,_,_ in epochs)))}"),
                             (lambda out_dir: (
-                                pl.DataFrame({'data': [{c: [(st, sp) for cond, st, sp in epochs if cond == c] for c in sorted(set(cond for cond, _, _ in epochs))}]}).write_parquet(f"{out_dir}/{os.path.splitext(os.path.basename(a[1]))[0]}_events.parquet", compression='snappy'),
+                                pl.DataFrame({'data': [{c: [(st, sp) for cond, st, sp in epochs if cond == c] for c in sorted(set(cond for cond, _, _ in epochs))}]}).write_parquet(f"{out_dir}/{os.path.splitext(os.path.basename(a[1]))[0]}_events.parquet", compression='gzip'),
                                 print(f"[events] Output: {out_dir}/{os.path.splitext(os.path.basename(a[1]))[0]}_events.parquet")
                             ))(os.path.dirname(a[1]) or '.')
                         )[-1])(list(align_times_with_neighbor(pairs, rec_map, offset, [])))

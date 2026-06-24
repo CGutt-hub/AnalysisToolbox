@@ -166,12 +166,12 @@ def analyze(ip, param_str, out_prefix):
             x_data, y_data, y_var, counts = extract_data(nephews)
             out = {'x_data': x_data, 'y_data': y_data, 'y_var': y_var, 'y_ticks': make_y_ticks(y_labels, y_max), 'y_labels': y_labels if isinstance(y_labels, list) else None, 'plot_type': 'grid', 'counts_per_x': counts, 'count': sum(counts), 'condition': cond}
             path = os.path.join(folder, f"{base}_{out_prefix}{idx}.parquet")
-            pl.DataFrame([out]).write_parquet(path, compression='snappy')
+            pl.DataFrame([out]).write_parquet(path, compression='gzip')
             print(f"[quest]   Output: {path} | {sum(counts)} values, {len(x_data)} categories | {cond}")
             count += 1
         
         signal = os.path.join(os.getcwd(), f"{base}_{out_prefix}.parquet")
-        pl.DataFrame([{'signal': 1, 'source': os.path.basename(ip), 'conditions': count, 'folder_path': os.path.abspath(folder)}]).write_parquet(signal, compression='snappy')
+        pl.DataFrame([{'signal': 1, 'source': os.path.basename(ip), 'conditions': count, 'folder_path': os.path.abspath(folder)}]).write_parquet(signal, compression='gzip')
         print(f"[quest] Signal: {signal} | {count} conditions"); print(signal)
         return signal
     else:
@@ -207,7 +207,7 @@ def analyze(ip, param_str, out_prefix):
         out = {'x_data': x_data, 'y_data': y_data, 'y_var': y_var, 'y_ticks': make_y_ticks(y_labels, y_max), 'y_labels': y_labels if isinstance(y_labels, list) else None, 'plot_type': 'bar', 'counts_per_x': counts, 'count': sum(counts)}
         path = os.path.join(os.getcwd(), f"{base}_{out_prefix}.parquet")
         plot_df = pl.DataFrame([out])
-        plot_df.write_parquet(path, compression='snappy')
+        plot_df.write_parquet(path, compression='gzip')
         print(f"[quest] Output: {path} | {sum(counts)} values, {len(x_data)} categories"); print(path)
         return path
 

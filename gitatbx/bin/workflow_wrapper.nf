@@ -818,7 +818,7 @@ process IOInterface {
             printf "\\n%s [ERROR] ${scriptName} exit code %d\\n" "\$(date '+%Y-%m-%d %H:%M:%S')" \$EXIT_CODE > "\$ERR_TMP"
             ${env_exe} -u "${logWriter}" "\$LOG_FILE" "\$ERR_TMP"
             rm -f "\$ERR_TMP"
-            ${isTerminal ? "# Terminal process: emit sentinel so finalization is never blocked\n            ${env_exe} -c \"import polars as pl; pl.DataFrame({'_sentinel': [True], '_error': [True]}).write_parquet('\${PARTICIPANT_ID}_sentinel_failed.parquet', compression='snappy')\"\n            exit 0" : 'exit $EXIT_CODE'}
+            ${isTerminal ? "# Terminal process: emit sentinel so finalization is never blocked\n            _SENTINEL_PFX=\${PARTICIPANT_ID:-group}\n            ${env_exe} -c \"import polars as pl; pl.DataFrame({'_sentinel': [True], '_error': [True]}).write_parquet('\${_SENTINEL_PFX}_sentinel_failed.parquet', compression='snappy')\"\n            exit 0" : 'exit $EXIT_CODE'}
         fi
         fi  # end HAS_CORRECTIONS check
 
@@ -868,15 +868,15 @@ process IOInterface {
             # exports (IS_TABLE), group-level processes (IS_GROUP), and any parquet
             # that already has a plot_type column (plot-ready summary, not raw data).
             if [ "\$IS_TERMINAL" = "true" ] && [ "\$IS_RESULT" != "true" ] && [ "\$IS_TABLE" != "true" ] && [ "\$IS_GROUP" != "true" ]; then
-                _IS_SENTINEL=\$(${env_exe} -c "
+                _IS_TABLE_ELIGIBLE=\$(${env_exe} -c "
 import polars as pl, sys
 try:
-    df = pl.read_parquet(sys.argv[1])
-    print('1' if '_sentinel' in df.columns else '0')
+    schema = pl.read_parquet_schema(sys.argv[1])
+    print('0' if '_sentinel' in schema or 'plot_type' in schema else '1')
 except Exception:
     print('0')
 " "\$FILE" 2>/dev/null || echo '0')
-                if [ "\$_IS_SENTINEL" = "0" ]; then
+                if [ "\$_IS_TABLE_ELIGIBLE" = "1" ]; then
                     mkdir -p "\$CONTEXT_DIR/tables"
                     cp "\$FILE" "\$CONTEXT_DIR/tables/\$BASENAME" 2>/dev/null || true
                 fi

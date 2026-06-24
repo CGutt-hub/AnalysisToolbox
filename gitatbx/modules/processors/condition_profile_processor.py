@@ -66,7 +66,7 @@ def condition_profile_process(files: list[str], sources: list[str], output_suffi
     _pid_match = _re.match(r'^([A-Za-z]+_\d+)', os.path.basename(files[0]))
     _pid_prefix = (_pid_match.group(1) + '_') if _pid_match else ''
     out_file = f"{_pid_prefix}{output_suffix}.parquet"
-    merged.write_parquet(out_file, compression='snappy')
+    merged.write_parquet(out_file, compression='gzip')
     print(f"[condition_profile] Output: {out_file}")
     return out_file
 

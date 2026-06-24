@@ -87,7 +87,7 @@ def timeseries_ols_process(ip: str, x_col: str = 'year', y_cols: str | None = No
 
     base = os.path.splitext(os.path.basename(ip))[0]
     out_file = f"{base}_ts_ols.parquet"
-    result_df.write_parquet(out_file, compression='snappy')
+    result_df.write_parquet(out_file, compression='gzip')
 
     sig_count = sum(1 for r in records if r['significant'])
     print(f"[ts_ols] Output: {out_file} ({len(records)} columns, {sig_count} significant)")

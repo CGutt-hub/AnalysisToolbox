@@ -7,7 +7,7 @@ def log_error(msg): print(f"[txt_reader] ERROR: {msg}")
 
 read_txt = lambda ip, enc: (
 	print(f"[txt_reader] Processing: {ip}"),
-	pl.DataFrame({'lines': open(ip, 'r', encoding=enc).read().split('\n')}).write_parquet(f"{os.path.splitext(os.path.basename(ip))[0]}_txt.parquet", compression='snappy'),
+	pl.DataFrame({'lines': open(ip, 'r', encoding=enc).read().split('\n')}).write_parquet(f"{os.path.splitext(os.path.basename(ip))[0]}_txt.parquet", compression='gzip'),
 	print(f"[txt_reader] Output: {os.path.splitext(os.path.basename(ip))[0]}_txt.parquet"),
 	f"{os.path.splitext(os.path.basename(ip))[0]}_txt.parquet"
 )[-1]

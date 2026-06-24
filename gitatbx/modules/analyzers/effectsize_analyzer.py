@@ -75,7 +75,7 @@ def effectsize_analyze(ip: str, metric: str = 'cohens_d') -> str:
     result_df = pl.DataFrame(results)
     base = os.path.splitext(os.path.basename(ip))[0]
     out_file = f"{base}_effectsize.parquet"
-    result_df.write_parquet(out_file, compression='snappy')
+    result_df.write_parquet(out_file, compression='gzip')
     print(f"[effectsize] Output: {out_file} ({len(results)} rows)")
     return out_file
 

@@ -51,7 +51,7 @@ def inspect_quality(ip: str, group_col: str = 'condition', value_cols: list | No
     # Pass through sentinel files from failed upstream processes
     if '_sentinel' in df.columns:
         basename = os.path.basename(ip).replace('.parquet', '')
-        df.write_parquet(f"sentinel_quality_{basename}.parquet", compression='snappy')
+        df.write_parquet(f"sentinel_quality_{basename}.parquet", compression='gzip')
         return f"sentinel_quality_{basename}.parquet"
 
     # Auto-detect sample column (first string/categorical column that isn't group_col)
@@ -104,7 +104,7 @@ def inspect_quality(ip: str, group_col: str = 'condition', value_cols: list | No
     parts = basename.split('_')
     pid = '_'.join(parts[:2]) if len(parts) >= 2 else 'unknown'
     output_name = f"{pid}_quality.parquet"
-    df.write_parquet(output_name, compression='snappy')
+    df.write_parquet(output_name, compression='gzip')
     log_info(f"{pid} -> {output_name}")
     return output_name
 

@@ -130,7 +130,7 @@ def consolidate_l2_anova(files: list[str], out_base: str, modality_map_json: str
         result = result.sort(['modality', 'dv'])
 
     out_file = os.path.join(os.getcwd(), f'{out_base}.parquet')
-    result.write_parquet(out_file, compression='snappy')
+    result.write_parquet(out_file, compression='gzip')
     print(f'[anova] L2 consolidation output: {out_file}')
     print(out_file)
     return out_file
@@ -239,7 +239,7 @@ def anova_analyze(ip: str, dv: str, between: str, apply_fdr: bool = False,
         'x_label':   between,
         'y_label':   p_label,
         'y_ticks':   y_lim,
-    }]).write_parquet(out_file, compression='snappy')
+    }]).write_parquet(out_file, compression='gzip')
     print(f"[anova] Output: {out_file}")
     print(out_file)
     return out_file

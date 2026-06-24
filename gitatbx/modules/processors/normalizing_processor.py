@@ -15,7 +15,7 @@ def normalize(ip: str, norm_type: str, cols: str) -> str:
             pl.col(col).log() if norm_type == 'log' else pl.col(col)
         ).alias(f"{col}_norm"))
     out = f"{os.path.splitext(os.path.basename(ip))[0]}_norm.parquet"
-    df.write_parquet(out, compression='snappy')
+    df.write_parquet(out, compression='gzip')
     print(f"[normalizing] Output: {out}")
     return out
 

@@ -172,7 +172,7 @@ def compute_plv(
 
         # Write flat table INTO subfolder (file_finder will extract it)
         flat_table_path = os.path.join(out_folder, f"{output_name}_plv.parquet")
-        wide_df.write_parquet(flat_table_path, compression='snappy')
+        wide_df.write_parquet(flat_table_path, compression='gzip')
         print(f"[plv] Output (flat_table): {os.path.basename(flat_table_path)} ({len(wide_df)} rows) in subfolder")
         
         # Emit signal pointer at root level pointing to subfolder
@@ -182,7 +182,7 @@ def compute_plv(
             'source': [','.join([os.path.basename(p) for p in stream_paths])], 
             'format': ['flat_table'],
             'folder_path': [os.path.abspath(out_folder)]
-        }).write_parquet(signal_path, compression='snappy')
+        }).write_parquet(signal_path, compression='gzip')
         print(f"[plv] Emitted signal pointer: {os.path.basename(signal_path)} -> {out_folder}")
         return signal_path
 
@@ -214,7 +214,7 @@ def compute_plv(
             })
 
             out_file = os.path.join(out_folder, f"{output_name}_plv{idx+1}.parquet")
-            output.write_parquet(out_file, compression='snappy')
+            output.write_parquet(out_file, compression='gzip')
             print(f"[plv]   {cond}: {os.path.basename(out_file)} ({len(cond_df)} pairs)")
     
     pl.DataFrame({
@@ -222,7 +222,7 @@ def compute_plv(
         'source': [','.join([os.path.basename(p) for p in stream_paths])], 
         'conditions': [len(conditions)],
         'folder_path': [os.path.abspath(out_folder)]
-    }).write_parquet(signal_path, compression='snappy')
+    }).write_parquet(signal_path, compression='gzip')
     
     print(f"[plv] Finished. Signal: {os.path.basename(signal_path)}")
     return signal_path

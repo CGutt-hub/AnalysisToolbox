@@ -75,7 +75,7 @@ def nonparam_analyze(ip: str, test: str = 'mann_whitney') -> str:
     result_df = pl.DataFrame(results)
     base = os.path.splitext(os.path.basename(ip))[0]
     out_file = f"{base}_nonparam.parquet"
-    result_df.write_parquet(out_file, compression='snappy')
+    result_df.write_parquet(out_file, compression='gzip')
 
     sig_count = sum(1 for r in results if r['significant'])
     print(f"[nonparam] Output: {out_file} ({len(results)} channels, {sig_count} significant)")

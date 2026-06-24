@@ -71,7 +71,7 @@ def append_log(log_path: str, new_text: str) -> None:
                 existing = df['content'][0] if len(df) > 0 and 'content' in df.columns else ""
             except Exception:
                 pass
-        pl.DataFrame({'content': [existing + new_text]}).write_parquet(log_path, compression='snappy')
+        pl.DataFrame({'content': [existing + new_text]}).write_parquet(log_path, compression='gzip')
     finally:
         _lock_release(handle, lock_path)
 
