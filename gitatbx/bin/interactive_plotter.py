@@ -1765,6 +1765,14 @@ def run(inp, out_dir, pre, project_name='procedure', sidecar_dir=None):
         print(f"[interactive_plotter] ERROR: Failed to read schema of {inp}: {e}")
         return
 
+    # Detect table-type files by filename pattern (statistical results, no plot_type/time)
+    _TABLE_PATTERNS = (
+        '_anova', '_ttest', '_correl', '_effectsize', '_descriptive',
+        '_regression', '_ols', '_lgcrct', '_quest', '_contrast',
+        '_zscore', '_sentinel', '_summary', '_stats',
+    )
+    is_table_by_name = any(p in os.path.basename(inp).lower() for p in _TABLE_PATTERNS)
+
     if 'plot_type' in schema:
         # Already plot-ready — publish as-is
         try:
@@ -1772,6 +1780,7 @@ def run(inp, out_dir, pre, project_name='procedure', sidecar_dir=None):
         except Exception as e:
             print(f"[interactive_plotter] ERROR: Failed to read {inp}: {e}")
             return
+        is_table_file = False
     elif 'time' in schema:
         # Raw time-series — downsample to 250 Hz and convert to line plot
         try:
@@ -1779,9 +1788,18 @@ def run(inp, out_dir, pre, project_name='procedure', sidecar_dir=None):
         except Exception as e:
             print(f"[interactive_plotter] ERROR: Failed to downsample {inp}: {e}")
             return
+        is_table_file = False
+    elif is_table_by_name or len(schema) <= 20:
+        # Flat tabular data (statistical results) — publish to tables/ subdirectory
+        try:
+            df = pl.read_parquet(inp)
+        except Exception as e:
+            print(f"[interactive_plotter] ERROR: Failed to read table {inp}: {e}")
+            return
+        is_table_file = True
     else:
-        # Neither plot-ready nor time-series — skip
-        print(f"[interactive_plotter] SKIP (no plot_type or time column): {inp}")
+        # Unknown schema without recognised columns — skip
+        print(f"[interactive_plotter] SKIP (unrecognised schema): {inp}")
         return
 
     # Extract participant ID from prefix (e.g. EV_002_xdf4_extr1_filt -> EV_002)
@@ -1798,11 +1816,18 @@ def run(inp, out_dir, pre, project_name='procedure', sidecar_dir=None):
     out_dir_abs = os.path.abspath(out_dir)
     archive_path = os.path.join(out_dir_abs, '.bin', f"{project_name}_results.html")
 
-    # Copy parquet to sidecar location (sidecar_dir is always supplied by IOInterface).
+    # Copy parquet to sidecar location.
+    # Table files go into a sibling tables/ folder next to sidecar_dir (which is always plots/).
     if not sidecar_dir:
         print(f"[interactive_plotter] ERROR: sidecar_dir is required (was None). Skipping {pre}.")
         return
-    participant_plots_dir = os.path.abspath(sidecar_dir)
+    if is_table_file:
+        # Place tables alongside plots/ in a tables/ sibling directory
+        participant_plots_dir = os.path.abspath(
+            os.path.join(os.path.dirname(sidecar_dir), 'tables')
+        )
+    else:
+        participant_plots_dir = os.path.abspath(sidecar_dir)
     os.makedirs(participant_plots_dir, exist_ok=True)
     sidecar_dest = os.path.join(participant_plots_dir, f'{pre}.parquet')
     # Write as GZIP (supported by hyparquet in browser)
@@ -1819,7 +1844,8 @@ def run(inp, out_dir, pre, project_name='procedure', sidecar_dir=None):
     # Compute the sidecar path relative to the archive root (parent of .bin/)
     sidecar_rel = os.path.relpath(sidecar_dest, out_dir_abs).replace('\\', '/')
     try:
-        update_archive(archive_path, participant_id, pre, plot_title or pre, tree_path, relative_file=sidecar_rel)
+        update_archive(archive_path, participant_id, pre, plot_title or pre, tree_path,
+                       relative_file=sidecar_rel)
         print(f"[interactive_plotter] Updated archive: {archive_path} ({os.path.getsize(archive_path)//1024} KB)")
     except Exception as e:
         print(f"[interactive_plotter] ERROR: Failed to update archive: {e}")
