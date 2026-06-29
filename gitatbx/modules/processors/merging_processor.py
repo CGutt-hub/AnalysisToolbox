@@ -113,7 +113,7 @@ def merge_plot_data(ip: list[str], prefixes: list[str] | None = None, output_suf
             'condition': [cond], 'x_data': [combined_x], 'y_data': [combined_y],
             'y_var': [combined_var], 'plot_type': [plot_type], 'x_label': ['Measure'],
             'y_label': [y_label], 'y_ticks': [y_ticks]
-        }).write_parquet(os.path.join(out_folder, f"{pid}{output_suffix}{idx+1}.parquet"))
+        }).write_parquet(os.path.join(out_folder, f"{pid}{output_suffix}{idx+1}.parquet"), compression='gzip')
     
     # Create concatenated output file (compatible with plotter/relative_analyzer)
     # Output goes to {pid}{output_suffix}.parquet (no _concat suffix) to match pipeline expectations

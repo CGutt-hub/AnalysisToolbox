@@ -132,7 +132,7 @@ def compute_spectrum(ip: str,
                 })
             if rows:
                 pl.DataFrame(rows).write_parquet(
-                    os.path.join(out_folder, f"{base}_spectrum{idx+1}.parquet"))
+                    os.path.join(out_folder, f"{base}_spectrum{idx+1}.parquet"), compression='gzip')
         else:
             result = _psd_for_channels(cond_eids, ch_names)
             if result is None:
@@ -148,7 +148,7 @@ def compute_spectrum(ip: str,
                 'x_label': 'Frequency (Hz)',
                 'y_label': 'Power (µV²/Hz)',
                 'y_ticks': None,
-            }]).write_parquet(os.path.join(out_folder, f"{base}_spectrum{idx+1}.parquet"))
+            }]).write_parquet(os.path.join(out_folder, f"{base}_spectrum{idx+1}.parquet"), compression='gzip')
 
         log_info(f"  {cond}: {len(cond_eids)} epochs")
 

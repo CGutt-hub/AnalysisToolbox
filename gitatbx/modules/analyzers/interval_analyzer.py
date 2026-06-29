@@ -133,7 +133,7 @@ def analyze_intervals(ip: str, event_col: str | None = None, y_lim: float | None
                 rmssd_df = cond_epoch_df.select(['condition', 'epoch_id', pl.col('RMSSD').alias('value')]).with_columns(pl.lit('RMSSD').alias('metric'))
                 output_df = pl.concat([sdnn_df, rmssd_df])
             
-            output_df.write_parquet(os.path.join(out_folder, f"{base}_{suffix}{idx+1}.parquet"))
+            output_df.write_parquet(os.path.join(out_folder, f"{base}_{suffix}{idx+1}.parquet"), compression='gzip')
             n_epochs = len(cond_epoch_df)
             print(f"[interval]   {cond}: {n_epochs} epochs, {len(output_df)} rows (epoch-level data)")
     else:

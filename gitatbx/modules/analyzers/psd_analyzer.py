@@ -141,12 +141,12 @@ def compute_psd(ip: str, bands: dict, channels: list | None = None, regions: dic
             ]).with_columns(pl.lit(cond).alias('condition'))
             epoch_pivot = epoch_agg.pivot(values='value', index=['condition', 'epoch_id', 'region'], on='band')
             # Write per-condition epoch-level data (mirrors the channel-mode write below)
-            epoch_pivot.write_parquet(os.path.join(out_folder, f"{base}_psd{idx+1}.parquet"))
+            epoch_pivot.write_parquet(os.path.join(out_folder, f"{base}_psd{idx+1}.parquet"), compression='gzip')
         else:
             # Channel mode: write long-format per-channel data as the standard output
             # (preserves channel resolution needed for downstream asymmetry/FAI analysis)
             raw_df = cond_data.select(['condition', 'epoch_id', 'channel', 'band', 'power'])
-            raw_df.write_parquet(os.path.join(out_folder, f"{base}_psd{idx+1}.parquet"))
+            raw_df.write_parquet(os.path.join(out_folder, f"{base}_psd{idx+1}.parquet"), compression='gzip')
             # Also compute pivoted version for plotting below
             epoch_agg = cond_data.group_by(['epoch_id', 'band']).agg([
                 pl.col('power').mean().alias('value')
@@ -187,7 +187,7 @@ def compute_psd(ip: str, bands: dict, channels: list | None = None, regions: dic
                 'x_label': ['Region'],
                 'y_label': ['Power (μV²/Hz)'],
                 'y_ticks': [y_lim] if y_lim is not None else [None]
-            }).write_parquet(os.path.join(out_folder, f"{base}_psd{idx+1}_plot.parquet"))
+            }).write_parquet(os.path.join(out_folder, f"{base}_psd{idx+1}_plot.parquet"), compression='gzip')
         else:
             # Channel-level: bands on x-axis
             band_names = [c for c in epoch_pivot.columns if c not in ['condition', 'epoch_id']]
@@ -211,7 +211,7 @@ def compute_psd(ip: str, bands: dict, channels: list | None = None, regions: dic
                 'x_label': ['Frequency Band'],
                 'y_label': ['Power (μV²/Hz)'],
                 'y_ticks': [y_lim] if y_lim is not None else [None]
-            }).write_parquet(os.path.join(out_folder, f"{base}_psd{idx+1}_plot.parquet"))
+            }).write_parquet(os.path.join(out_folder, f"{base}_psd{idx+1}_plot.parquet"), compression='gzip')
         
         print(f"[psd]   {cond}: {len(cond_data['epoch_id'].unique())} epochs")
     
@@ -221,7 +221,7 @@ def compute_psd(ip: str, bands: dict, channels: list | None = None, regions: dic
             pl.col('power').mean().alias('value')
         )
         all_pivot = all_agg.pivot(values='value', index=['condition', 'epoch_id', 'region'], on='band')
-        all_pivot.write_parquet(os.path.join(out_folder, f"{base}_psd_all.parquet"))
+        all_pivot.write_parquet(os.path.join(out_folder, f"{base}_psd_all.parquet"), compression='gzip')
 
     signal_path = os.path.join(os.getcwd(), f"{base}_psd.parquet")
     pl.DataFrame({

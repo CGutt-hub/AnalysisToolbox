@@ -117,7 +117,7 @@ def analyze_amplitude(ip: str, method: str = 'peak_baseline', y_lim: float | Non
                 })
             
             output_df = pl.DataFrame(region_rows)
-            output_df.write_parquet(os.path.join(out_folder, f"{base}_{suffix}{idx+1}.parquet"))
+            output_df.write_parquet(os.path.join(out_folder, f"{base}_{suffix}{idx+1}.parquet"), compression='gzip')
             
             # Print summary stats
             stats_str = ", ".join([f"{r['region']}={r['value']:.3f}±{r['sem']:.3f}" for r in region_rows])
@@ -130,7 +130,7 @@ def analyze_amplitude(ip: str, method: str = 'peak_baseline', y_lim: float | Non
             cond_epoch_df = epoch_df.filter(pl.col('condition') == cond)
             # Rename signal column to standard 'value' for bootstrap compatibility
             output_df = cond_epoch_df.select(['condition', 'epoch_id', pl.col(signal_col).alias('value')])
-            output_df.write_parquet(os.path.join(out_folder, f"{base}_{suffix}{idx+1}.parquet"))
+            output_df.write_parquet(os.path.join(out_folder, f"{base}_{suffix}{idx+1}.parquet"), compression='gzip')
             print(f"[amplitude]   {cond}: {len(cond_epoch_df)} epochs (epoch-level data)")
     else:
         # Single-region aggregated output (mean ± SEM) for direct plotting
@@ -154,7 +154,7 @@ def analyze_amplitude(ip: str, method: str = 'peak_baseline', y_lim: float | Non
                 'y_ticks': [y_lim],
                 'count': [len(cond_vals)]
             })
-            plot_df.write_parquet(os.path.join(out_folder, f"{base}_{suffix}{idx+1}.parquet"))
+            plot_df.write_parquet(os.path.join(out_folder, f"{base}_{suffix}{idx+1}.parquet"), compression='gzip')
             all_plot_data.append(plot_df)
             print(f"[amplitude]   {cond}: {mean_val:.3f} ± {sem_val:.3f} ({len(cond_vals)} epochs)")
     

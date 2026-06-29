@@ -125,7 +125,7 @@ def analyze_groups(ip: str, groups_config: str, y_lim: float | None = None,
         if epoch_data:
             epoch_df = pl.DataFrame(epoch_data)
             epoch_pivot = epoch_df.pivot(values='value', index=['condition', 'epoch_id'], on='group')
-            epoch_pivot.write_parquet(os.path.join(out_folder, f"{base}_{suffix}{idx+1}.parquet"))
+            epoch_pivot.write_parquet(os.path.join(out_folder, f"{base}_{suffix}{idx+1}.parquet"), compression='gzip')
             
             # Averaged plot-ready output: mean ± SEM across epochs per group
             group_means: list[float] = []
@@ -148,7 +148,7 @@ def analyze_groups(ip: str, groups_config: str, y_lim: float | None = None,
                 'x_label': [x_label],
                 'y_label': [y_label],
                 'y_ticks': [y_lim] if y_lim is not None else [None]
-            }).write_parquet(os.path.join(out_folder, f"{base}_{suffix}{idx+1}_plot.parquet"))
+            }).write_parquet(os.path.join(out_folder, f"{base}_{suffix}{idx+1}_plot.parquet"), compression='gzip')
         
         print(f"[group]   {cond}: {len(epochs)} epochs, {len(group_names)} groups")
     

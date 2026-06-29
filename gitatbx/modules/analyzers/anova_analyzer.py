@@ -281,7 +281,7 @@ if __name__ == '__main__':
         parts = [b.split('_', 2)[-1] if b.count('_') >= 2 else b for b in bases]
         stem  = parts[0] if len(set(parts)) == 1 else 'l2_group'
         ip = os.path.join(os.getcwd(), f'{stem}.parquet')
-        combined.write_parquet(ip)
+        combined.write_parquet(ip, compression='gzip')
     else:
         ip = parquet_files[0]
 
