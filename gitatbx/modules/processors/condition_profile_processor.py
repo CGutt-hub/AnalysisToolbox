@@ -63,7 +63,7 @@ def condition_profile_process(files: list[str], sources: list[str], output_suffi
 
     # Derive participant ID from the first input file (e.g. EV_002_..._ols.parquet → EV_002)
     import re as _re
-    _pid_match = _re.match(r'^([A-Za-z]+_\d+)', os.path.basename(files[0]))
+    _pid_match = _re.match(r'^([A-Za-z][A-Za-z0-9]*_\d+)', os.path.basename(files[0]))
     _pid_prefix = (_pid_match.group(1) + '_') if _pid_match else ''
     out_file = f"{_pid_prefix}{output_suffix}.parquet"
     merged.write_parquet(out_file, compression='gzip')

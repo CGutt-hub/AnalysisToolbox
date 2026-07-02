@@ -6,9 +6,9 @@ def log_warning(msg): print(f"[concatenating] WARNING: {msg}")
 def log_error(msg): print(f"[concatenating] ERROR: {msg}")
 
 def extract_pid(filepath: str) -> str:
-    """Extract participant ID from filepath (pattern like EV_002 or P001)."""
+    """Extract participant ID from filepath (e.g. EV_002, EV2_01, DEAP_01)."""
     basename = os.path.basename(filepath)
-    match = re.match(r'^([A-Za-z]+_\d+)', basename)
+    match = re.match(r'^([A-Za-z][A-Za-z0-9]*_\d+)', basename)
     return match.group(1) if match else ''
 
 def _is_signal_file(df: pl.DataFrame) -> bool:

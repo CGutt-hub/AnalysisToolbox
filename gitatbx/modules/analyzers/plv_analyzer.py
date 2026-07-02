@@ -270,7 +270,7 @@ def _plv_main(argv: list[str]) -> None:
     if tail_wo_format and tail_wo_format[0] not in ('None', ''):
         output_name = tail_wo_format[0]
     else:
-        output_name = re.sub(r'^([A-Za-z]+_[0-9]+).*', r'\1_plv', os.path.basename(stream_paths[0]))
+        output_name = re.sub(r'^([A-Za-z][A-Za-z0-9]*_[0-9]+).*', r'\1_plv', os.path.basename(stream_paths[0]))
 
     y_lim = None
     if len(tail_wo_format) > 1 and tail_wo_format[1] not in ('None', ''):

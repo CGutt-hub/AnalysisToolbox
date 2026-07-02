@@ -60,10 +60,10 @@ def _parse_band(value: str) -> tuple[float, float] | None:
 
 def _participant_id_from_path(path: str) -> str:
     base = Path(path).stem
-    m = re.search(r"^[A-Za-z]+_[0-9]+", base)
+    m = re.search(r"^[A-Za-z][A-Za-z0-9]*_[0-9]+", base)
     if m:
         return m.group(0)
-    m = re.search(r"([A-Za-z]+_[0-9]+)", base)
+    m = re.search(r"([A-Za-z][A-Za-z0-9]*_[0-9]+)", base)
     if m:
         return m.group(1)
     return base.split("_")[0]

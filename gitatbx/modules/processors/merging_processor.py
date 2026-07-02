@@ -81,7 +81,7 @@ def merge_plot_data(ip: list[str], prefixes: list[str] | None = None, output_suf
     print(f"[merging] Conditions: {common_conds}")
     
     # Extract participant ID from first file
-    match = re.match(r'^([A-Za-z]+_\d+)', os.path.basename(ip[0]))
+    match = re.match(r'^([A-Za-z][A-Za-z0-9]*_\d+)', os.path.basename(ip[0]))
     pid = match.group(1) + '_' if match else ''
     out_folder = os.path.join(os.getcwd(), f"{pid}{output_suffix}_data")
     os.makedirs(out_folder, exist_ok=True)
