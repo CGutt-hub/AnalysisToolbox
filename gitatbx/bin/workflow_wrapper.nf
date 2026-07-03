@@ -818,7 +818,7 @@ process IOInterface {
             printf "\\n%s [ERROR] ${scriptName} exit code %d\\n" "\$(date '+%Y-%m-%d %H:%M:%S')" \$EXIT_CODE > "\$ERR_TMP"
             ${env_exe} -u "${logWriter}" "\$LOG_FILE" "\$ERR_TMP"
             rm -f "\$ERR_TMP"
-            ${isTerminal ? "# Terminal process: emit sentinel so finalization is never blocked\n            _SENTINEL_PFX=\${PARTICIPANT_ID:-group}\n            ${env_exe} -c \"import polars as pl; pl.DataFrame({'_sentinel': [True], '_error': [True]}).write_parquet('\${_SENTINEL_PFX}_sentinel_failed.parquet', compression='snappy')\"\n            exit 0" : 'exit $EXIT_CODE'}
+            ${isTerminal ? "# Terminal process: emit sentinel so finalization is never blocked.\n            # Suffix with task.index so parallel/group-level failures never collide on the\n            # same filename when a downstream process .collect()s multiple sentinel outputs.\n            _SENTINEL_PFX=\${PARTICIPANT_ID:-group}_${task.index}\n            ${env_exe} -c \"import polars as pl; pl.DataFrame({'_sentinel': [True], '_error': [True]}).write_parquet('\${_SENTINEL_PFX}_sentinel_failed.parquet', compression='snappy')\"\n            exit 0" : 'exit $EXIT_CODE'}
         fi
         fi  # end HAS_CORRECTIONS check
 
