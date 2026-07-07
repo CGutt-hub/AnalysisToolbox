@@ -13,36 +13,21 @@ from typing import Any, IO
 # Import shared helpers from plotter
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# File locking: fcntl on Linux/macOS, msvcrt on Windows
-if os.name == 'nt':
-    import msvcrt
-    def acquire_file_lock(f: IO[Any], timeout: float = 120) -> None:
-        start = time.time()
-        while time.time() - start < timeout:
-            try:
-                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
-                return
-            except OSError:
-                time.sleep(0.1)
-        raise TimeoutError("Could not acquire file lock")
-    def release_file_lock(f: IO[Any]) -> None:
+# File locking: fcntl on Linux (not available on Windows)
+import fcntl  # type: ignore  # Unix-only module, not available on Windows
+
+def acquire_file_lock(f: IO[Any], timeout: float = 120) -> None:
+    start = time.time()
+    while time.time() - start < timeout:
         try:
-            msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
-        except OSError:
-            pass
-else:
-    import fcntl as _fcntl
-    def acquire_file_lock(f: IO[Any], timeout: float = 120) -> None:
-        start = time.time()
-        while time.time() - start < timeout:
-            try:
-                _fcntl.flock(f.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB)
-                return
-            except IOError:
-                time.sleep(0.1)
-        raise TimeoutError("Could not acquire file lock")
-    def release_file_lock(f: IO[Any]) -> None:
-        _fcntl.flock(f.fileno(), _fcntl.LOCK_UN)
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore  # fcntl constants not available on Windows
+            return
+        except IOError:
+            time.sleep(0.1)
+    raise TimeoutError("Could not acquire file lock")
+
+def release_file_lock(f: IO[Any]) -> None:
+    fcntl.flock(f.fileno(), fcntl.LOCK_UN)  # type: ignore  # fcntl constants not available on Windows
 
 def parse_filename_to_tree_path(filename, participant_id):
     """Parse filename to tree path with participant folder.
@@ -1465,9 +1450,9 @@ def create_archive_html(project_name='procedure'):
                         const folderResp = await fetch('../' + pid + '/' + folder + '/?_=' + Date.now()).catch(() => null);
                         if (!folderResp?.ok) continue;
                         const folderHtml = await folderResp.text();
-                        const pqMatches = [...folderHtml.matchAll(/href="([^"?#]+\.parquet)"/g)];
+                        const pqMatches = [...folderHtml.matchAll(/href="([^"?#]+\\.parquet)"/g)];
                         for (const m of pqMatches) {{
-                            const fileName = m[1].replace(/\.parquet$/, '');
+                            const fileName = m[1].replace(/\\.parquet$/, '');
                             const plotName = fileName.startsWith(pid + '_') ? fileName.slice(pid.length + 1) : fileName;
                             const key = folder === 'tables' ? fileName + '__table' : fileName;
                             meta[key] = {{ title: fileName, path: [pid, plotName], type: folder === 'tables' ? 'table' : (folder === 'results' ? 'result' : 'plot'), file: pid + '/' + folder + '/' + fileName + '.parquet' }};

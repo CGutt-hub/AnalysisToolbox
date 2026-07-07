@@ -138,12 +138,18 @@ def consolidate_l2(files: list, out_base: str = 'l2_correl') -> str:
         y = row.get('y_data')
         if not isinstance(x, list) or not isinstance(y, list):
             log_warning(f"Unexpected format in {f}, skipping"); continue
+        mat = np.array(y, dtype=float)
         if var_names is None:
             var_names = x
-        elif x != var_names:
+        elif set(x) != set(var_names):
             log_warning(f"Variable mismatch in {f} (expected {var_names}, got {x}), skipping")
             continue
-        participant_matrices.append(np.array(y, dtype=float))
+        elif x != var_names:
+            # Same variables, different order (row/column order is not guaranteed
+            # to be stable across participants) — reindex to the canonical order.
+            idx = [x.index(v) for v in var_names]
+            mat = mat[np.ix_(idx, idx)]
+        participant_matrices.append(mat)
 
     if not participant_matrices or var_names is None:
         log_error("No valid heatmap files found"); sys.exit(1)
@@ -374,14 +380,19 @@ if __name__ == '__main__':
         print('[correl]        correl_analyzer.py <metrics.parquet> <labels.parquet> --correlate-ratings [rating_cols] [metric_cols] [method]')
         sys.exit(1)
 
-    if a[1] == '--consolidate-l2':
-        if len(a) < 4:
+    if '--consolidate-l2' in a:
+        # IOInterface places extraArgs (which carries --consolidate-l2 <out_base>)
+        # *after* the staged input files, so --consolidate-l2 is not necessarily
+        # at argv position 1 — search for it anywhere instead of assuming a[1].
+        _TOKENS = {'terminal', 'group_log', 'result', 'table'}
+        idx = a.index('--consolidate-l2')
+        rest = [x for x in a[1:idx] + a[idx + 1:] if x not in _TOKENS]
+        files = [x for x in rest if os.path.exists(x)]
+        out_bases = [x for x in rest if not os.path.exists(x)]
+        if not files or not out_bases:
             log_error("--consolidate-l2 requires: <out_base> <file1.parquet> ...")
             sys.exit(1)
-        out_base = a[2]
-        files = [x for x in a[3:] if os.path.exists(x)]
-        if not files:
-            log_error("No valid parquet files provided"); sys.exit(1)
+        out_base = out_bases[0]
         consolidate_l2(files, out_base)
     elif '--correlate-ratings' in a:
         if len(a) < 3:

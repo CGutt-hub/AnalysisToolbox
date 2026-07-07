@@ -85,8 +85,15 @@ def _nakagawa_r2(mdf) -> tuple[float, float, float]:
         return float('nan'), float('nan'), float('nan')
 
 
-def _fit_lmm_one_dv(df: pd.DataFrame, dv_col: str, condition_col: str) -> dict | None:
-    """Fit null and full LMM for one DV column; returns statistics dict or None on failure."""
+def _fit_lmm_one_dv(df: pd.DataFrame, dv_col: str, condition_col: str,
+                     categorical: bool = True) -> dict | None:
+    """Fit null and full LMM for one DV column; returns statistics dict or None on failure.
+
+    `categorical` controls how `condition_col` enters the fixed-effect formula:
+    True wraps it in C() (discrete condition bins, e.g. valence_high/low); False
+    uses it as a linear continuous covariate (e.g. a physiological feature such
+    as amplitude/fai/rmssd/band-power predicting a SAM rating).
+    """
     sub = df[[dv_col, condition_col, 'participant_id']].dropna()
     n_conds = sub[condition_col].nunique()
     n_part  = sub['participant_id'].nunique()
@@ -100,6 +107,9 @@ def _fit_lmm_one_dv(df: pd.DataFrame, dv_col: str, condition_col: str) -> dict |
     if n_part < 3:
         log_warning(f"Only {n_part} participant(s) for '{dv_col}' — random effects not estimable, skipping")
         return None
+
+    # Fixed-effect term: C() for discrete condition bins, linear for continuous covariates
+    term = f"C({condition_col})" if categorical else condition_col
 
     # Suppress convergence warnings from statsmodels during fitting
     with warnings.catch_warnings():
@@ -122,7 +132,7 @@ def _fit_lmm_one_dv(df: pd.DataFrame, dv_col: str, condition_col: str) -> dict |
     mdf_full = None
     for method in ('lbfgs', 'bfgs', 'nm'):
         try:
-            md_full  = smf.mixedlm(f"Q('{dv_col}') ~ C({condition_col})", sub,
+            md_full  = smf.mixedlm(f"Q('{dv_col}') ~ {term}", sub,
                                    groups=sub['participant_id'])
             mdf_full = md_full.fit(reml=False, method=method)
             break
@@ -145,7 +155,7 @@ def _fit_lmm_one_dv(df: pd.DataFrame, dv_col: str, condition_col: str) -> dict |
         warnings.simplefilter('ignore')
         for method in ('lbfgs', 'bfgs', 'nm'):
             try:
-                md_reml  = smf.mixedlm(f"Q('{dv_col}') ~ C({condition_col})", sub,
+                md_reml  = smf.mixedlm(f"Q('{dv_col}') ~ {term}", sub,
                                        groups=sub['participant_id'])
                 mdf_reml = md_reml.fit(reml=True, method=method)
                 for param in mdf_reml.params.index:
@@ -201,8 +211,21 @@ def lmm_analyze(files: list[str], dv: str = 'auto', group_col: str = 'condition'
     n_part   = combined['participant_id'].n_unique()
     log_info(f"Combined: {len(combined)} rows from {n_part} participants")
 
+    # Resolve long-format ratings (variable/value columns from a wide_to_long reshape,
+    # e.g. SAM valence/arousal ratings merged with physiology) into a literal DV column.
+    if (dv.lower() != 'auto' and dv not in combined.columns
+            and 'variable' in combined.columns and 'value' in combined.columns):
+        available = combined['variable'].unique().to_list()
+        if dv not in available:
+            log_error(f"DV '{dv}' not found in long-format 'variable' column (available: {available})")
+            sys.exit(1)
+        combined = (combined.filter(pl.col('variable') == dv)
+                            .drop('variable')
+                            .rename({'value': dv}))
+        log_info(f"Resolved long-format ratings: filtered variable == '{dv}', renamed value -> '{dv}'")
+
     _META = {group_col, 'epoch_id', 'participant_id', 'condition', 'region', 'source',
-             'sub_epoch_id', 'window_id', 'trial_id'}
+             'sub_epoch_id', 'window_id', 'trial_id', 'variable', 'value'}
     _NUMERIC = (pl.Float32, pl.Float64, pl.Int32, pl.Int64, pl.Int16, pl.Int8,
                 pl.UInt32, pl.UInt64, pl.UInt16, pl.UInt8)
 
@@ -214,20 +237,37 @@ def lmm_analyze(files: list[str], dv: str = 'auto', group_col: str = 'condition'
     if not dv_cols:
         log_error(f"No DV columns found (dv='{dv}', columns={combined.columns})"); sys.exit(1)
 
-    log_info(f"DVs: {dv_cols}  |  Group: {group_col}  |  Participants: {n_part}")
+    # Resolve the predictor column(s). 'auto' iterates over all numeric non-meta,
+    # non-DV columns (e.g. EEG band powers alpha/beta/theta), fitting each DV
+    # against each candidate predictor separately as a continuous covariate.
+    if group_col.lower() == 'auto':
+        group_cols = [c for c in combined.columns
+                      if c not in _META and c not in dv_cols and combined[c].dtype in _NUMERIC]
+        if not group_cols:
+            log_error(f"group_col='auto' but no candidate predictor columns found (columns={combined.columns})")
+            sys.exit(1)
+    else:
+        group_cols = [group_col]
+
+    log_info(f"DVs: {dv_cols}  |  Group column(s): {group_cols}  |  Participants: {n_part}")
 
     pd_df = combined.to_pandas()
 
     rows         = []
     all_contrasts = []
     for col in dv_cols:
-        result = _fit_lmm_one_dv(pd_df, col, group_col)
-        if result is None:
-            continue
-        all_contrasts.extend(result.pop('contrasts'))
-        rows.append(result)
-        log_info(f"  {col}: χ²({result['df']}) = {result['chi2']}, "
-                 f"p = {result['p']}, R²_m = {result['marginal_r2']}, ICC = {result['icc']}")
+        for gcol in group_cols:
+            # 'condition' is a discrete bin (e.g. valence_high/low); any other
+            # predictor (physiological feature, band power) is a continuous covariate.
+            categorical = (gcol == 'condition')
+            result = _fit_lmm_one_dv(pd_df, col, gcol, categorical=categorical)
+            if result is None:
+                continue
+            result['dv'] = col if len(group_cols) == 1 else f"{col}_{gcol}"
+            all_contrasts.extend(result.pop('contrasts'))
+            rows.append(result)
+            log_info(f"  {result['dv']}: χ²({result['df']}) = {result['chi2']}, "
+                     f"p = {result['p']}, R²_m = {result['marginal_r2']}, ICC = {result['icc']}")
 
     if not rows:
         log_error("All LMM fits failed"); sys.exit(1)
@@ -235,7 +275,30 @@ def lmm_analyze(files: list[str], dv: str = 'auto', group_col: str = 'condition'
     # ── Derive output filename stem ─────────────────────────────────────────
     bases = [os.path.splitext(os.path.basename(f))[0] for f in files]
     parts = [b.split('_', 2)[-1] if b.count('_') >= 2 else b for b in bases]
-    stem  = parts[0].replace('_binned', '') if len(set(parts)) == 1 else 'l2_group'
+    
+    # Use canonical ATBX naming: base_stem + dv + group_col to ensure uniqueness
+    # e.g., labels_labels_long_merged + valence + amplitude = labels_labels_long_merged_valence_amplitude
+    base_stem = parts[0].replace('_binned', '') if len(set(parts)) == 1 else 'l2_group'
+    
+    # Create unique stem by appending DV and group_col to avoid collisions
+    # This follows ATBX convention: each processing step appends its parameters to the filename
+    dv_for_stem = dv if dv.lower() != 'auto' else 'auto'
+    group_col_for_stem = group_col if group_col.lower() != 'auto' else 'auto'
+    
+    # Clean up stem components (replace problematic characters)
+    dv_clean = str(dv_for_stem).replace(' ', '_').replace('/', '_')
+    group_col_clean = str(group_col_for_stem).replace(' ', '_').replace('/', '_')
+    
+    # For absolute uniqueness across different processes with same parameters,
+    # include a hash of the first few input file paths (not just basenames)
+    # This ensures that even if multiple processes use same dv/group_col on same basenames
+    # but from different directories (e.g., frontal vs parietal EEG data), they get different outputs
+    import hashlib
+    sorted_files = sorted(files)  # Sort for consistent hashing regardless of order
+    files_hash = hashlib.md5('_'.join(sorted_files).encode()).hexdigest()[:6]
+    files_suffix = f"_{files_hash}" if len(sorted_files) > 0 else ""
+    
+    stem = f"{base_stem}_{dv_clean}_{group_col_clean}{files_suffix}"
 
     # ── Summary table (flat rows, one per DV) ─────────────────────────────
     out_file = os.path.join(os.getcwd(), f"{stem}_lmm.parquet")
@@ -358,11 +421,21 @@ def contextual_lmm(files: list[str],
             df = df.with_columns(pl.lit(pid).alias('participant_id'))
         return df
 
+    # HRV is derived from the raw BVP (blood volume pulse) signal, so binned HRV
+    # files are named after their source signal (e.g. '..._bvp_peaks_interv_binned.parquet')
+    # rather than containing the literal substring 'hrv'. Alias 'hrv' to also match 'bvp'
+    # so modality filtering finds the correct files.
+    _MODALITY_ALIASES = {'hrv': ('hrv', 'bvp')}
+
+    def _matches_modality(path: str, mod: str) -> bool:
+        name = os.path.basename(path).lower()
+        return any(alias in name for alias in _MODALITY_ALIASES.get(mod, (mod,)))
+
     def _infer_modality(path: str) -> str:
         name = os.path.basename(path).lower()
-        for mod in ('eeg_frontal', 'eeg_parietal', 'fai', 'eda', 'hrv', 'eeg'):
+        for mod in ('eeg_frontal', 'eeg_parietal', 'fai', 'eda', 'hrv', 'bvp', 'eeg'):
             if mod in name:
-                return mod
+                return 'hrv' if mod == 'bvp' else mod
         return 'unknown'
 
     # ── Split files into DV and covariate sets ─────────────────────────────
@@ -374,14 +447,14 @@ def contextual_lmm(files: list[str],
         cov_mod = modalities[-1]  # last alphabetically as fallback
         log_warning(f"cov_modality='auto': using '{cov_mod}'")
 
-    cov_files = [f for f in files if cov_mod in os.path.basename(f).lower()]
+    cov_files = [f for f in files if _matches_modality(f, cov_mod)]
     if dv_modality == 'auto':
         # All files that are NOT covariate files become DVs
-        dv_files = [f for f in files if cov_mod not in os.path.basename(f).lower()]
+        dv_files = [f for f in files if not _matches_modality(f, cov_mod)]
         dv_mod   = 'auto'
     else:
         dv_mod   = dv_modality
-        dv_files = [f for f in files if dv_mod in os.path.basename(f).lower()]
+        dv_files = [f for f in files if _matches_modality(f, dv_mod)]
 
     if not dv_files:
         log_error(f"No DV files found (dv_modality='{dv_modality}')"); sys.exit(1)
