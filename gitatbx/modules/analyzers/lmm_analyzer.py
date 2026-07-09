@@ -289,16 +289,11 @@ def lmm_analyze(files: list[str], dv: str = 'auto', group_col: str = 'condition'
     dv_clean = str(dv_for_stem).replace(' ', '_').replace('/', '_')
     group_col_clean = str(group_col_for_stem).replace(' ', '_').replace('/', '_')
     
-    # For absolute uniqueness across different processes with same parameters,
-    # include a hash of the first few input file paths (not just basenames)
-    # This ensures that even if multiple processes use same dv/group_col on same basenames
-    # but from different directories (e.g., frontal vs parietal EEG data), they get different outputs
-    import hashlib
-    sorted_files = sorted(files)  # Sort for consistent hashing regardless of order
-    files_hash = hashlib.md5('_'.join(sorted_files).encode()).hexdigest()[:6]
-    files_suffix = f"_{files_hash}" if len(sorted_files) > 0 else ""
-    
-    stem = f"{base_stem}_{dv_clean}_{group_col_clean}{files_suffix}"
+    # Create unique stem that includes full processing history
+    # This follows ATBX convention: each processing step appends its parameters to the filename
+    # Include the first file's full base name to ensure uniqueness across different input sources
+    first_base = bases[0] if bases else 'l2_group'
+    stem = f"{first_base}_{dv_clean}_{group_col_clean}"
 
     # ── Summary table (flat rows, one per DV) ─────────────────────────────
     out_file = os.path.join(os.getcwd(), f"{stem}_lmm.parquet")

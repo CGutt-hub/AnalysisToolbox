@@ -20,18 +20,32 @@ When you encounter a problem or need a new capability:
 - **Global optimization** (generic modules) scales exponentially — cost amortizes across 100+ projects
 - Each module you build for "one project" becomes infrastructure for the next 10
 
-### Decision Tree for Any Problem
-1. **Is it data processing?** → Create a generic module in ATBX (`readers/`, `processors/`, `analyzers/`)
-2. **Is it configuration/tuning?** → Add a param to `{Proj}_parameters.config`, use existing module
-3. **Is it workflow orchestration?** → Extend `workflow_wrapper.nf` or `IOInterface` (rarely needed)
-4. **Only if it's truly project-specific** → Implement in project files (`{Proj}_ingestor.py`, project config)
+## ATBX Core Principles
 
-The framework knows **nothing about specific projects or modules.** It only chains whatever you tell it to chain.
+### Canonical Naming Convention
+**EVERY processing step MUST append its identifiers to the output filename to maintain pipeline traceability.**
 
-## Pre-Workflow Checklist: Framework-First Decision
+- Input: `EV2_001_xdf.parquet` → XDF Reader → Output: `EV2_001_xdf.parquet` + subfolder
+- Subfolder contents: `EV2_001_xdf_eeg.parquet`, `EV2_001_xdf_eda.parquet`, etc. (multi-output)
+- File finder processes signal file → Output: `EV2_001_xdf2.parquet` (filtered ECG)
+- Amplitude analyzer → Output: `EV2_001_xdf2_amp.parquet`
+- **Key rule:** By reading the filename, you can reconstruct the entire pipeline history
 
-**Before you write ANY code**, ask these questions in order:
+### Module Selection Guide
+- **Combining files row-wise**: Use **concatenating_processor** (NOT merging_processor)
+- **Joining files column-wise**: Use **join_processor** for SQL-style joins on keys
+- **Transforming data**: Create generic processor in `modules/processors/`
+- **Statistical analysis**: Create generic analyzer in `modules/analyzers/"
+- **Data ingestion**: Create generic reader in `modules/readers/`
 
+### Forbidden Patterns
+- ❌ **merging_processor** - OBSOLETE artifact, NEVER use
+- ❌ **condition_profile_processor** - OBSOLETE (does join+pivot), use join_processor + pivot_processor chained
+- ❌ Hardcoding project names in ATBX modules
+- ❌ Creating project-specific modules in ATBX
+- ❌ Using pandas (use polars exclusively)
+- ❌ Column joins that create ambiguous filenames
+- ❌ **Compound modules** - NEVER create modules that do multiple distinct operations
 | Question | If Yes | If No |
 |----------|--------|-------|
 | Does ATBX already have a module that does this? | Use it. Stop. | Continue. |
@@ -62,7 +76,7 @@ All processing modules are **generic Python scripts** in the AnalysisToolbox und
 
 Before creating anything, **search the AnalysisToolbox** for an existing module that already does what's needed:
 - `Python/readers/` — data ingestion (xdf, csv, txt, api)
-- `Python/processors/` — transforms (filter, epoch, baseline, rejection, OLS, PSD, peak detection, etc.)
+- `Python/processors/` — transforms (filter, epoch, baseline, rejection, OLS, PSD, peak detection, join, concatenate, pivot, etc.)
 - `Python/analyzers/` — statistics & visualization (ANOVA, bootstrap, correlation, connectivity, amplitude, etc.)
 - `Python/utils/` — infrastructure (workflow_wrapper.nf, file_finder.py, interactive_plotter.py, log_to_parquet.py)
 
@@ -156,6 +170,23 @@ Rules:
 - **NEVER** hardcode project-specific assumptions into AnalysisToolbox modules
 - **ALWAYS** search existing modules before creating new ones — duplication wastes compound value
 - **ALWAYS** place new functionality in AnalysisToolbox (not project folders) — it compounds across 100+ projects
+- **ALWAYS use concatenating_processor** when combining multiple files into one
+
+### Single Responsibility Principle (CRITICAL)
+- **❌ NEVER** create modules that perform multiple distinct mathematical operations
+- **✅ ALWAYS** create separate modules for each mathematical/statistical operation
+- **Examples:** 
+  - ❌ `condition_profile_processor` (does join + pivot → violation)
+  - ✅ Separate `join_processor` + `pivot_processor` chained in pipeline
+- **Single function per module** - no classes, no helper functions that perform distinct operations
+- **Each module does ONE thing well** - join, pivot, filter, transform, analyze, etc.
+
+### ATBX Canonical Naming Rules
+- **Each processing step MUST append its parameters to the filename**
+- **Input -> Output pattern:** `EV2_001_xdf.parquet` → `EV2_001_xdf_amp.parquet` (amplitude analysis)
+- **Multi-output:** Create signal file + subfolder with numbered outputs (`EV2_001_xdf2.parquet`)
+- **Filename traceability:** Can reconstruct entire pipeline by reading filename suffixes
+- **NO filename collisions allowed** - if same output name, something is architecturally wrong
 
 ### Code Style
 - DO NOT create modules with class-based designs — use single functions

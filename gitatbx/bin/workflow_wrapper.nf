@@ -711,11 +711,10 @@ process IOInterface {
         // Terminal processes always emit output (even on failure) so finalization is never blocked.
         isTerminal = args.remove('terminal')
         // Strip result token — publishes output to results/ instead of plots/.
-        // Used by result_collector to create a clean-named curated output folder.
+        // Used for final project results (e.g., LMM summaries, classification outputs).
         isResult = args.remove('result')
         // Strip table token — marks this process as a data-table export.
-        // Table processes publish to tables/ instead of results/ or plots/,
-        // and are not registered in the HTML archive (they are raw data files).
+        // Table processes publish to tables/ (raw epoch data for inspection).
         isTable = args.remove('table')
         extraArgs = args.collect { "'${escapeArg(it)}'" }.join(' ')
     }
