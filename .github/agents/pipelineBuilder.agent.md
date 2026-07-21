@@ -190,7 +190,32 @@ Rules:
 
 ### Code Style
 - DO NOT create modules with class-based designs — use single functions
-- DO NOT use pandas — use Polars for all DataFrame operations
+- DO NOT use pandas — use Polars for all DataFrame operations. **Exit immediately if pandas is imported.**
 - ALWAYS use relative paths (`../../AnalysisToolbox/...`) in module imports
 - ALWAYS compress parquets with `compression='gzip'` (browser-compatible)
 - ALWAYS include `plot_type` in outputs destined for interactive_plotter.py
+
+### Sentinel Handling (CRITICAL)
+- **All modules MUST forward sentinel files** (`_sentinel` column) unchanged to prevent pipeline blocking.
+- **Workflow wrapper auto-creates sentinels** on failure: `{participant}_sentinel_failed.parquet`
+- **Filter before finalization**: `l2_outputs.filter { !it.baseName.contains('sentinel') }`
+- **Sentinel structure**: `pl.DataFrame({'_sentinel': [True], '_error': [True]})`
+
+### Module Validation Checklist
+Before creating any module, verify:
+1. **Single function** (no classes, no helper functions doing distinct ops).
+2. **Polars-only**: `import polars as pl` present, **no pandas**. 
+3. **Sentinel-aware**: Checks `if '_sentinel' in df.columns: return handle_sentinel(ip)`.
+4. **Traceable output**: `input.replace('.parquet', '_suffix.parquet')` pattern.
+5. **Generic naming**: No project-specific prefixes (EV2_, etc.).
+6. **Type hints**: All function args have type annotations.
+
+### Forbidden Patterns (HARD STOP)
+| ❌ Pattern | ✅ Use | Reason |
+|------------|------|--------|
+| `merging_processor` | `concatenating_processor` or `join_processor` | Obsolete, ambiguous |
+| `condition_profile_processor` | `join_processor` + `pivot_processor` | Violates single responsibility |
+| Pandas | Polars | Performance, consistency |
+| Classes in modules | Single `main()` function | Simplicity, traceability |
+| Hardcoded project names | Generic naming | Reusability |
+| Compound operations | Separate modules | Maintainability |

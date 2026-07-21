@@ -55,14 +55,22 @@ def pivot_process(ip: str, direction: str = 'long_to_wide',
     log_info(f"Pivot ({direction}): {ip}")
 
     df = pl.read_parquet(ip)
+    if len(df) == 0:
+        log_error(f"Empty input file: {ip}"); sys.exit(1)
+    
+    log_info(f"Input schema: {list(df.columns)} | Shape: {df.shape}")
     idx = [c.strip() for c in index_cols.split(',') if c.strip()]
-
+    
+    # Validate required columns for long_to_wide
     if direction == 'long_to_wide':
-        if not pivot_col or pivot_col not in df.columns:
-            log_error(f"pivot_col '{pivot_col}' not in columns"); sys.exit(1)
-        if value_col not in df.columns:
-            log_error(f"value_col '{value_col}' not in columns"); sys.exit(1)
-        df_out = (df.filter(pl.col(value_col).is_not_null())
+        if not idx:
+            log_error("index_cols cannot be empty for long_to_wide"); sys.exit(1)
+        if not pivot_col:
+            log_error("pivot_col cannot be empty for long_to_wide"); sys.exit(1)
+        missing = [col for col in idx + [pivot_col, value_col] if col not in df.columns]
+        if missing:
+            log_error(f"Missing columns for long_to_wide: {missing}. Available: {list(df.columns)}"); sys.exit(1)
+        df_out = (df
                   .unique(subset=idx + [pivot_col], keep='first')
                   .pivot(values=value_col, index=idx, on=pivot_col,
                          aggregate_function='mean')
@@ -72,6 +80,11 @@ def pivot_process(ip: str, direction: str = 'long_to_wide',
         val_cols = [c.strip() for c in value_col.split(',') if c.strip()]
         if not val_cols:
             val_cols = [c for c in df.columns if c not in idx and df[c].dtype.is_numeric()]
+            if not val_cols:
+                log_error(f"No numeric columns found for wide_to_long. Available: {list(df.columns)}"); sys.exit(1)
+        missing_idx = [col for col in idx if col not in df.columns]
+        if missing_idx:
+            log_error(f"Missing index columns for wide_to_long: {missing_idx}. Available: {list(df.columns)}"); sys.exit(1)
         df_out = df.unpivot(on=val_cols, index=idx,
                             variable_name='variable', value_name='value')
         suffix = 'long'
@@ -225,7 +238,9 @@ def multi_file_to_wide(files: list[str],
 
 
 if __name__ == '__main__':
-    a = sys.argv[1:]
+    # Strip IOInterface tokens
+    _TOKENS = {'terminal', 'table', 'result', 'group_log'}
+    a = [arg for arg in sys.argv[1:] if arg not in _TOKENS]
 
     if not a:
         print('[pivot] Reshape parquet between long and wide formats.')

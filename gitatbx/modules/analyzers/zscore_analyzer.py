@@ -48,12 +48,6 @@ def inspect_quality(ip: str, group_col: str = 'condition', value_cols: list | No
         log_error("Empty input DataFrame — nothing to inspect, halting branch.")
         sys.exit(1)
 
-    # Pass through sentinel files from failed upstream processes
-    if '_sentinel' in df.columns:
-        basename = os.path.basename(ip).replace('.parquet', '')
-        df.write_parquet(f"sentinel_quality_{basename}.parquet", compression='gzip')
-        return f"sentinel_quality_{basename}.parquet"
-
     # Auto-detect sample column (first string/categorical column that isn't group_col)
     if sample_col is None:
         for c in df.columns:

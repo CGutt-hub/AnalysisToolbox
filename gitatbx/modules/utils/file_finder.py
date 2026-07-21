@@ -88,12 +88,17 @@ def copy_and_output(matches, signal_file, pattern, append_suffix):
         return 1
     for f in matches:
         original_name = os.path.basename(f)
-        # Append the chosen suffix to the original filename
-        # e.g. EV_002_psd1.parquet + suffix=eda -> EV_002_psd1_eda.parquet
-        stem = os.path.splitext(original_name)[0]
-        ext = os.path.splitext(original_name)[1]
-        out_name = f"{stem}_{append_suffix}{ext}"
-        print(f"[file_finder] Appended suffix: {original_name} -> {out_name}", file=sys.stderr)
+        # If append_suffix is 'pass' or None, output original files without renaming
+        if append_suffix in ('pass', None, ''):
+            out_name = original_name
+            print(f"[file_finder] Pass-through mode: {original_name}", file=sys.stderr)
+        else:
+            # Append the chosen suffix to the original filename
+            # e.g. EV_002_psd1.parquet + suffix=eda -> EV_002_psd1_eda.parquet
+            stem = os.path.splitext(original_name)[0]
+            ext = os.path.splitext(original_name)[1]
+            out_name = f"{stem}_{append_suffix}{ext}"
+            print(f"[file_finder] Appended suffix: {original_name} -> {out_name}", file=sys.stderr)
         shutil.copyfile(f, out_name)
         print(os.path.abspath(out_name))
     return 0
@@ -108,22 +113,21 @@ def derive_suffix(pattern):
     return stem if stem else 'found'
 
 if __name__ == "__main__":
-    if len(sys.argv) == 3:
-        # Could be "<pattern> <suffix>" or just "<pattern>"
-        parts = sys.argv[2].strip().split(None, 1)
-        if len(parts) == 2:
-            pattern, append_suffix = parts
-        else:
-            pattern = parts[0]
-            append_suffix = derive_suffix(pattern)
-            print(f"[file_finder] No suffix provided, derived '{append_suffix}' from pattern '{pattern}'", file=sys.stderr)
-    elif len(sys.argv) == 4:
-        # IOInterface splits into separate args: <pattern> <suffix>
-        pattern, append_suffix = sys.argv[2].strip(), sys.argv[3].strip()
-    else:
+    # Strip IOInterface tokens
+    _TOKENS = {'terminal', 'table', 'result', 'group_log'}
+    clean_args = [arg for arg in sys.argv[1:] if arg not in _TOKENS]
+    
+    if len(clean_args) < 2:
         print("Usage: python file_finder.py <signal_file> <pattern> [<append_suffix>]", file=sys.stderr)
         sys.exit(1)
-    matches = find_in_subdir(sys.argv[1], pattern)
-    sys.exit(copy_and_output(matches, sys.argv[1], pattern, append_suffix))
+    
+    # IOInterface passes: [python_exe, script_path, input_signal, pattern, suffix?]
+    # After stripping tokens, clean_args = [input_signal, pattern, suffix?]
+    signal_file = clean_args[0]
+    pattern = clean_args[1]
+    append_suffix = clean_args[2] if len(clean_args) >= 3 else derive_suffix(pattern)
+    
+    matches = find_in_subdir(signal_file, pattern)
+    sys.exit(copy_and_output(matches, signal_file, pattern, append_suffix))
 
 
