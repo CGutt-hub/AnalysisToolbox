@@ -1,13 +1,13 @@
+"""PSD Analyzer - Computes Welch's Power Spectral Density across frequency bands and regions."""
 import os
 import sys
 import ast
 import warnings
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 import polars as pl
 import numpy as np
 from scipy import signal
 
-# Unterdrücke scipy/numpy-spezifische Laufzeit-Warnungen
 warnings.filterwarnings('ignore', category=RuntimeWarning)
 
 def log_info(msg: str) -> None:    print(f"[psd] INFO: {msg}")
@@ -16,15 +16,25 @@ def log_error(msg: str) -> None:   print(f"[psd] ERROR: {msg}")
 
 def compute_psd(ip: str, bands: dict, channels: list | None = None, regions: dict | None = None, y_lim: float | None = None) -> str:
     print(f"[psd] Loading: {ip}")
+    if not os.path.exists(ip):
+        log_error(f"Input file not found: {ip}")
+        sys.exit(1)
+
     df = pl.read_parquet(ip)
     
     if len(df) == 0:
         log_error("Empty input DataFrame — no epochs to compute PSD, halting branch.")
         sys.exit(1)
     
+    if 'epoch_id' not in df.columns or 'condition' not in df.columns:
+        log_error("Input DataFrame missing required 'epoch_id' or 'condition' columns.")
+        sys.exit(1)
+
     ch_names = [c for c in df.columns if c not in ['condition', 'epoch_id', 'time']]
+    if not ch_names:
+        log_error("No signal channels found in input DataFrame.")
+        sys.exit(1)
     
-    # Sichere Typzuweisung für regions_dict gegen len()- und items()-Konflikte im Linter
     region_mode = False
     regions_dict: Dict[str, Any] = {}
     if isinstance(regions, dict) and len(regions) > 0:
@@ -37,20 +47,19 @@ def compute_psd(ip: str, bands: dict, channels: list | None = None, regions: dic
         if channels:
             ch_names = [c for c in ch_names if c in channels]
 
-    # Sichere Extraktion der Zeitreihen-Frequenz über native Python-Listen
     epoch_ids_all = df['epoch_id'].unique().to_list()
     if not epoch_ids_all:
         log_error("No epochs found.")
         sys.exit(1)
         
     first_epoch_df = df.filter(pl.col('epoch_id') == epoch_ids_all[0])
-    times = first_epoch_df['time'].to_numpy()
+    times = first_epoch_df['time'].to_numpy() if 'time' in first_epoch_df.columns else np.array([])
     
     if len(times) > 1:
         dt = float(times[1]) - float(times[0])
     else:
         dt = 1.0 / 128.0
-    sfreq = 1.0 / dt
+    sfreq = 1.0 / dt if dt > 0 else 128.0
     
     epoch_ids = df['epoch_id'].unique().to_list()
     conditions = [str(df.filter(pl.col('epoch_id') == eid)['condition'].to_list()[0]) for eid in epoch_ids]
@@ -58,7 +67,10 @@ def compute_psd(ip: str, bands: dict, channels: list | None = None, regions: dic
     print(f"[psd] Data: {len(epoch_ids)} epochs, {sfreq:.1f} Hz, Bands: {list(bands.keys())}")
     
     results = []
-    nperseg = min(256, len(times))
+    nperseg = min(256, len(times) if len(times) > 0 else 256)
+    if nperseg < 2:
+        log_error("Epoch sample size too small for Welch PSD computation.")
+        sys.exit(1)
     
     if region_mode:
         for ep_idx, eid in enumerate(epoch_ids):
@@ -98,6 +110,10 @@ def compute_psd(ip: str, bands: dict, channels: list | None = None, regions: dic
                         'condition': cond, 'epoch_id': eid, 'channel': ch, 'band': band_name, 'power': power
                     })
     
+    if not results:
+        log_error("PSD extraction yielded zero results. Halting.")
+        sys.exit(1)
+
     result_df = pl.DataFrame(results)
     conds = sorted(result_df['condition'].unique().to_list())
     base = os.path.splitext(os.path.basename(ip))[0]
@@ -121,7 +137,6 @@ def compute_psd(ip: str, bands: dict, channels: list | None = None, regions: dic
             ]).with_columns(pl.lit(cond).alias('condition'))
             epoch_pivot = epoch_agg.pivot(on='band', index=['condition', 'epoch_id'], values='value')
         
-        # BEHOBEN: NumPy erzeugt absolut unfehlbare, linterkonforme Fließkommazahlen!
         if region_mode:
             band_names = sorted([c for c in epoch_pivot.columns if c not in ['condition', 'epoch_id', 'region']])
             region_list = sorted(epoch_pivot['region'].unique().to_list())
@@ -186,21 +201,20 @@ def compute_psd(ip: str, bands: dict, channels: list | None = None, regions: dic
 
 if __name__ == '__main__':
     if len(sys.argv) < 3:
-        print("[psd] Usage: python psd_analyzer.py <epochs.parquet> <bands_dict> [channels] [regions_dict] [y_lim]")
+        log_error("Usage: python psd_analyzer.py <epochs.parquet> <bands_dict> [channels] [regions_dict] [y_lim]")
         sys.exit(1)
         
     input_file = sys.argv[1]
     
-    # Nextflow-String-Parser 
     bands_raw = sys.argv[2].strip("'\"").replace(' ', '')
     if not bands_raw.endswith("}"): 
         bands_raw += "}"  
     
     try:
         bands_dict = ast.literal_eval(bands_raw)
-    except Exception:
-        log_warning(f"Fallback auf Standard-Alpha-Band wegen Parsing-Fehler bei: {sys.argv[2]}")
-        bands_dict = {'alpha': (8.0, 12.0)}
+    except Exception as e:
+        log_error(f"Failed to parse bands dictionary argument '{sys.argv[2]}': {e}")
+        sys.exit(1)
         
     channels_arg = None
     regions_arg  = None
@@ -208,14 +222,20 @@ if __name__ == '__main__':
     
     if len(sys.argv) > 3 and sys.argv[3] not in ['None', 'null', 'result']:
         try: channels_arg = ast.literal_eval(sys.argv[3])
-        except Exception: pass
+        except Exception as e:
+            log_error(f"Failed to parse channels argument: {e}")
+            sys.exit(1)
         
     if len(sys.argv) > 4 and sys.argv[4] not in ['None', 'null', 'result']:
         try: regions_arg = ast.literal_eval(sys.argv[4])
-        except Exception: pass
+        except Exception as e:
+            log_error(f"Failed to parse regions argument: {e}")
+            sys.exit(1)
         
     if len(sys.argv) > 5 and sys.argv[5] not in ['None', 'null', 'result']:
         try: ylim_arg = float(sys.argv[5])
-        except Exception: pass
+        except Exception as e:
+            log_error(f"Failed to parse y_lim argument: {e}")
+            sys.exit(1)
 
     compute_psd(input_file, bands_dict, channels_arg, regions_arg, ylim_arg)

@@ -3,6 +3,7 @@
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.ReentrantLock
 
 class gitSync {
@@ -24,25 +25,50 @@ class gitSync {
                 while (gitRoot != null && !new File(gitRoot, ".git").exists()) {
                     gitRoot = gitRoot.getParentFile()
                 }
-                if (!gitRoot) return
+                if (!gitRoot) {
+                    try { pipelineLog.append("[${ts}] [GitSync] WARNING: No .git directory found walking up from ${outputRoot}\n") } catch (Exception ignored) {}
+                    return
+                }
 
-                def inheritedEnv = System.getenv().collect { k, v -> "${k}=${v}" } + ["GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=echo", "SSH_ASKPASS=echo"]
-                
-                def runGit = { cmd, timeoutSec = 30 ->
+                def runGit = { List<String> cmd, int timeoutSec = 30 ->
                     try {
-                        def proc = cmd.execute(inheritedEnv, gitRoot)
-                        def out = new StringBuilder(); def err = new StringBuilder()
-                        def reader = Thread.start { proc.waitForProcessOutput(out, err) }
-                        reader.join(timeoutSec * 1000L)
-                        if (reader.isAlive()) {
+                        def pb = new ProcessBuilder(cmd)
+                        pb.directory(gitRoot)
+                        
+                        def env = pb.environment()
+                        env.putAll(System.getenv())
+                        env.put("GIT_TERMINAL_PROMPT", "0")
+                        env.put("GIT_ASKPASS", "echo")
+                        env.put("SSH_ASKPASS", "echo")
+                        
+                        pb.redirectErrorStream(true)
+                        def proc = pb.start()
+                        
+                        def out = new StringBuilder()
+                        def reader = Thread.start {
+                            try {
+                                proc.inputStream.eachLine { line -> out.append(line).append("\n") }
+                            } catch (Exception ignored) {}
+                        }
+                        
+                        boolean finished = proc.waitFor(timeoutSec, TimeUnit.SECONDS)
+                        if (!finished) {
                             proc.destroyForcibly()
                             return [exit: -1, out: "timeout"]
                         }
-                        return [exit: proc.exitValue(), out: "${out}${err}"]
-                    } catch (Exception e) { return [exit: -1, out: e.message] }
+                        
+                        reader.join(1000L)
+                        return [exit: proc.exitValue(), out: out.toString()]
+                    } catch (Exception e) { 
+                        return [exit: -1, out: e.message] 
+                    }
                 }
 
-                new File(gitRoot, ".git/index.lock").with { f -> if (f.exists()) f.delete() }
+                def lockFile = new File(gitRoot, ".git/index.lock")
+                if (lockFile.exists() && (System.currentTimeMillis() - lockFile.lastModified() > 10000)) {
+                    lockFile.delete()
+                }
+
                 runGit(["git", "config", "--global", "safe.directory", "*"], 5)
                 runGit(["git", "rebase", "--abort"], 5)
 
@@ -56,12 +82,19 @@ class gitSync {
                 if (!syncPaths) return
 
                 def addRes = runGit(["git", "add", "-A"] + syncPaths, 60)
-                if (addRes.exit != 0) return
+                if (addRes.exit != 0) {
+                    try { pipelineLog.append("[ERROR] GitSync git add failed: ${addRes.out}\n") } catch (Exception ignored) {}
+                    return
+                }
 
                 def statusRes = runGit(["git", "status", "--porcelain", "--cached"], 15)
                 if (!statusRes.out?.trim()) return
 
-                runGit(["git", "commit", "-m", "autosync: ${logMessage}"], 30)
+                def commitRes = runGit(["git", "commit", "-m", "autosync: ${logMessage}"], 30)
+                if (commitRes.exit != 0) {
+                    try { pipelineLog.append("[ERROR] GitSync commit failed: ${commitRes.out}\n") } catch (Exception ignored) {}
+                    return
+                }
                 
                 def pushRes = runGit(["git", "push"], 120)
                 if (pushRes.exit != 0) {

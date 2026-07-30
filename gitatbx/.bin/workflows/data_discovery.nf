@@ -5,11 +5,9 @@ workflow data_discovery {
         participant_pattern
 
     main:
-        // BEHOBEN: .toString() zwingt UnixPath in einen sauberen String für das Java-File-Objekt!
-        def utilsGroovyFile = new File(moduleDir.toString(), "utils/discoveryUtils.groovy")
+        def utilsGroovyFile = moduleDir.resolve("../lib/discoveryUtils.groovy").toFile()
         def currentLoader   = Thread.currentThread().contextClassLoader
         def utilsClass      = new GroovyClassLoader(currentLoader).parseClass(utilsGroovyFile)
-
 
         def regex_pattern = participant_pattern.replaceAll(/\*/, '.*').replaceAll(/\?/, '.')
         def input_path = new File("${workflow.launchDir}/${input_dir}")
@@ -22,7 +20,8 @@ workflow data_discovery {
             ? l1_path.listFiles().findAll { dir_item -> dir_item.isDirectory() && new File(dir_item, ".reinject").exists() }.collect { dir_obj -> dir_obj.name } as Set
             : [] as Set
             
-        def new_participants = input_path.list().findAll { p_id -> p_id.matches(regex_pattern) }.findAll { p_id -> !(p_id in output_dirs) || p_id in reinject_pids }
+        def input_files = input_path.exists() ? input_path.list() : []
+        def new_participants = input_files.findAll { p_id -> p_id.matches(regex_pattern) }.findAll { p_id -> !(p_id in output_dirs) || p_id in reinject_pids }
         
         def bin_dir_infra = new File("${workflow.launchDir}/${params.output_dir}", ".bin")
         bin_dir_infra.mkdirs()
@@ -32,36 +31,14 @@ workflow data_discovery {
         }
 
         if (params.l2_analyses) {
-            def l2_dir  = new File("${workflow.launchDir}/${params.output_dir}", "${params.project_name}_l2")
-            def l2_plots_dir = new File(l2_dir, "plots")
-            def l2_tables_dir = new File(l2_dir, "tables")
-            def l2_results_dir = new File(l2_dir, "results")
+            def l2_dir = new File("${workflow.launchDir}/${params.output_dir}", "${params.project_name}_l2")
+            def l2_bin = new File(l2_dir, ".bin")
             l2_dir.mkdirs()
-            l2_plots_dir.mkdirs()
-            l2_tables_dir.mkdirs()
-            l2_results_dir.mkdirs()
+            l2_bin.mkdirs()
         }
 
         def l1_dir_scaffold = new File("${workflow.launchDir}/${params.output_dir}", "${params.project_name}_l1")
         l1_dir_scaffold.mkdirs()
-
-        def html_file_scaffold = new File(bin_dir_infra, "${params.project_name}_results.html")
-        if (!html_file_scaffold.exists()) {
-            try {
-                def init_cmd = [params.python_exe, '-u',
-                    "${workflow.launchDir}/${params.toolbox_dir}/bin/interactive_plotter.py",
-                    'init', html_file_scaffold.absolutePath]
-                def proc = init_cmd.execute()
-                proc.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)
-                if (proc.exitValue() != 0) {
-                    pipeline_log.append(
-                        "[${new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())}] [workflow] Warning: Could not initialize HTML archive: ${proc.text}\n"
-                    )
-                }
-            } catch (Exception e) {
-                pipeline_log.append("[${new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())}] [workflow] HTML init error: ${e.message}\n")
-            }
-        }
 
         if (output_path.exists()) {
             output_path.eachDirRecurse { sub_dir ->
@@ -70,7 +47,6 @@ workflow data_discovery {
             }
         }
 
-        // Bootstrap push
         try {
             def git_root = utilsClass.findGitRoot(new File(workflow.launchDir.toString()))
             if (git_root) {
@@ -81,7 +57,7 @@ workflow data_discovery {
                 new File(git_root, ".git/rebase-apply").with { ra_f -> if (ra_f.exists()) ra_f.deleteDir() }
 
                 def binIgnore = new File(bin_dir_infra, ".gitignore")
-                def ignorePatterns = ["pipeline_trace.txt", "*.log", "*_results.html"]
+                def ignorePatterns = ["pipeline_trace.txt", "*.log"]
                 ignorePatterns.each { pattern ->
                     if (!binIgnore.exists() || !binIgnore.text.contains(pattern)) {
                         binIgnore.append("${pattern}\n")
@@ -131,7 +107,7 @@ workflow data_discovery {
             
             all_participants = channel.fromList(new_participants).concat(watched_participants)
                 .filter { pid ->
-                    def safe_id = utilsClass.cleanParticipantId(pid)
+                    def safe_id = pid ? pid.replaceAll('\r', '').trim().replaceAll(/[^A-Za-z0-9._-]/, '_') : 'unknown'
                     def pid_dir = new File("${workflow.launchDir}/${output_dir}/${params.project_name}_l1/${safe_id}")
                     return !pid_dir.exists() || new File(pid_dir, ".reinject").exists()
                 }
@@ -140,12 +116,13 @@ workflow data_discovery {
         }
 
     emit:
-        // BEHOBEN: Wir hängen die Transformation DIREKT und nackt an den emittierten Kanal.
-        // Keine ungenutzte Variable, kein verbotener Zuweisungs-Name!
         all_participants.map { pid ->
-            def safe_id = utilsClass.cleanParticipantId(pid)
+            def safe_id = pid ? pid.replaceAll('\r', '').trim().replaceAll(/[^A-Za-z0-9._-]/, '_') : 'unknown'
             def participant_dir = new File(l1_dir_scaffold, safe_id)
             participant_dir.mkdirs()
+            
+            def bin_dir = new File(participant_dir, ".bin")
+            bin_dir.mkdirs()
             
             def timestamp = new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
             def global_pipeline_log = new File(new File("${workflow.launchDir}/${params.output_dir}", ".bin"), "${params.project_name}.log")
@@ -155,4 +132,3 @@ workflow data_discovery {
             return [pid, folder]
         }
 }
-
