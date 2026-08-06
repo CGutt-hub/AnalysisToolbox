@@ -6,8 +6,6 @@ workflow concat {
         output_name
 
     main:
-        // Barrier collection: wait for all emissions to complete before passing the list 
-        // to prevent premature evaluation of partial outputs.
         def collected_files = incoming_signals
             .map { item -> 
                 if (item instanceof List || item.getClass().isArray()) {

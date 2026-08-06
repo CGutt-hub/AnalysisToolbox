@@ -1,5 +1,5 @@
 """Peak Analyzer Module - Generic latency and amplitude extraction (Strict fail-fast implementation)."""
-import polars as pl, numpy as np, sys, os, ast
+import polars as pl, numpy as np, sys, os
 
 def log_info(msg: str):  print(f"[peak] INFO: {msg}")
 def log_error(msg: str): print(f"[peak] ERROR: {msg}")
@@ -7,8 +7,8 @@ def log_error(msg: str): print(f"[peak] ERROR: {msg}")
 def analyze_peaks(
     ip: str, 
     target_cols: list[str],
-    method: str = 'max_abs', 
-    time_window: str | tuple | None = None,
+    method: str, 
+    time_window_str: str,
     participant_col: str = 'participant_id',
     condition_col: str = 'condition',
     epoch_col: str = 'epoch_id',
@@ -17,6 +17,10 @@ def analyze_peaks(
     log_info(f"Peak analysis execution: {ip}, method={method}")
     if not os.path.exists(ip) or os.path.getsize(ip) <= 12:
         log_error(f"Input file non-existent or empty: {ip}")
+        sys.exit(1)
+
+    if method not in ('max', 'min', 'max_abs'):
+        log_error(f"Unsupported peak extraction method '{method}'. Must be 'max', 'min', or 'max_abs'.")
         sys.exit(1)
 
     df = pl.read_parquet(ip)
@@ -37,14 +41,24 @@ def analyze_peaks(
         log_error(f"Required time column '{time_col}' missing from dataset.")
         sys.exit(1)
 
+    for ch in target_cols:
+        if df[ch].null_count() > 0 or np.isnan(df[ch].to_numpy()).any():
+            log_error(f"Null or NaN values detected in channel column '{ch}'. Imputation disabled.")
+            sys.exit(1)
+
     g_keys = [c for c in [participant_col, condition_col, epoch_col] if c in df.columns]
 
     t_start, t_stop = None, None
-    if isinstance(time_window, str) and ',' in time_window:
-        parts = time_window.split(',')
-        t_start, t_stop = float(parts[0]), float(parts[1])
-    elif isinstance(time_window, (tuple, list)) and len(time_window) == 2:
-        t_start, t_stop = float(time_window[0]), float(time_window[1])
+    if time_window_str.upper() != 'NONE':
+        if ',' not in time_window_str:
+            log_error(f"Invalid time_window format '{time_window_str}'. Must be 'low,high' or 'NONE'.")
+            sys.exit(1)
+        parts = time_window_str.split(',')
+        try:
+            t_start, t_stop = float(parts[0]), float(parts[1])
+        except ValueError as e:
+            log_error(f"Failed to parse numeric time window bound values: {e}")
+            sys.exit(1)
 
     records = []
     if g_keys:
@@ -53,13 +67,10 @@ def analyze_peaks(
             key_dict = dict(zip(g_keys, keys if isinstance(keys, tuple) else [keys]))
             times = sub_df[time_col].to_numpy()
 
-            if t_start is not None and t_stop is not None:
-                mask = (times >= t_start) & (times <= t_stop)
-            else:
-                mask = np.ones(len(times), dtype=bool)
+            mask = (times >= t_start) & (times <= t_stop) if t_start is not None and t_stop is not None else np.ones(len(times), dtype=bool)
 
             if not np.any(mask):
-                log_error(f"Time window {time_window} contains no time samples for sub-group {key_dict}.")
+                log_error(f"Time window {time_window_str} contains no time samples for sub-group {key_dict}.")
                 sys.exit(1)
 
             for ch in target_cols:
@@ -67,19 +78,12 @@ def analyze_peaks(
                 masked_data = data[mask]
                 masked_times = times[mask]
 
-                if len(masked_data) == 0:
-                    log_error(f"Sub-group {key_dict} column '{ch}' has empty sample slice.")
-                    sys.exit(1)
-
                 if method == 'max':
                     idx = np.argmax(masked_data)
                 elif method == 'min':
                     idx = np.argmin(masked_data)
                 elif method == 'max_abs':
                     idx = np.argmax(np.abs(masked_data))
-                else:
-                    log_error(f"Unknown peak extraction method: '{method}'")
-                    sys.exit(1)
 
                 row = key_dict.copy()
                 row['channel'] = ch
@@ -91,15 +95,12 @@ def analyze_peaks(
         times = df[time_col].to_numpy()
         mask = (times >= t_start) & (times <= t_stop) if t_start is not None and t_stop is not None else np.ones(len(times), dtype=bool)
         if not np.any(mask):
-            log_error(f"Time window {time_window} contains no time samples.")
+            log_error(f"Time window {time_window_str} contains no time samples.")
             sys.exit(1)
 
         for ch in target_cols:
             data = df[ch].to_numpy()[mask]
             masked_times = times[mask]
-            if len(data) == 0:
-                log_error(f"Column '{ch}' has empty sample slice.")
-                sys.exit(1)
             idx = np.argmax(np.abs(data)) if method == 'max_abs' else (np.argmax(data) if method == 'max' else np.argmin(data))
             records.append({'channel': ch, 'latency': float(masked_times[idx]), 'amplitude': float(data[idx]), 'method': method})
 
@@ -116,20 +117,13 @@ def analyze_peaks(
     return out_file
 
 if __name__ == '__main__':
-    args = sys.argv
-    if len(args) >= 3:
-        raw_targets = args[2]
-        if raw_targets.startswith('[') and raw_targets.endswith(']'):
-            t_cols = ast.literal_eval(raw_targets)
-        else:
-            t_cols = [c.strip() for c in raw_targets.split(',') if c.strip()]
-
-        analyze_peaks(
-            ip=args[1], 
-            target_cols=t_cols,
-            method=args[3] if len(args) > 3 and args[3] not in ('None', '') else 'max_abs',
-            time_window=args[4] if len(args) > 4 and args[4] not in ('None', '') else None
-        )
-    else:
-        log_error("Usage: python peak_analyzer.py <epochs.parquet> <target_cols_list_or_comma_str> [method] [time_window]")
+    if len(sys.argv) != 5:
+        log_error("CRITICAL: Exact parameters required: <epochs.parquet> <target_cols_str> <method> <time_window_str>")
         sys.exit(1)
+
+    ip = sys.argv[1]
+    t_cols = [c.strip(" '\"\\") for c in sys.argv[2].split(',') if c.strip(" '\"\\")]
+    method = sys.argv[3].strip(" '\"\\")
+    tw_str = sys.argv[4].strip(" '\"\\")
+
+    analyze_peaks(ip, target_cols=t_cols, method=method, time_window_str=tw_str)

@@ -1,17 +1,25 @@
-"""Amplitude Analyzer Module - Generic, participant-agnostic, strict fail-fast implementation with explicit target/metadata columns."""
-import os, sys, ast, polars as pl, numpy as np
+"""Amplitude Analyzer Module - Generic, strict fail-fast implementation."""
+import os, sys, polars as pl, numpy as np
 
-def log_info(msg: str):    print(f"[amplitude] INFO: {msg}")
-def log_error(msg: str):   print(f"[amplitude] ERROR: {msg}")
+def log_info(msg: str):  print(f"[amplitude] INFO: {msg}")
+def log_error(msg: str): print(f"[amplitude] ERROR: {msg}")
 
 def analyze_amplitude(ip: str, 
                       target_cols: list[str], 
-                      method: str = 'peak_baseline', 
-                      baseline_window: tuple = (-0.2, 0.0)) -> str:
+                      method: str, 
+                      baseline_window: tuple[float, float]) -> str:
     log_info(f"Amplitude analysis execution: {ip}, method={method}")
     
     if not os.path.exists(ip) or os.path.getsize(ip) <= 12:
         log_error(f"Input file not found or empty: {ip}")
+        sys.exit(1)
+
+    if not target_cols:
+        log_error("Target columns list must be explicitly declared.")
+        sys.exit(1)
+
+    if method not in ('peak_baseline', 'mean', 'peak'):
+        log_error(f"Invalid method '{method}'. Must be 'peak_baseline', 'mean', or 'peak'.")
         sys.exit(1)
 
     try:
@@ -24,21 +32,16 @@ def analyze_amplitude(ip: str,
         log_error("Input dataset contains zero rows.")
         sys.exit(1)
 
-    if not target_cols:
-        log_error("Target columns list must be explicitly declared.")
-        sys.exit(1)
-
     missing_targets = [c for c in target_cols if c not in df.columns]
     if missing_targets:
         log_error(f"Declared target/metadata columns not found in Parquet dataset: {missing_targets}")
         sys.exit(1)
 
-    # Strict contract: target_cols contains [signal_cols..., condition, epoch_id, time]
-    time_col = [c for c in target_cols if c == 'time']
-    if not time_col:
+    time_cols = [c for c in target_cols if c == 'time']
+    if not time_cols:
         log_error("Required 'time' column must be included in target_cols.")
         sys.exit(1)
-    time_col_name = time_col[0]
+    time_col_name = time_cols[0]
 
     group_keys = [c for c in target_cols if c in ('condition', 'epoch_id', 'participant_id')]
     signal_cols = [c for c in target_cols if c not in group_keys and c != time_col_name]
@@ -46,6 +49,12 @@ def analyze_amplitude(ip: str,
     if not signal_cols:
         log_error("No signal channels specified within target_cols.")
         sys.exit(1)
+
+    # Fail-fast check for NaNs in critical signal columns
+    for sc in signal_cols:
+        if df[sc].null_count() > 0 or np.isnan(df[sc].to_numpy()).any():
+            log_error(f"Null or NaN values detected in signal column '{sc}'. Imputation disabled.")
+            sys.exit(1)
 
     records = []
     if group_keys:
@@ -55,10 +64,6 @@ def analyze_amplitude(ip: str,
             
             for signal_col in signal_cols:
                 epoch_data = sub_epoch[signal_col].to_numpy()
-                if len(epoch_data) == 0 or np.isnan(epoch_data).all():
-                    log_error(f"Empty or all-NaN signal data in sub-group {key_dict}, column '{signal_col}'.")
-                    sys.exit(1)
-
                 time_axis = sub_epoch[time_col_name].to_numpy()
                 
                 if method == 'peak_baseline':
@@ -73,9 +78,6 @@ def analyze_amplitude(ip: str,
                     val = np.mean(epoch_data)
                 elif method == 'peak':
                     val = np.max(epoch_data)
-                else:
-                    log_error(f"Unknown amplitude calculation method: '{method}'.")
-                    sys.exit(1)
 
                 row = key_dict.copy()
                 row['channel'] = signal_col
@@ -85,11 +87,8 @@ def analyze_amplitude(ip: str,
     else:
         for signal_col in signal_cols:
             epoch_data = df[signal_col].to_numpy()
-            if len(epoch_data) == 0 or np.isnan(epoch_data).all():
-                log_error(f"Empty or all-NaN signal data in column '{signal_col}'.")
-                sys.exit(1)
-
             time_axis = df[time_col_name].to_numpy()
+            
             if method == 'peak_baseline':
                 t_min, t_max = baseline_window
                 baseline_mask = (time_axis >= t_min) & (time_axis <= t_max)
@@ -102,9 +101,6 @@ def analyze_amplitude(ip: str,
                 val = np.mean(epoch_data)
             elif method == 'peak':
                 val = np.max(epoch_data)
-            else:
-                log_error(f"Unknown amplitude calculation method: '{method}'.")
-                sys.exit(1)
 
             records.append({'channel': signal_col, 'amplitude': float(val), 'method': method})
 
@@ -121,22 +117,19 @@ def analyze_amplitude(ip: str,
     return out_file
 
 if __name__ == '__main__':
-    if len(sys.argv) < 3:
-        log_error("Usage: python amplitude_analyzer.py <input.parquet> <target_cols_list> [method] [baseline_low] [baseline_high]")
+    if len(sys.argv) != 6:
+        log_error("CRITICAL: Exact parameters required: <input.parquet> <target_cols_str> <method> <baseline_low> <baseline_high>")
         sys.exit(1)
 
     ip = sys.argv[1]
+    t_cols = [c.strip(" '\"\\") for c in sys.argv[2].split(',') if c.strip(" '\"\\")]
+    method = sys.argv[3].strip(" '\"\\")
     
-    raw_targets = sys.argv[2]
-    if raw_targets.startswith('[') and raw_targets.endswith(']'):
-        t_cols = ast.literal_eval(raw_targets)
-    else:
-        t_cols = [c.strip() for c in raw_targets.split(',') if c.strip()]
+    try:
+        b_low = float(sys.argv[4].strip(" '\"\\"))
+        b_high = float(sys.argv[5].strip(" '\"\\"))
+    except ValueError as e:
+        log_error(f"Invalid numeric baseline window values: {e}")
+        sys.exit(1)
 
-    method = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] not in ('None', 'null', '') else 'peak_baseline'
-    
-    b_low = float(sys.argv[4]) if len(sys.argv) > 4 and sys.argv[4] not in ('None', 'null', '') else -0.2
-    b_high = float(sys.argv[5]) if len(sys.argv) > 5 and sys.argv[5] not in ('None', 'null', '') else 0.0
-    bw = (b_low, b_high)
-
-    analyze_amplitude(ip, target_cols=t_cols, method=method, baseline_window=bw)
+    analyze_amplitude(ip, target_cols=t_cols, method=method, baseline_window=(b_low, b_high))

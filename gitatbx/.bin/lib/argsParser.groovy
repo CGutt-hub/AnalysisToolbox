@@ -1,12 +1,9 @@
-// ArgsParser.groovy (im selben Ordner wie io_interface.nf belassen)
-
 class ArgsParser {
-    // Zentrales, JVM-basiertes Shell-Escaping
+
     static String escapeArg(def arg) {
-        return arg.toString().replace("'", "'\\''")
+        return arg ? arg.toString().replace("'", "'\\''") : ""
     }
 
-    // Formatiert die Eingangsdateien (Collection oder Single-File) zu Shell-Argumenten
     static String formatInputArgs(def input) {
         if (input instanceof Collection) {
             return input.collect { f_item -> "'${escapeArg(f_item)}'" }.join(' ')
@@ -14,9 +11,8 @@ class ArgsParser {
         return "'${escapeArg(input)}'"
     }
 
-    // Der klammer-sichere Token-Parser
     static Map parse(def extraParams) {
-        def result_map = [args: [], isGroupLog: false, isTerminal: false]
+        def result_map = [args: [], extraArgsStr: "", isGroupLog: false, isTerminal: false]
         if (!extraParams || extraParams.toString().trim() == "") {
             return result_map
         }
@@ -47,11 +43,9 @@ class ArgsParser {
             args.add(currentArg.toString())
         }
         
-        // Nextflow-spezifische Steuerungs-Flags bereinigen
         result_map.isGroupLog = args.remove('group_log')
         result_map.isTerminal  = args.remove('terminal')
         
-        // Verpackt die verbleibenden Argumente direkt fertig escaped als Shell-String!
         result_map.extraArgsStr = args.collect { a_item -> "'${escapeArg(a_item)}'" }.join(' ')
         result_map.args = args
         

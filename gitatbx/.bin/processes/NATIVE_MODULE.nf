@@ -1,170 +1,211 @@
-// =========================================================================
-// NATIVE MODULE PROCESS (GROOVY 3+ & DSL2 COMPLIANT)
-// =========================================================================
+nextflow.enable.dsl=2
 
 process NATIVE_MODULE {
-    errorStrategy 'ignore'
-    
-    publishDir (
-        path: { _pathObj ->
-            def level = level_tag?.toString()?.toLowerCase()?.trim() ?: 'l1'
-            if (level == 'l2') {
-                return "${params.output_dir}/${params.project_name}_l2/.bin"
-            } else {
-                return "${params.output_dir}/${params.project_name}_${level}/${id}/.bin"
-            }
-        },
-        mode: 'copy',
-        pattern: "*.parquet"
-    )
-    
     input:
-        val env_exe
-        val script
-        tuple val(id), path(input_parquet)
-        val plot_type
-        val level_tag              // Input 5: Explicit "l1", "l2", or custom level tag
-        val extraParams            // Input 6: Pure Python CLI parameters string
+        val env_exe          // Explicit, valid binary path
+        val script           // Explicit, existing script path
+        path(input_parquet)  // Staged input parquet file
+        val plot_type        // Optional metadata tag
+        val level_tag        // Must be explicitly 'L1' or 'L2'
+        val extraParams      // Dynamic parameter string
 
     output:
-        tuple val(id), path({ _pathObj ->
-            def moduleUtils = new GroovyClassLoader(Thread.currentThread().contextClassLoader)
-                .parseClass(moduleDir.resolve('../lib/ModuleUtils.groovy').toFile())
-            "${moduleUtils.resolveName(id, input_parquet.name, script)}.parquet"
-        }), emit: signal
+        path("*.parquet"), emit: signal
 
     script:
-    def moduleUtils = new GroovyClassLoader(Thread.currentThread().contextClassLoader)
-        .parseClass(moduleDir.resolve('../lib/ModuleUtils.groovy').toFile())
-    
-    def output_filename = moduleUtils.resolveName(id, input_parquet.name, script)
-    def level = level_tag?.toString()?.toLowerCase()?.trim() ?: 'l1'
-    def isL2  = (level == 'l2')
-
-    // Groovy 3+ Clean Tokenizer & Parameter Escaping
-    def paramStr = extraParams?.toString()?.trim() ?: ''
-    def cleanTokens = []
-    if (!paramStr.isEmpty() && !paramStr.equalsIgnoreCase('none') && !paramStr.equalsIgnoreCase('null')) {
-        if (extraParams instanceof Collection) {
-            cleanTokens = extraParams.flatten().collect { item -> item?.toString()?.trim() ?: '' }.findAll { token -> token && token != 'terminal' }
-        } else {
-            cleanTokens = paramStr.tokenize(' ').collect { tokenItem -> tokenItem.trim() }.findAll { tokenItem -> tokenItem && tokenItem != 'terminal' }
+        // ---------------------------------------------------------------------
+        // CLASS LOADER FOR EXTERNAL PARSER
+        // ---------------------------------------------------------------------
+        def parserFile = moduleDir.resolve('../lib/argsParser.groovy').toFile()
+        if (!parserFile.exists()) {
+            throw new java.io.FileNotFoundException("[NATIVE_MODULE] CRITICAL: 'argsParser.groovy' missing at '${parserFile.absolutePath}'")
         }
-    }
+        Class ArgsParser = new GroovyClassLoader(Thread.currentThread().getContextClassLoader()).parseClass(parserFile)
 
-    def extraArgsString = cleanTokens.collect { argToken ->
-        def tokenStr = argToken.toString()
-        if ((tokenStr.startsWith("'") && tokenStr.endsWith("'")) || (tokenStr.startsWith('"') && tokenStr.endsWith('"'))) {
-            return tokenStr
+        // ---------------------------------------------------------------------
+        // STRICT PARAMETER VALIDATION (FAIL FAST)
+        // ---------------------------------------------------------------------
+        if (env_exe == null || env_exe.toString().trim().isEmpty()) {
+            throw new IllegalArgumentException("[NATIVE_MODULE] CRITICAL: 'env_exe' parameter is NULL or EMPTY.")
         }
-        return "'${tokenStr.replace("'", "'\\''")}'"
-    }.join(' ')
+        def activeEnvExe = env_exe.toString().trim()
 
-    // Context & Directory Resolution
-    def contextFolderName = isL2 ? "${params.project_name}_l2" : "${params.project_name}_${level}/${id}"
-    def contextDirPath    = "${workflow.launchDir}/${params.output_dir}/${contextFolderName}/.bin"
-    def logBaseName       = isL2 ? "${params.project_name}_l2.log" : "${id}.log"
-    def textLogPath       = "${contextDirPath}/${logBaseName}"
-    def scriptName        = script.toString().tokenize('/').last().replace('.py', '')
+        if (script == null || script.toString().trim().isEmpty()) {
+            throw new IllegalArgumentException("[NATIVE_MODULE] CRITICAL: 'script' parameter is NULL or EMPTY.")
+        }
+        def cleanScript = script.toString().trim().replaceAll(/^["']|["']$/, '')
 
-    """
-    #!/bin/bash
-    set -e -o pipefail
-    
-    CONTEXT_DIR="${contextDirPath}"
-    TXT_LOG="${textLogPath}"
-    LOCK_FILE="\${TXT_LOG}.lock"
+        def targetScriptFile = new java.io.File(cleanScript)
+        if (!targetScriptFile.isAbsolute()) {
+            targetScriptFile = workflow.projectDir.resolve(cleanScript).toFile()
+        }
 
-    mkdir -p "\$CONTEXT_DIR"
+        if (!targetScriptFile.exists()) {
+            throw new java.io.FileNotFoundException("[NATIVE_MODULE] CRITICAL: Target script file missing at '${targetScriptFile.absolutePath}'")
+        }
 
-    log_msg() {
-        local level_lvl="\$1"
-        local message="\$2"
-        (
-            flock -x 200
-            printf "%s [%s] [%s] %s\\n" "\$(date '+%Y-%m-%d %H:%M:%S')" "${level.toUpperCase()}" "\$level_lvl" "\$message" >> "\$TXT_LOG"
-        ) 200>>"\$LOCK_FILE"
-    }
+        if (level_tag == null || level_tag.toString().trim().isEmpty()) {
+            throw new IllegalArgumentException("[NATIVE_MODULE] CRITICAL: 'level_tag' parameter is mandatory (must be 'L1' or 'L2').")
+        }
+        def level = level_tag.toString().trim().toUpperCase()
+        if (level != 'L1' && level != 'L2') {
+            throw new IllegalArgumentException("[NATIVE_MODULE] CRITICAL: Invalid level_tag '${level}'. Must be 'L1' or 'L2'.")
+        }
 
-    if [ ! -f "\$TXT_LOG" ]; then
-        (
-            flock -x 200
-            if [ ! -f "\$TXT_LOG" ]; then
-                printf "=== ${params.project_name} [${level.toUpperCase()}] log: %s ===\\nWorkflow: ${workflow.projectDir}\\nSession:  ${workflow.sessionId}\\nContext:  %s\\n\\n" \\
-                    "\$(date '+%Y-%m-%d %H:%M:%S')" "\$CONTEXT_DIR" > "\$TXT_LOG"
-            fi
-        ) 200>>"\$LOCK_FILE"
-    fi
+        def scriptName         = targetScriptFile.name
+        def resolvedScriptPath = targetScriptFile.absolutePath
+        def moduleTag          = scriptName.replaceAll(/(_processor|_analyzer)?\.[^.]+$/, '')
 
-    log_msg "INFO" "${scriptName} - Processing started."
+        // ---------------------------------------------------------------------
+        // STRICT STEM & PATH DERIVATION
+        // ---------------------------------------------------------------------
+        def inputFileName = input_parquet.name
+        def rawStem       = inputFileName.replaceAll(/\.[^.]+$/, '')
+        def prefixMatcher = rawStem =~ /^([a-zA-Z0-9]+_[0-9]+)/
 
-    LOCAL_TARGET_PARQUET="${input_parquet.name}"
-    FINAL_OUTPUT="${output_filename}.parquet"
+        if (!prefixMatcher.find()) {
+            throw new IllegalArgumentException("[NATIVE_MODULE] CRITICAL: Input file '${inputFileName}' does not conform to expected prefix pattern ('<PROJECT>_<ID>').")
+        }
+        def filePrefix = prefixMatcher.group(1)
 
-    # Integrity Check (Fail-Fast)
-    if [ ! -f "\$LOCAL_TARGET_PARQUET" ]; then
-        log_msg "ERROR" "Input file \$LOCAL_TARGET_PARQUET missing."
-        exit 1
-    fi
+        def isL2 = (level == 'L2')
+        def contextFolderName = isL2 ? "${params.project_name}_l2" : "${params.project_name}_${level.toLowerCase()}/${filePrefix}"
+        def contextDirPath    = new java.io.File("${workflow.launchDir}/${params.output_dir}/${contextFolderName}/.bin").getCanonicalPath()
+        def logBaseName       = isL2 ? "${params.project_name}_l2.log" : "${filePrefix}.log"
+        def textLogPath       = "${contextDirPath}/${logBaseName}"
 
-    FILE_SIZE=\$(stat -c %s "\$LOCAL_TARGET_PARQUET" 2>/dev/null || stat -f %z "\$LOCAL_TARGET_PARQUET" 2>/dev/null || echo 0)
-    if [ "\$FILE_SIZE" -le 12 ]; then
-        log_msg "ERROR" "Input file \$LOCAL_TARGET_PARQUET is invalid (\${FILE_SIZE} bytes)."
-        exit 1
-    fi
+        // ---------------------------------------------------------------------
+        // PARAMETER SANITIZATION (EXPLICIT CLOSURE PARAMETERS)
+        // ---------------------------------------------------------------------
+        def parsedParams = ArgsParser.parse(extraParams)
+        def rawArgs      = parsedParams.extraArgsStr ?: ""
+        
+        def extraArgsString = rawArgs
+            .replace('\\', '')
+            .replaceAll(/''+/, "'")
+            .replaceAll(/""+/, '"')
+            .replaceAll(/\[\s*(.*?)\s*\]/) { String _fullMatch, String inner ->
+                inner.replaceAll(/['"]/, "").split(',').collect { String item -> item.trim() }.join(',')
+            }
+            .trim()
 
-    # Execute Sub-Module Script
-    TEMP_OUT=\$(mktemp)
-    export VIS_LABEL_MAP='${params.vis_label_map ?: '{}'}'
-    
-    CMD="${env_exe} -u \\"${workflow.launchDir}/${script}\\" \\"\$LOCAL_TARGET_PARQUET\\" ${extraArgsString}"
-    
-    set +e
-    eval "\$CMD" 2>&1 | tee "\$TEMP_OUT"
-    EXIT_CODE=\${PIPESTATUS[0]}
-    set -e
+        """
+        #!/bin/bash
+        set -e -o pipefail
 
-    if [ -s "\$TEMP_OUT" ]; then
-        TS=\$(date '+%Y-%m-%d %H:%M:%S')
-        (
-            flock -x 200
-            awk -v ts="\$TS" '{print ts " " \$0}' "\$TEMP_OUT" >> "\$TXT_LOG"
-        ) 200>>"\$LOCK_FILE"
-    fi
-    rm -f "\$TEMP_OUT"
+        CONTEXT_DIR="${contextDirPath}"
+        TXT_LOG="${textLogPath}"
+        LOCK_FILE="\${TXT_LOG}.lock"
+        MOD_TAG="${moduleTag}"
+        LEVEL_TAG="${level}"
+        EXEC_BIN="${activeEnvExe}"
 
-    if [ \$EXIT_CODE -ne 0 ]; then
-        log_msg "ERROR" "${scriptName} failed with exit code \$EXIT_CODE."
-        exit \$EXIT_CODE
-    fi
+        mkdir -p "\$CONTEXT_DIR"
 
-    # Output Resolution & Renaming
-    GENERATED_FILE=\$(ls *.parquet 2>/dev/null | grep -v -x "\$LOCAL_TARGET_PARQUET" | head -n 1 || echo "")
-    
-    if [ -n "\$GENERATED_FILE" ] && [ -f "\$GENERATED_FILE" ]; then
-        if [ "\$GENERATED_FILE" != "\$FINAL_OUTPUT" ]; then
-            mv "\$GENERATED_FILE" "\$FINAL_OUTPUT"
+        log_entry() {
+            local state="\$1"
+            local message="\$2"
+            (
+                flock -x 200
+                printf "[%s] [%s] [%s] [NATIVE_MODULE] [%s] %s\\n" \
+                    "\$(date '+%Y-%m-%d %H:%M:%S.%3N')" \
+                    "\$LEVEL_TAG" \
+                    "\$state" \
+                    "\$MOD_TAG" \
+                    "\$message" >> "\$TXT_LOG"
+            ) 200>>"\$LOCK_FILE"
+        }
+
+        # FAIL FAST BASH CHECK: Binary existence and executable permission
+        if [ ! -f "\$EXEC_BIN" ]; then
+            log_entry "ERROR" "Python executable missing: '\$EXEC_BIN'"
+            echo "FATAL: [NATIVE_MODULE] Binary path '\$EXEC_BIN' does not exist." >&2
+            exit 1
         fi
-    else
-        log_msg "ERROR" "${scriptName} completed with exit code 0 but failed to generate a new Parquet asset."
-        exit 1
-    fi
 
-    # Metadata Injection
-    ${env_exe} -c "
-import os, pyarrow.parquet as pq
-p = '\$FINAL_OUTPUT'
-if os.path.exists(p) and os.path.getsize(p) > 12:
-    try:
-        schema = pq.read_schema(p)
-        meta = dict(schema.metadata or {})
-        meta[b'plot_type'] = '${plot_type}'.encode('utf-8')
-        table = pq.read_table(p)
-        pq.write_table(table.replace_schema_metadata(meta), p)
-    except Exception:
-        pass
-" 2>/dev/null || true
+        if [ ! -x "\$EXEC_BIN" ]; then
+            log_entry "ERROR" "Python binary lacks execution permissions: '\$EXEC_BIN'"
+            echo "FATAL: [NATIVE_MODULE] Binary '\$EXEC_BIN' is not executable." >&2
+            exit 1
+        fi
 
-    log_msg "INFO" "Module execution complete. Asset created: \$FINAL_OUTPUT"
-    """
+        log_entry "INFO" "Executing: \${EXEC_BIN} ${resolvedScriptPath} ${input_parquet} ${extraArgsString}"
+
+        TEMP_STDERR=\$(mktemp)
+        TEMP_STDOUT=\$(mktemp)
+
+        set +e
+        PYTHONUNBUFFERED=1 "\${EXEC_BIN}" "${resolvedScriptPath}" "${input_parquet}" ${extraArgsString} >"\$TEMP_STDOUT" 2>"\$TEMP_STDERR"
+        EXIT_CODE=\$?
+        set -e
+
+        TS=\$(date '+%Y-%m-%d %H:%M:%S.%3N')
+
+        # Stream stdout line-by-line as [INFO] (Stripping redundant internal Python module tags)
+        if [ -s "\$TEMP_STDOUT" ]; then
+            (
+                flock -x 200
+                awk -v ts="\$TS" -v lvl="\$LEVEL_TAG" -v mod="\$MOD_TAG" \
+                    '{ sub(/^\\[[A-Za-z0-9_]+\\][ \\t]*(INFO|ERROR)?:[ \\t]*/, ""); print "[" ts "] [" lvl "] [INFO] [NATIVE_MODULE] [" mod "] " \$0 }' "\$TEMP_STDOUT" >> "\$TXT_LOG"
+            ) 200>>"\$LOCK_FILE"
+        fi
+
+        # Stream stderr line-by-line as [ERROR] (Stripping redundant internal Python module tags)
+        if [ -s "\$TEMP_STDERR" ]; then
+            (
+                flock -x 200
+                awk -v ts="\$TS" -v lvl="\$LEVEL_TAG" -v mod="\$MOD_TAG" \
+                    '{ sub(/^\\[[A-Za-z0-9_]+\\][ \\t]*(INFO|ERROR)?:[ \\t]*/, ""); print "[" ts "] [" lvl "] [ERROR] [NATIVE_MODULE] [" mod "] " \$0 }' "\$TEMP_STDERR" >> "\$TXT_LOG"
+            ) 200>>"\$LOCK_FILE"
+        fi
+
+        # FAIL FAST: Forward script error trace directly to stderr
+        if [ \$EXIT_CODE -ne 0 ]; then
+            log_entry "ERROR" "Script returned error code \$EXIT_CODE."
+            echo "FATAL: [NATIVE_MODULE] Execution failed in script '${scriptName}'" >&2
+            cat "\$TEMP_STDERR" >&2
+            rm -f "\$TEMP_STDOUT" "\$TEMP_STDERR"
+            exit \$EXIT_CODE
+        fi
+
+        # Extract targeted output file path from stdout
+        GENERATED_FILE=\$(tail -n 1 "\$TEMP_STDOUT" | tr -d '\\r\\n')
+        rm -f "\$TEMP_STDOUT" "\$TEMP_STDERR"
+
+        # FAIL FAST: Validate output existence explicitly
+        if [ -z "\$GENERATED_FILE" ] || [ ! -f "\$GENERATED_FILE" ]; then
+            log_entry "ERROR" "Module exited 0 but produced no valid output path. Output string: '\$GENERATED_FILE'"
+            echo "FATAL: [NATIVE_MODULE] '${scriptName}' failed to generate valid Parquet output: '\$GENERATED_FILE'" >&2
+            exit 1
+        fi
+
+        # METADATA INJECTION VIA EMBEDDED DUCKDB IN PYTHON BINARY
+        PLOT_TYPE_VAL="${plot_type ?: ''}"
+        if [ -n "\$PLOT_TYPE_VAL" ]; then
+            if ! "\$EXEC_BIN" -c "import duckdb" >/dev/null 2>&1; then
+                log_entry "ERROR" "Python environment '\$EXEC_BIN' is missing required 'duckdb' package."
+                echo "FATAL: [NATIVE_MODULE] Python package 'duckdb' required for metadata injection but missing in \$EXEC_BIN." >&2
+                exit 1
+            fi
+
+            TEMP_META_PARQUET=\$(mktemp --suffix=.parquet)
+            
+            "\$EXEC_BIN" -c "
+import duckdb
+conn = duckdb.connect()
+conn.execute('''
+    COPY (SELECT * FROM read_parquet('\$GENERATED_FILE')) 
+    TO '\$TEMP_META_PARQUET' 
+    (FORMAT PARQUET, COMPRESSION 'ZSTD', KV_METADATA {'plot_type': '\$PLOT_TYPE_VAL'})
+''')
+"
+            mv "\$TEMP_META_PARQUET" "\$GENERATED_FILE"
+            log_entry "INFO" "Injected plot_type metadata via Python DuckDB (ZSTD)."
+        fi
+
+        # FIX: Extract filename from path to prevent invalid nested absolute path copy
+        OUTPUT_FILENAME=\$(basename "\$GENERATED_FILE")
+        cp "\$GENERATED_FILE" "\$CONTEXT_DIR/\$OUTPUT_FILENAME"
+        log_entry "INFO" "Procedure output stored in: \$CONTEXT_DIR/\$OUTPUT_FILENAME"
+        """
 }

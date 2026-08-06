@@ -1,42 +1,37 @@
+nextflow.enable.dsl=2
+
 include { FINALIZE_L2 } from '../processes/FINALIZE_L2.nf'
 
 workflow finalize_l2 {
     take:
-        l2_signals
+        root_l2_signals
+        sync_trigger_signals
 
     main:
-        def mixed_ch
-        if (l2_signals instanceof List) {
-            def normalized = l2_signals.collect { ch ->
-                ch.map { item -> 
-                    if (item instanceof List || item.getClass().isArray()) {
-                        return item[-1]
-                    }
-                    return item
-                }
+        def gcl = new GroovyClassLoader(Thread.currentThread().contextClassLoader)
+        gcl.addClasspath(moduleDir.resolve('../').toFile().absolutePath)
+
+        def ChannelUtils = gcl.parseClass(moduleDir.resolve('../lib/ChannelUtils.groovy').toFile())
+
+        def mixed_root
+        if (root_l2_signals instanceof List) {
+            def normRoot = root_l2_signals.collect { ch -> 
+                ch.map { item -> item instanceof List || item.getClass().isArray() ? item[-1] : item } 
             }
-            def mixed = normalized[0]
-            (1..<normalized.size()).each { idx -> mixed = mixed.mix(normalized[idx]) }
-            mixed_ch = mixed.collect()
+            mixed_root = ChannelUtils.mixChannelList(normRoot).collect()
         } else {
-            mixed_ch = l2_signals.map { item -> 
-                if (item instanceof List || item.getClass().isArray()) {
-                    return item[-1]
-                }
-                return item
-            }.collect()
+            mixed_root = root_l2_signals.map { item -> item instanceof List || item.getClass().isArray() ? item[-1] : item }.collect()
         }
 
-        FINALIZE_L2( mixed_ch )
-
-        // Dynamically parse gitSync from .bin/lib/ relative to .bin/workflows/
-        def gitSyncClass = new GroovyClassLoader().parseClass(moduleDir.resolve('../lib/gitSync.groovy').toFile())
-
-        // Runs when L2 cohort summary finishes
-        FINALIZE_L2.out.subscribe {
-            gitSyncClass.syncRepository(workflow, params, "L2 cohort summary finalized")
+        def mixed_sync
+        if (sync_trigger_signals instanceof List) {
+            def normSync = sync_trigger_signals.collect { ch -> 
+                ch.map { item -> item instanceof List || item.getClass().isArray() ? item[-1] : item } 
+            }
+            mixed_sync = ChannelUtils.mixChannelList(normSync).collect()
+        } else {
+            mixed_sync = sync_trigger_signals.map { item -> item instanceof List || item.getClass().isArray() ? item[-1] : item }.collect()
         }
 
-    emit:
-        summary = FINALIZE_L2.out
+        FINALIZE_L2( mixed_root, mixed_sync )
 }

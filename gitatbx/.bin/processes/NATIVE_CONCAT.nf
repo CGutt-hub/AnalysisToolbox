@@ -1,5 +1,5 @@
 process NATIVE_CONCAT {
-    
+
     publishDir (
         path: { "${params.output_dir}/${params.l2_folder ?: 'level_2_matrix'}" },
         mode: 'copy',
@@ -13,93 +13,113 @@ process NATIVE_CONCAT {
     output:
         tuple val("group"), path("*.parquet"), emit: cohort_matrix
 
-    script:
-        def mixParser = new GroovyClassLoader().parseClass(moduleDir.resolve('../lib/mixParser.groovy').toFile())
-        def cleanFilePaths = incoming_signals != null ? mixParser.extractCleanPaths(incoming_signals) : []
-        def fileListGroovy = cleanFilePaths.collect { pathObj -> "'${pathObj.toString()}'" }.join(', ')
-
-    """
-    #!/usr/bin/env groovy
-
-    @Grapes([
-        @Grab(group='org.duckdb', module='duckdb_jdbc', version='0.10.0')
-    ])
-    import java.sql.DriverManager
-    import java.io.File
-
-    def targetFile = "${output_name}_concat.parquet"
-    def inputFiles = [${fileListGroovy}].findAll { filePath -> 
-        def f = new File(filePath)
-        return f.exists() && f.length() > 12 
-    }.sort()
-
-    if (inputFiles.isEmpty()) {
-        System.err.println("[Native Concat] ERROR: Zero valid input Parquet files provided. Aborting.")
-        System.exit(1)
-    }
-
-    Class.forName("org.duckdb.DuckDBDriver")
-    def conn = DriverManager.getConnection("jdbc:duckdb:")
-    def stmt = conn.createStatement()
-
-    try {
-        def refFile = inputFiles[0]
-        def refColsRs = stmt.executeQuery("DESCRIBE SELECT * FROM read_parquet('\${refFile}')")
-        def refColumns = []
-        while (refColsRs.next()) {
-            refColumns << refColsRs.getString("column_name")
+    exec:
+        if (!output_name || output_name.toString().trim().isEmpty()) {
+            throw new IllegalArgumentException("[NATIVE_CONCAT] FATAL: 'output_name' is required.")
         }
 
-        def refCountRs = stmt.executeQuery("SELECT COUNT(*) FROM read_parquet('\${refFile}')")
-        refCountRs.next()
-        long refRowCount = refCountRs.getLong(1)
+        def outputName  = output_name.toString().trim()
+        def l2FolderVal = params.l2_folder ?: "${params.project_name}_l2"
+        def launchDir   = workflow.launchDir.toFile()
 
-        // Validate schema & row count across all cohort files (fail-fast)
-        inputFiles.tail().each { file ->
-            def colsRs = stmt.executeQuery("DESCRIBE SELECT * FROM read_parquet('\${file}')")
-            def cols = []
-            while (colsRs.next()) {
-                cols << colsRs.getString("column_name")
-            }
-
-            if (cols != refColumns) {
-                System.err.println("[Native Concat] ERROR: Schema mismatch in file \${file}!")
-                System.err.println("Expected: \${refColumns}, Found: \${cols}")
-                System.exit(1)
-            }
-
-            def countRs = stmt.executeQuery("SELECT COUNT(*) FROM read_parquet('\${file}')")
-            countRs.next()
-            if (countRs.getLong(1) != refRowCount) {
-                System.err.println("[Native Concat] ERROR: Row count mismatch in file \${file}!")
-                System.exit(1)
-            }
+        if (!params.output_dir || !params.project_name) {
+            throw new IllegalStateException("[NATIVE_CONCAT] FATAL: Missing 'params.output_dir' or 'params.project_name'.")
         }
 
-        // Infer participant_id directly from canonical filename prefix: Part_id_process_...
-        def unionQueries = inputFiles.collect { filePath ->
-            def fileName = new File(filePath).getName()
-            // Extract everything before the second underscore or first underscore depending on pattern
-            // Assumes standard pattern: 'PARTID_process_...'
-            def pId = fileName.contains('_') ? fileName.split('_')[0] : fileName.replace('.parquet', '')
-            
-            return "SELECT '\${pId}' AS participant_id, * FROM read_parquet('\${filePath}')"
+        def l2Dir = new java.io.File(launchDir, "${params.output_dir}/${l2FolderVal}")
+        def targetBinDir = new java.io.File(l2Dir, ".bin")
+        l2Dir.mkdirs()
+        targetBinDir.mkdirs()
+
+        def logFile = new java.io.File(targetBinDir, "${params.project_name}_l2.log")
+
+        def SqlUtils            = null
+        def BaseFileSystemUtils = null
+
+        try {
+            def gcl = new GroovyClassLoader(Thread.currentThread().contextClassLoader)
+
+            def sqlUtilsFile = [
+                moduleDir.resolve('../lib/SqlUtils.groovy').toFile(),
+                moduleDir.resolve('../../lib/SqlUtils.groovy').toFile()
+            ].find { java.io.File f -> f.exists() }
+
+            def baseFsFile = [
+                moduleDir.resolve('../lib/base/BaseFileSystemUtils.groovy').toFile(),
+                moduleDir.resolve('../../lib/base/BaseFileSystemUtils.groovy').toFile()
+            ].find { java.io.File f -> f.exists() }
+
+            if (!sqlUtilsFile) throw new java.io.FileNotFoundException("[NATIVE_CONCAT] Missing SqlUtils.groovy.")
+            if (!baseFsFile)  throw new java.io.FileNotFoundException("[NATIVE_CONCAT] Missing BaseFileSystemUtils.groovy.")
+
+            gcl.addClasspath(sqlUtilsFile.parentFile.absolutePath)
+            if (sqlUtilsFile.parentFile.parentFile.exists()) {
+                gcl.addClasspath(sqlUtilsFile.parentFile.parentFile.absolutePath)
+            }
+
+            SqlUtils            = gcl.parseClass(sqlUtilsFile)
+            BaseFileSystemUtils = gcl.parseClass(baseFsFile)
+
+            BaseFileSystemUtils.appendLog(logFile, "[L2] [INFO] [NATIVE_CONCAT] Starting cohort concatenation for target '${outputName}'...")
+
+            def trackingQueue = []
+            if (incoming_signals instanceof Collection) {
+                trackingQueue.addAll(incoming_signals)
+            } else if (incoming_signals != null && incoming_signals.getClass().isArray()) {
+                trackingQueue.addAll(incoming_signals as List)
+            } else {
+                trackingQueue.add(incoming_signals)
+            }
+
+            def cleanFiles = []
+            trackingQueue.each { item ->
+                if (item != null) {
+                    def plainPath = item.toString().replaceAll(/[\[\]\"\']/, "").trim()
+                    if (plainPath.endsWith('.parquet')) {
+                        def f = new java.io.File(plainPath)
+                        if (f.exists() && f.size() > 12) {
+                            cleanFiles.add(f.absolutePath)
+                        }
+                    }
+                }
+            }
+            cleanFiles = cleanFiles.unique().sort()
+
+            if (cleanFiles.isEmpty()) {
+                def err = "[NATIVE_CONCAT] ERROR: Zero valid input Parquet files provided for target '${outputName}'."
+                BaseFileSystemUtils.appendLog(logFile, "[L2] [ERROR] ${err}")
+                throw new RuntimeException(err)
+            }
+
+            def targetFile = "${outputName}_concat.parquet"
+            def localDest  = new java.io.File(task.workDir.toFile(), targetFile)
+
+            SqlUtils.withConnection { conn ->
+                def unionQueries = cleanFiles.collect { String fp ->
+                    def file     = new java.io.File(fp)
+                    def fileName = file.getName()
+                    def parts    = fileName.split('_')
+                    def pId      = parts.length >= 2 ? "${parts[0]}_${parts[1]}" : fileName.take(fileName.lastIndexOf('.'))
+                    def escFp    = SqlUtils.escapePath(fp)
+                    return "SELECT '${pId}' AS participant_id, * FROM read_parquet('${escFp}')"
+                }
+
+                def stackedQuery = unionQueries.join(" UNION ALL ")
+                def escDest      = SqlUtils.escapePath(localDest.absolutePath)
+                def query        = "COPY (${stackedQuery}) TO '${escDest}' (FORMAT PARQUET, COMPRESSION 'ZSTD')"
+
+                SqlUtils.executeQuery(conn, query)
+            }
+
+            def outputDest = new java.io.File(targetBinDir, targetFile)
+            java.nio.file.Files.copy(localDest.toPath(), outputDest.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            BaseFileSystemUtils.appendLog(logFile, "[L2] [INFO] [NATIVE_CONCAT] Successfully concatenated cohort matrix: ${targetFile} (from ${cleanFiles.size()} files)")
+
+        } catch (Throwable t) {
+            def fatalErr = "[NATIVE_CONCAT] CRITICAL ERROR for target '${outputName}': ${t.message}"
+            if (logFile != null && BaseFileSystemUtils != null) {
+                BaseFileSystemUtils.appendLog(logFile, "[L2] [ERROR] ${fatalErr}")
+            }
+            throw new RuntimeException(fatalErr, t)
         }
-
-        def stackedQuery = unionQueries.join(" UNION ALL ")
-        def copyQuery = "COPY (\${stackedQuery}) TO '\${targetFile}' (FORMAT PARQUET, COMPRESSION 'GZIP')"
-        
-        stmt.execute(copyQuery)
-
-        println "[Native Concat] Successfully concatenated cohort matrix using prefix IDs: \${targetFile}"
-
-    } catch (Exception e) {
-        System.err.println("[Native Concat] ERROR: Flat concatenation failed: \${e.message}")
-        e.printStackTrace()
-        System.exit(1)
-    } finally {
-        stmt.close()
-        conn.close()
-    }
-    """
 }

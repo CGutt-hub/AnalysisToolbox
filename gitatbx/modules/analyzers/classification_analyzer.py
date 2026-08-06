@@ -1,5 +1,5 @@
-"""Classification Analyzer - Generic Machine Learning & Cross-Validation Module (Strict fail-fast implementation)."""
-import sys, os, ast, polars as pl, numpy as np
+"""Classification Analyzer - Generic Machine Learning Module (Strict fail-fast implementation)."""
+import sys, os, polars as pl, numpy as np
 from sklearn.model_selection import LeaveOneGroupOut
 from sklearn.ensemble import RandomForestClassifier
 
@@ -7,7 +7,6 @@ def log_info(msg: str) -> None:  print(f"[classifier] INFO: {msg}")
 def log_error(msg: str) -> None: print(f"[classifier] ERROR: {msg}")
 
 def ensure_flat_dataframe(df: pl.DataFrame) -> pl.DataFrame:
-    """Explodes nested list columns (from NATIVE_CONCAT) into flat observation rows."""
     list_cols = [c for c, dt in df.schema.items() if isinstance(dt, pl.List)]
     return df.explode(list_cols) if list_cols else df
 
@@ -33,15 +32,8 @@ def run_classification(ip: str, target_col: str, group_col: str, feature_cols: l
         log_error(f"Target label column '{target_col}' missing from columns: {list(df.columns)}")
         sys.exit(1)
 
-    actual_group_col = group_col
     if group_col not in df.columns:
-        for candidate in ['participant_id', 'group', 'id']:
-            if candidate in df.columns:
-                actual_group_col = candidate
-                break
-
-    if actual_group_col not in df.columns:
-        log_error(f"Group column '{group_col}' missing from dataset columns: {list(df.columns)}")
+        log_error(f"Required group column '{group_col}' missing from dataset columns: {list(df.columns)}")
         sys.exit(1)
 
     if not feature_cols:
@@ -50,13 +42,23 @@ def run_classification(ip: str, target_col: str, group_col: str, feature_cols: l
 
     missing_feats = [c for c in feature_cols if c not in df.columns]
     if missing_feats:
-        log_error(f"Declared feature columns missing from dataset: {missing_feats}. Available: {list(df.columns)}")
+        log_error(f"Declared feature columns missing from dataset: {missing_feats}")
         sys.exit(1)
 
-    df = df.filter(pl.col(target_col).is_not_null())
-    X = df.select(feature_cols).fill_null(0).to_numpy()
+    # STRICT CHECK: FAIL FAST ON MISSING DATA. NO SILENT IMPUTATION (fill_null(0)) PERMITTED!
+    null_counts = df.select(feature_cols).null_count()
+    total_nulls = sum(null_counts.row(0))
+    if total_nulls > 0:
+        log_error(f"CRITICAL: Dataset contains {total_nulls} null/missing feature values. Silent imputation (fill_null) is disabled.")
+        sys.exit(1)
+
+    if df[target_col].null_count() > 0:
+        log_error(f"CRITICAL: Target column '{target_col}' contains null values.")
+        sys.exit(1)
+
+    X = df.select(feature_cols).to_numpy()
     y = df[target_col].to_numpy()
-    groups = df[actual_group_col].to_numpy()
+    groups = df[group_col].to_numpy()
 
     if len(set(groups)) < 2:
         log_error(f"Classification requires at least 2 distinct groups. Found: {len(set(groups))}")
@@ -87,14 +89,13 @@ def run_classification(ip: str, target_col: str, group_col: str, feature_cols: l
     return out_file
 
 if __name__ == '__main__':
-    if len(sys.argv) < 5:
-        log_error("Usage: python classification_analyzer.py <input.parquet> <target_col> <group_col> <feature_cols_list_or_comma_str>")
+    if len(sys.argv) != 5:
+        log_error("CRITICAL: Exact parameters required: <input.parquet> <target_col> <group_col> <feature_cols_comma_str>")
         sys.exit(1)
 
     ip = sys.argv[1]
-    t_col = sys.argv[2]
-    g_col = sys.argv[3]
-    raw_feats = sys.argv[4]
-    f_cols = ast.literal_eval(raw_feats) if raw_feats.startswith('[') else [c.strip() for c in raw_feats.split(',') if c.strip()]
+    t_col = sys.argv[2].strip(" '\"\\")
+    g_col = sys.argv[3].strip(" '\"\\")
+    f_cols = [c.strip(" '\"\\") for c in sys.argv[4].split(',') if c.strip(" '\"\\")]
 
     run_classification(ip, target_col=t_col, group_col=g_col, feature_cols=f_cols)

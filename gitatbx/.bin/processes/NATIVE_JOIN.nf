@@ -1,120 +1,126 @@
 process NATIVE_JOIN {
-    
+
     publishDir (
-        path: { "${params.output_dir}/${participant_id}/.bin" },
+        path: { "${params.output_dir}/${params.project_name}_l1/${participant_id}/.bin" },
         mode: 'copy',
         pattern: "*.parquet"
     )
 
     input:
-        tuple val(participant_id), val(incoming_signals)
+        tuple val(participant_id), path(incoming_signals)
         val file_pattern
 
     output:
         tuple val(participant_id), path("*.parquet"), emit: merged_matrix
 
-    script:
-        def mixParser = new GroovyClassLoader().parseClass(moduleDir.resolve('../lib/mixParser.groovy').toFile())
-        def cleanFilePaths = incoming_signals != null ? mixParser.extractCleanPaths(incoming_signals) : []
-        def resolvedBaseName = "${participant_id}_${file_pattern}"
-        def fileListGroovy = cleanFilePaths.collect { pathObj -> "'${pathObj.toString()}'" }.join(', ')
-
-    """
-    #!/usr/bin/env groovy
-
-    @Grapes([
-        @Grab(group='org.duckdb', module='duckdb_jdbc', version='0.10.0')
-    ])
-    import java.sql.DriverManager
-    import java.io.File
-
-    def participantId = "${participant_id}"
-    def targetFile = "${resolvedBaseName}.parquet"
-    def inputFiles = [${fileListGroovy}].findAll { filePath -> 
-        def f = new File(filePath)
-        return f.exists() && f.length() > 12 
-    }
-
-    if (inputFiles.isEmpty()) {
-        System.err.println("[Native Join] ERROR: Zero valid Parquet input files provided for \${participantId}.")
-        System.exit(1)
-    }
-
-    Class.forName("org.duckdb.DuckDBDriver")
-    def conn = DriverManager.getConnection("jdbc:duckdb:")
-    def stmt = conn.createStatement()
-
-    try {
-        def baseFile = inputFiles[0]
-        def baseRowCountRs = stmt.executeQuery("SELECT COUNT(*) FROM read_parquet('\${baseFile}')")
-        baseRowCountRs.next()
-        long baseRowCount = baseRowCountRs.getLong(1)
-
-        def selectClauses = []
-        def joinedTablesSql = "FROM read_parquet('\${baseFile}') AS t0"
-        
-        def baseColsRs = stmt.executeQuery("DESCRIBE SELECT * FROM read_parquet('\${baseFile}')")
-        def mergedColumns = []
-        while (baseColsRs.next()) {
-            mergedColumns << baseColsRs.getString("column_name")
+    exec:
+        if (!participant_id || participant_id.toString().trim().isEmpty()) {
+            throw new IllegalArgumentException("[NATIVE_JOIN] FATAL: Participant 'id' is required.")
+        }
+        if (!file_pattern || file_pattern.toString().trim().isEmpty()) {
+            throw new IllegalArgumentException("[NATIVE_JOIN] FATAL: 'file_pattern' is required.")
         }
 
-        mergedColumns.each { col -> selectClauses << "t0.\"\${col}\" AS \"\${col}\"" }
+        def currentId  = participant_id.toString().trim()
+        def outputName = file_pattern.toString().trim()
+        def launchDir  = workflow.launchDir.toFile()
 
-        inputFiles.tail().eachWithIndex { file, idx ->
-            def tableAlias = "t\${idx + 1}"
+        if (!params.output_dir || !params.project_name) {
+            throw new IllegalStateException("[NATIVE_JOIN] FATAL: Missing 'params.output_dir' or 'params.project_name'.")
+        }
 
-            def countRs = stmt.executeQuery("SELECT COUNT(*) FROM read_parquet('\${file}')")
-            countRs.next()
-            long rowCount = countRs.getLong(1)
-            if (rowCount != baseRowCount) {
-                System.err.println("[Native Join] ERROR: Row height mismatch for participant \${participantId}! Base: \${baseRowCount}, File \${file}: \${rowCount}")
-                System.exit(1)
+        def participantDir = new java.io.File(launchDir, "${params.output_dir}/${params.project_name}_l1/${currentId}")
+        def targetBinDir   = new java.io.File(participantDir, ".bin")
+        participantDir.mkdirs()
+        targetBinDir.mkdirs()
+
+        def participantLog = new java.io.File(targetBinDir, "${currentId}.log")
+
+        def SqlUtils            = null
+        def BaseFileSystemUtils = null
+
+        try {
+            def gcl = new GroovyClassLoader(Thread.currentThread().contextClassLoader)
+
+            def sqlUtilsFile = [
+                moduleDir.resolve('../lib/SqlUtils.groovy').toFile(),
+                moduleDir.resolve('../../lib/SqlUtils.groovy').toFile()
+            ].find { java.io.File f -> f.exists() }
+
+            def baseFsFile = [
+                moduleDir.resolve('../lib/base/BaseFileSystemUtils.groovy').toFile(),
+                moduleDir.resolve('../../lib/base/BaseFileSystemUtils.groovy').toFile()
+            ].find { java.io.File f -> f.exists() }
+
+            if (!sqlUtilsFile) throw new java.io.FileNotFoundException("[NATIVE_JOIN] Missing SqlUtils.groovy.")
+            if (!baseFsFile)  throw new java.io.FileNotFoundException("[NATIVE_JOIN] Missing BaseFileSystemUtils.groovy.")
+
+            gcl.addClasspath(sqlUtilsFile.parentFile.absolutePath)
+            if (sqlUtilsFile.parentFile.parentFile.exists()) {
+                gcl.addClasspath(sqlUtilsFile.parentFile.parentFile.absolutePath)
             }
 
-            def currColsRs = stmt.executeQuery("DESCRIBE SELECT * FROM read_parquet('\${file}')")
-            def currCols = []
-            while (currColsRs.next()) {
-                currCols << currColsRs.getString("column_name")
+            SqlUtils            = gcl.parseClass(sqlUtilsFile)
+            BaseFileSystemUtils = gcl.parseClass(baseFsFile)
+
+            BaseFileSystemUtils.appendLog(participantLog, "[L1] [INFO] [NATIVE_JOIN] Joining specified signal files for '${currentId}' into '${outputName}'...")
+
+            def trackingQueue = []
+            if (incoming_signals instanceof Collection) {
+                trackingQueue.addAll(incoming_signals)
+            } else if (incoming_signals != null && incoming_signals.getClass().isArray()) {
+                trackingQueue.addAll(incoming_signals as List)
+            } else {
+                trackingQueue.add(incoming_signals)
             }
 
-            joinedTablesSql += " POSITIONALLY JOIN read_parquet('\${file}') AS \${tableAlias}"
-
-            currCols.each { col ->
-                if (mergedColumns.contains(col)) {
-                    def checkRs = stmt.executeQuery(\"\"\"
-                        SELECT COUNT(*) 
-                        FROM read_parquet('\${baseFile}') AS b
-                        POSITIONALLY JOIN read_parquet('\${file}') AS c
-                        WHERE b."\${col}" IS DISTINCT FROM c."\${col}"
-                    \"\"\")
-                    checkRs.next()
-                    long mismatches = checkRs.getLong(1)
-
-                    if (mismatches > 0) {
-                        def newColName = "\${col}_stream_\${idx + 1}"
-                        selectClauses << "\${tableAlias}.\"\${col}\" AS \"\${newColName}\""
-                        mergedColumns << newColName
+            def cleanFiles = []
+            trackingQueue.each { item ->
+                if (item != null) {
+                    def plainPath = item.toString().replaceAll(/[\[\]\"\']/, "").trim()
+                    if (plainPath.endsWith('.parquet')) {
+                        def f = new java.io.File(plainPath)
+                        if (f.exists() && f.size() > 12) {
+                            cleanFiles.add(f.absolutePath)
+                        }
                     }
-                } else {
-                    selectClauses << "\${tableAlias}.\"\${col}\" AS \"\${col}\""
-                    mergedColumns << col
                 }
             }
+            cleanFiles = cleanFiles.unique()
+
+            if (cleanFiles.isEmpty()) {
+                def err = "[NATIVE_JOIN] ERROR: Zero valid input Parquet files provided for '${currentId}' under target '${outputName}'."
+                BaseFileSystemUtils.appendLog(participantLog, "[L1] [ERROR] ${err}")
+                throw new RuntimeException(err)
+            }
+
+            def targetFile = "${currentId}_${outputName}.parquet"
+            def localDest  = new java.io.File(task.workDir.toFile(), targetFile)
+
+            SqlUtils.withConnection { conn ->
+                def baseFile     = cleanFiles[0]
+                def selectClause = "t0.*"
+                def joinClause   = "read_parquet('${SqlUtils.escapePath(baseFile)}') AS t0"
+
+                cleanFiles.tail().eachWithIndex { String fp, int idx ->
+                    def aliasIdx = idx + 1
+                    joinClause  += " POSITIONALLY JOIN read_parquet('${SqlUtils.escapePath(fp)}') AS t${aliasIdx}"
+                    selectClause += ", t${aliasIdx}.* EXCLUDE (timestamp)"
+                }
+
+                def query = "COPY (SELECT ${selectClause} FROM ${joinClause}) TO '${SqlUtils.escapePath(localDest.absolutePath)}' (FORMAT PARQUET, COMPRESSION 'ZSTD')"
+                SqlUtils.executeQuery(conn, query)
+            }
+
+            def outputDest = new java.io.File(targetBinDir, targetFile)
+            java.nio.file.Files.copy(localDest.toPath(), outputDest.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            BaseFileSystemUtils.appendLog(participantLog, "[L1] [INFO] [NATIVE_JOIN] Successfully created joined matrix: ${targetFile}")
+
+        } catch (Throwable t) {
+            def fatalErr = "[NATIVE_JOIN] CRITICAL ERROR for participant '${currentId}': ${t.message}"
+            if (participantLog != null && BaseFileSystemUtils != null) {
+                BaseFileSystemUtils.appendLog(participantLog, "[L1] [ERROR] ${fatalErr}")
+            }
+            throw new RuntimeException(fatalErr, t)
         }
-
-        def query = "COPY (SELECT \${selectClauses.join(', ')} \${joinedTablesSql}) TO '\${targetFile}' (FORMAT PARQUET, COMPRESSION 'GZIP')"
-        stmt.execute(query)
-
-        println "[Native Join] Successfully created merged matrix: \${targetFile}"
-
-    } catch (Exception e) {
-        System.err.println("[Native Join] ERROR: Horizontal join failed for \${participantId}: \${e.message}")
-        e.printStackTrace()
-        System.exit(1)
-    } finally {
-        stmt.close()
-        conn.close()
-    }
-    """
 }

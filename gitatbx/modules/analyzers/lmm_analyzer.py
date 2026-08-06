@@ -1,4 +1,4 @@
-"""Linear Mixed Models (LMM) Analyzer - Generic model fitting (Strict fail-fast implementation)."""
+"""Linear Mixed Models (LMM) Analyzer Module (Strict fail-fast implementation)."""
 import sys, os, polars as pl
 import statsmodels.formula.api as smf
 
@@ -6,11 +6,10 @@ def log_info(msg: str):  print(f"[lmm] INFO: {msg}")
 def log_error(msg: str): print(f"[lmm] ERROR: {msg}")
 
 def ensure_flat_dataframe(df: pl.DataFrame) -> pl.DataFrame:
-    """Explodes nested list columns (from NATIVE_CONCAT) into flat observation rows."""
     list_cols = [c for c, dt in df.schema.items() if isinstance(dt, pl.List)]
     return df.explode(list_cols) if list_cols else df
 
-def run_lmm(files: list[str], dep_var: str, pred_var: str, group_col: str = 'participant_id') -> str:
+def run_lmm(files: list[str], dep_var: str, pred_var: str, group_col: str) -> str:
     dfs = []
     for f in files:
         if os.path.exists(f) and os.path.getsize(f) > 12:
@@ -31,34 +30,32 @@ def run_lmm(files: list[str], dep_var: str, pred_var: str, group_col: str = 'par
 
     df = pl.concat(dfs, how='diagonal_relaxed') if len(dfs) > 1 else dfs[0]
 
-    actual_group_col = group_col
     if group_col not in df.columns:
-        for candidate in ['participant_id', 'group', 'id', 'participant']:
-            if candidate in df.columns:
-                actual_group_col = candidate
-                log_info(f"Grouping column '{group_col}' not found. Falling back to detected column '{actual_group_col}'.")
-                break
-
-    if actual_group_col not in df.columns:
-        log_error(f"Required grouping column '{group_col}' (or safe alternatives) missing from dataset columns: {df.columns}")
+        log_error(f"Required grouping column '{group_col}' missing from dataset columns: {list(df.columns)}")
         sys.exit(1)
 
     if dep_var not in df.columns:
-        log_error(f"Declared dependent variable '{dep_var}' missing from columns: {df.columns}")
+        log_error(f"Declared dependent variable '{dep_var}' missing from columns: {list(df.columns)}")
         sys.exit(1)
 
     if pred_var not in df.columns:
-        log_error(f"Declared predictor variable '{pred_var}' missing from columns: {df.columns}")
+        log_error(f"Declared predictor variable '{pred_var}' missing from columns: {list(df.columns)}")
         sys.exit(1)
 
-    pdf = df.select([dep_var, pred_var, actual_group_col]).drop_nulls().to_pandas()
-    if len(pdf) < 5 or pdf[actual_group_col].nunique() < 2:
-        log_error(f"Insufficient rows ({len(pdf)}) or groups ({pdf[actual_group_col].nunique() if len(pdf) > 0 else 0}) to fit LMM model.")
+    # STRICT FAIL FAST ON NULLS IN MODEL VARIABLES
+    for v in [dep_var, pred_var, group_col]:
+        if df[v].null_count() > 0:
+            log_error(f"CRITICAL: Model variable '{v}' contains null values. Imputation disabled.")
+            sys.exit(1)
+
+    pdf = df.select([dep_var, pred_var, group_col]).to_pandas()
+    if len(pdf) < 5 or pdf[group_col].nunique() < 2:
+        log_error(f"Insufficient rows ({len(pdf)}) or groups ({pdf[group_col].nunique()}) to fit LMM model.")
         sys.exit(1)
 
     formula = f"{dep_var} ~ {pred_var}"
     try:
-        model = smf.mixedlm(formula, pdf, groups=pdf[actual_group_col]).fit()
+        model = smf.mixedlm(formula, pdf, groups=pdf[group_col]).fit()
         if not model.converged:
             log_error(f"MixedLM fit failed to converge for formula '{formula}'.")
             sys.exit(1)
@@ -86,10 +83,10 @@ def run_lmm(files: list[str], dep_var: str, pred_var: str, group_col: str = 'par
 if __name__ == '__main__':
     args = sys.argv[1:]
     files = [a for a in args if os.path.exists(a) and a.endswith('.parquet')]
-    terms = [a for a in args if not os.path.exists(a) and not a.startswith('--')]
+    terms = [a.strip(" '\"\\") for a in args if not os.path.exists(a) and not a.startswith('--')]
     
-    if not files or len(terms) < 2:
-        log_error("Usage: python lmm_analyzer.py <input_files...> <dep_var> <pred_var> [group_col]")
+    if not files or len(terms) != 3:
+        log_error("CRITICAL: Exact parameters required: <input_files...> <dep_var> <pred_var> <group_col>")
         sys.exit(1)
 
-    run_lmm(files, dep_var=terms[0], pred_var=terms[1], group_col=terms[2] if len(terms) > 2 else 'participant_id')
+    run_lmm(files, dep_var=terms[0], pred_var=terms[1], group_col=terms[2])

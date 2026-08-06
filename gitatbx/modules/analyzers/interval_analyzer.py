@@ -1,16 +1,18 @@
 """Interval Analyzer Module - Generic inter-event interval computation (Strict fail-fast implementation)."""
-import polars as pl, numpy as np, sys, os, ast
+import polars as pl, numpy as np, sys, os
 
 def log_info(msg: str):  print(f"[interval] INFO: {msg}")
 def log_error(msg: str): print(f"[interval] ERROR: {msg}")
 
-def analyze_intervals(ip: str, 
-                      target_cols: list[str], 
-                      metrics_mode: str = 'RMSSD') -> str:
+def analyze_intervals(ip: str, target_cols: list[str], metrics_mode: str) -> str:
     log_info(f"Interval analysis execution: {ip}")
 
     if not os.path.exists(ip) or os.path.getsize(ip) <= 12:
         log_error(f"Input file not found or empty: {ip}")
+        sys.exit(1)
+
+    if metrics_mode.upper() not in ('ALL', 'SDNN', 'RMSSD'):
+        log_error(f"Invalid metrics_mode '{metrics_mode}'. Must be 'ALL', 'SDNN', or 'RMSSD'.")
         sys.exit(1)
 
     try:
@@ -32,17 +34,25 @@ def analyze_intervals(ip: str,
         log_error(f"Declared columns not found in Parquet dataset: {missing_cols}")
         sys.exit(1)
 
-    # Strict contract: target_cols must contain [event_col, condition, epoch_id, time] (or similar explicit list)
     event_col = target_cols[0]
     group_keys = [c for c in target_cols[1:] if c != 'time']
-    time_col = [c for c in target_cols[1:] if c == 'time']
+    time_cols = [c for c in target_cols[1:] if c == 'time']
 
-    if not time_col and 'sfreq' not in df.columns:
-        log_error("Dataset must contain either a 'time' column in target_cols or an 'sfreq' column.")
+    if not time_cols and 'sfreq' not in df.columns:
+        log_error("Dataset must contain either an explicit 'time' column in target_cols or an 'sfreq' column.")
         sys.exit(1)
     
-    time_col_name = time_col[0] if time_col else None
-    sfreq = float(df['sfreq'][0]) if 'sfreq' in df.columns and len(df) > 0 else 1000.0
+    time_col_name = time_cols[0] if time_cols else None
+    
+    sfreq = None
+    if time_col_name is None:
+        if 'sfreq' not in df.columns or df['sfreq'].null_count() > 0:
+            log_error("Explicit 'sfreq' column missing or contains null values.")
+            sys.exit(1)
+        sfreq = float(df['sfreq'][0])
+        if sfreq <= 0:
+            log_error(f"Invalid sampling frequency sfreq={sfreq}")
+            sys.exit(1)
 
     records = []
     if group_keys:
@@ -55,7 +65,7 @@ def analyze_intervals(ip: str,
                 log_error(f"Sub-group {key_dict} contains fewer than 2 events for interval estimation.")
                 sys.exit(1)
             
-            if time_col_name and time_col_name in epoch_df.columns:
+            if time_col_name is not None:
                 time_events = epoch_df.sort(event_col)[time_col_name].to_numpy()
                 intervals = np.diff(time_events) * 1000.0
             else:
@@ -85,7 +95,7 @@ def analyze_intervals(ip: str,
             log_error("Dataset contains fewer than 2 events for interval estimation.")
             sys.exit(1)
 
-        if time_col_name and time_col_name in df.columns:
+        if time_col_name is not None:
             time_events = df.sort(event_col)[time_col_name].to_numpy()
             intervals = np.diff(time_events) * 1000.0
         else:
@@ -113,18 +123,12 @@ def analyze_intervals(ip: str,
     return out_file
 
 if __name__ == '__main__':
-    if len(sys.argv) < 3:
-        log_error("Usage: python interval_analyzer.py <input.parquet> <target_cols_list> [metrics_mode]")
+    if len(sys.argv) != 4:
+        log_error("CRITICAL: Exact parameters required: <input.parquet> <target_cols_str> <metrics_mode>")
         sys.exit(1)
 
     ip = sys.argv[1]
-    
-    raw_targets = sys.argv[2]
-    if raw_targets.startswith('[') and raw_targets.endswith(']'):
-        t_cols = ast.literal_eval(raw_targets)
-    else:
-        t_cols = [c.strip() for c in raw_targets.split(',') if c.strip()]
-
-    mm_mode = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] not in ('None', '') else 'RMSSD'
+    t_cols = [c.strip(" '\"\\") for c in sys.argv[2].split(',') if c.strip(" '\"\\")]
+    mm_mode = sys.argv[3].strip(" '\"\\")
 
     analyze_intervals(ip, target_cols=t_cols, metrics_mode=mm_mode)

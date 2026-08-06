@@ -1,15 +1,17 @@
-"""Spectrum Analyzer Module - Generic Welch PSD spectral estimation (Strict fail-fast implementation with explicit target/metadata columns)."""
-import polars as pl, numpy as np, sys, ast, os
+"""Spectrum Analyzer Module - Generic Welch PSD spectral estimation."""
+import polars as pl, numpy as np, sys, os
 from scipy.signal import welch as scipy_welch
 
 def log_info(msg: str):  print(f"[spectrum] INFO: {msg}")
 def log_error(msg: str): print(f"[spectrum] ERROR: {msg}")
 
-def compute_spectrum(ip: str, 
-                     target_cols: list[str], 
-                     max_freq: float = 45.0) -> str:
+def compute_spectrum(ip: str, target_cols: list[str], max_freq: float) -> str:
     if not os.path.exists(ip) or os.path.getsize(ip) <= 12:
         log_error(f"File not found or empty: {ip}")
+        sys.exit(1)
+
+    if max_freq <= 0:
+        log_error(f"max_freq must be a positive number. Received: {max_freq}")
         sys.exit(1)
 
     log_info(f"Loading: {ip}")
@@ -28,13 +30,11 @@ def compute_spectrum(ip: str,
         log_error(f"Declared target/metadata columns not found in dataset: {missing_targets}")
         sys.exit(1)
 
-    # Strict contract: target_cols contains [channels/regions..., condition, epoch_id, time]
-    # Let's extract the time and grouping metadata columns explicitly from target_cols definition
-    time_col = [c for c in target_cols if c == 'time']
-    if not time_col:
+    time_cols = [c for c in target_cols if c == 'time']
+    if not time_cols:
         log_error("Explicit 'time' column must be included in target_cols.")
         sys.exit(1)
-    time_col_name = time_col[0]
+    time_col_name = time_cols[0]
 
     group_keys = [c for c in target_cols if c in ('condition', 'epoch_id', 'participant_id')]
     channels = [c for c in target_cols if c not in group_keys and c != time_col_name]
@@ -42,6 +42,11 @@ def compute_spectrum(ip: str,
     if not channels:
         log_error("No signal channels or regions specified within target_cols.")
         sys.exit(1)
+
+    for ch in channels:
+        if df[ch].null_count() > 0 or np.isnan(df[ch].to_numpy()).any():
+            log_error(f"Null or NaN values detected in signal column '{ch}'. Imputation disabled.")
+            sys.exit(1)
 
     if epoch_col_name := next((c for c in group_keys if c == 'epoch_id'), None):
         first_epoch_val = df[epoch_col_name][0]
@@ -107,19 +112,16 @@ def compute_spectrum(ip: str,
     return out_file
 
 if __name__ == '__main__':
-    a = sys.argv
-    if len(a) < 3:
-        log_error("Usage: python spectrum_analyzer.py <input.parquet> <target_cols_list> [max_freq]")
+    if len(sys.argv) != 4:
+        log_error("CRITICAL: Exact parameters required: <input.parquet> <target_cols_str> <max_freq>")
         sys.exit(1)
 
-    epochs = a[1]
-    
+    epochs = sys.argv[1]
+    target_cols = [c.strip(" '\"\\") for c in sys.argv[2].split(',') if c.strip(" '\"\\")]
     try:
-        target_cols = ast.literal_eval(a[2])
-    except Exception as e:
-        log_error(f"Failed to parse target columns argument: {e}")
+        max_freq = float(sys.argv[3].strip(" '\"\\"))
+    except ValueError as e:
+        log_error(f"Invalid max_freq parameter value: {e}")
         sys.exit(1)
-
-    max_freq = float(a[3]) if len(a) > 3 and a[3] not in ('None', 'null', '') else 45.0
 
     compute_spectrum(epochs, target_cols=target_cols, max_freq=max_freq)
