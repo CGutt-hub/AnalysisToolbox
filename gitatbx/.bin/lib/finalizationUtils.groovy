@@ -1,75 +1,129 @@
+package lib
+
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.StandardCopyOption
+
 class FinalizationUtils {
 
-    static void finalizeFiles(
-            Object workflowObj, 
-            Map paramsObj, 
-            java.nio.file.Path moduleDirFile, 
-            String entityName, 
-            String targetDirPath, 
-            Object rootSignals, 
-            Object syncTriggers, 
-            String logPrefix, 
-            String commitMessage) {
-
-        def gcl = new GroovyClassLoader(Thread.currentThread().contextClassLoader)
-        gcl.addClasspath(moduleDirFile.resolve('../').toFile().absolutePath)
-
-        def BaseGitUtils        = gcl.parseClass(moduleDirFile.resolve('../lib/base/BaseGitUtils.groovy').toFile())
-        def BaseFileSystemUtils = gcl.parseClass(moduleDirFile.resolve('../lib/base/BaseFileSystemUtils.groovy').toFile())
-
-        def rootDir   = new java.io.File("${workflowObj.launchDir}/${targetDirPath}")
-        def binDir    = new java.io.File(rootDir, ".bin")
-        def entityLog = new java.io.File(binDir, entityName ? "${entityName}.log" : "${paramsObj.project_name}_l2.log")
-        def mainLog   = new java.io.File("${workflowObj.launchDir}/${paramsObj.output_dir}/.bin", "${paramsObj.project_name}.log")
-
-        if (!rootDir.exists() && !rootDir.mkdirs()) {
-            throw new RuntimeException("CRITICAL: Failed to create root directory: ${rootDir.absolutePath}")
+    /**
+     * Safely flattens and converts Nextflow AST objects (GString, Path, Dataflow, Lists)
+     * into pure Java String path representations.
+     */
+    static List<String> sanitizePathList(Object input) {
+        if (input == null) return []
+        List<Object> rawList = []
+        
+        def flatten
+        flatten = { obj ->
+            if (obj == null) return
+            if (obj instanceof Collection || obj.getClass().isArray()) {
+                obj.each { flatten(it) }
+            } else {
+                rawList.add(obj)
+            }
         }
-        if (!binDir.exists() && !binDir.mkdirs()) {
-            throw new RuntimeException("CRITICAL: Failed to create .bin directory: ${binDir.absolutePath}")
+        flatten(input)
+
+        List<String> cleanPaths = []
+        for (Object item : rawList) {
+            if (item == null) continue
+            String strPath = item.toString().trim()
+            if (!strPath.isEmpty()) {
+                cleanPaths.add(strPath)
+            }
         }
+        return cleanPaths
+    }
 
-        BaseFileSystemUtils.appendLog(entityLog, "[${logPrefix}] [INFO] Starting finalization for ${entityName ?: 'L2 Cohort'}...")
+    /**
+     * Engine Probe 1: Validates signal files exist and exceed minimum byte size threshold.
+     */
+    static List<String> validateSignals(Object signals, long minSizeBytes = 12L) {
+        List<String> paths = sanitizePathList(signals)
+        if (paths.isEmpty()) return []
 
-        def rootSignalsList  = rootSignals instanceof List ? rootSignals : [rootSignals]
-        def syncTriggersList = syncTriggers instanceof List ? syncTriggers : [syncTriggers]
-
-        def cleanRootFiles = rootSignalsList.collect { it.toString() }.findAll { fp ->
-            def f = new java.io.File(fp)
-            return f.exists() && f.size() > 12
+        List<String> validPaths = []
+        for (String p : paths) {
+            try {
+                def f = new java.io.File(p)
+                if (f.exists() && f.isFile() && f.length() >= minSizeBytes) {
+                    validPaths.add(f.canonicalPath)
+                }
+            } catch (Throwable ignored) {
+                // Ignore invalid file paths cleanly
+            }
         }
-        def cleanSyncFiles = syncTriggersList.collect { it.toString() }.findAll { fp ->
-            def f = new java.io.File(fp)
-            return f.exists() && f.size() > 12
-        }
+        return validPaths
+    }
 
-        if (cleanRootFiles.isEmpty())  throw new RuntimeException("CRITICAL: Zero result signal files for ${entityName ?: 'L2'}.")
-        if (cleanSyncFiles.isEmpty()) throw new RuntimeException("CRITICAL: Zero sync trigger files for ${entityName ?: 'L2'}.")
-
+    /**
+     * Engine Probe 2: Promotes verified signal files into the target output root directory.
+     * Returns structured execution map.
+     */
+    static Map<String, Object> promoteSignals(List<String> filePaths, java.io.File targetRootDir) {
         try {
-            cleanRootFiles.each { signal ->
+            if (!targetRootDir.exists() && !targetRootDir.mkdirs()) {
+                return [success: false, error: "Failed to create target directory: ${targetRootDir.absolutePath}"]
+            }
+
+            List<String> promotedNames = []
+            for (String signal : filePaths) {
                 def srcFile = new java.io.File(signal)
-                def destFile = new java.io.File(rootDir, srcFile.name)
-                java.nio.file.Files.copy(srcFile.toPath(), destFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                def destFile = new java.io.File(targetRootDir, srcFile.name)
+                Files.copy(srcFile.toPath(), destFile.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                promotedNames.add(srcFile.name)
             }
 
-            cleanSyncFiles.each { trigger ->
-                def srcFile = new java.io.File(trigger)
-                def destFile = new java.io.File(rootDir, srcFile.name)
-                java.nio.file.Files.copy(srcFile.toPath(), destFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            return [success: true, promotedFiles: promotedNames]
+        } catch (Throwable e) {
+            return [
+                success: false, 
+                error: "Signal promotion error [${e.getClass().simpleName}]: ${e.message}"
+            ]
+        }
+    }
+
+    /**
+     * Engine Probe 3: Gracefully cleans up transient log lock files.
+     */
+    static boolean removeLockFile(java.io.File binDir) {
+        try {
+            def logLock = new java.io.File(binDir, "log.lock")
+            if (logLock.exists()) {
+                return logLock.delete()
             }
+            return true
+        } catch (Throwable ignored) {
+            return false
+        }
+    }
 
-            def gitRoot = BaseGitUtils.findGitRoot(new java.io.File(workflowObj.launchDir.toString()))
-            if (!gitRoot) throw new RuntimeException("CRITICAL: Git repository root not found for ${entityName ?: 'L2'}.")
+    /**
+     * Engine Probe 4: Discovers Git repository root safely.
+     */
+    static java.io.File findGitRoot(Class baseGitUtilsClass, java.io.File launchDir) {
+        try {
+            return (java.io.File) baseGitUtilsClass.findGitRoot(launchDir)
+        } catch (Throwable ignored) {
+            return null
+        }
+    }
 
-            BaseGitUtils.syncPath(gitRoot, targetDirPath, commitMessage)
-
-            BaseFileSystemUtils.appendLog(entityLog, "=== Finalization Complete ===")
-            BaseFileSystemUtils.appendLog(mainLog, "[${logPrefix.toLowerCase()}] Git sync completed for ${entityName ?: 'L2'}")
-
-        } catch (Exception e) {
-            BaseFileSystemUtils.appendLog(entityLog, "[${logPrefix}] [ERROR] Finalization failed: ${e.message}")
-            throw e
+    /**
+     * Engine Probe 5: Executes cross-process locked Git sync.
+     * Returns structured execution map.
+     */
+    static Map<String, Object> executeGitSync(Class baseGitUtilsClass, java.io.File gitRoot, String targetDirPath, String commitMessage) {
+        try {
+            baseGitUtilsClass.syncPath(gitRoot, targetDirPath, commitMessage)
+            return [success: true, error: null]
+        } catch (Throwable e) {
+            def causeMsg = e.cause ? " (Cause: ${e.cause.message})" : ""
+            return [
+                success: false, 
+                error: "Git Sync Engine Error [${e.getClass().simpleName}]: ${e.message}${causeMsg}"
+            ]
         }
     }
 }

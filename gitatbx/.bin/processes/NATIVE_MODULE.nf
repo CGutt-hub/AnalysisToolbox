@@ -57,22 +57,31 @@ process NATIVE_MODULE {
         def moduleTag          = scriptName.replaceAll(/(_processor|_analyzer)?\.[^.]+$/, '')
 
         // ---------------------------------------------------------------------
-        // STRICT STEM & PATH DERIVATION
+        // STRICT PATH & LOG DESTINATION DERIVATION
         // ---------------------------------------------------------------------
+        def isL2          = (level == 'L2')
         def inputFileName = input_parquet.name
         def rawStem       = inputFileName.replaceAll(/\.[^.]+$/, '')
-        def prefixMatcher = rawStem =~ /^([a-zA-Z0-9]+_[0-9]+)/
+        
+        def contextFolderName = ""
+        def logBaseName       = ""
 
-        if (!prefixMatcher.find()) {
-            throw new IllegalArgumentException("[NATIVE_MODULE] CRITICAL: Input file '${inputFileName}' does not conform to expected prefix pattern ('<PROJECT>_<ID>').")
+        if (isL2) {
+            def l2FolderVal   = params.l2_folder ? params.l2_folder.toString().trim() : "${params.project_name}_l2"
+            contextFolderName = l2FolderVal
+            logBaseName       = "${params.project_name}_l2.log"
+        } else {
+            def prefixMatcher = rawStem =~ /^([a-zA-Z0-9]+_[0-9]+)/
+            if (!prefixMatcher.find()) {
+                throw new IllegalArgumentException("[NATIVE_MODULE] CRITICAL: L1 input file '${inputFileName}' does not conform to expected prefix pattern ('<PROJECT>_<ID>').")
+            }
+            def filePrefix    = prefixMatcher.group(1)
+            contextFolderName = "${params.project_name}_l1/${filePrefix}"
+            logBaseName       = "${filePrefix}.log"
         }
-        def filePrefix = prefixMatcher.group(1)
 
-        def isL2 = (level == 'L2')
-        def contextFolderName = isL2 ? "${params.project_name}_l2" : "${params.project_name}_${level.toLowerCase()}/${filePrefix}"
-        def contextDirPath    = new java.io.File("${workflow.launchDir}/${params.output_dir}/${contextFolderName}/.bin").getCanonicalPath()
-        def logBaseName       = isL2 ? "${params.project_name}_l2.log" : "${filePrefix}.log"
-        def textLogPath       = "${contextDirPath}/${logBaseName}"
+        def contextDirPath = new java.io.File("${workflow.launchDir}/${params.output_dir}/${contextFolderName}/.bin").getCanonicalPath()
+        def textLogPath    = "${contextDirPath}/${logBaseName}"
 
         // ---------------------------------------------------------------------
         // PARAMETER SANITIZATION (EXPLICIT CLOSURE PARAMETERS)
@@ -141,7 +150,7 @@ process NATIVE_MODULE {
 
         TS=\$(date '+%Y-%m-%d %H:%M:%S.%3N')
 
-        # Stream stdout line-by-line as [INFO] (Stripping redundant internal Python module tags)
+        # Stream stdout line-by-line as [INFO]
         if [ -s "\$TEMP_STDOUT" ]; then
             (
                 flock -x 200
@@ -150,7 +159,7 @@ process NATIVE_MODULE {
             ) 200>>"\$LOCK_FILE"
         fi
 
-        # Stream stderr line-by-line as [ERROR] (Stripping redundant internal Python module tags)
+        # Stream stderr line-by-line as [ERROR]
         if [ -s "\$TEMP_STDERR" ]; then
             (
                 flock -x 200
@@ -203,7 +212,6 @@ conn.execute('''
             log_entry "INFO" "Injected plot_type metadata via Python DuckDB (ZSTD)."
         fi
 
-        # FIX: Extract filename from path to prevent invalid nested absolute path copy
         OUTPUT_FILENAME=\$(basename "\$GENERATED_FILE")
         cp "\$GENERATED_FILE" "\$CONTEXT_DIR/\$OUTPUT_FILENAME"
         log_entry "INFO" "Procedure output stored in: \$CONTEXT_DIR/\$OUTPUT_FILENAME"

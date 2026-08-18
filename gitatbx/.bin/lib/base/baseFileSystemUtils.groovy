@@ -9,20 +9,14 @@ import java.util.concurrent.ConcurrentHashMap
 
 class BaseFileSystemUtils {
 
-    // Map of canonical file path strings to lock objects for strict intra-JVM thread synchronization
     private static final ConcurrentHashMap<String, Object> FILE_LOCKS = new ConcurrentHashMap<>()
 
-    /**
-     * Thread-safe and process-safe log appender using OS file locking & explicit path synchronization.
-     * Robustly handles relative paths containing '..' and null payloads.
-     */
     static void appendLog(File logFile, Object message) {
         if (!logFile) return
         
         def textMessage = (message instanceof List) ? message.join(" ") : (message != null ? message.toString() : "null")
 
         try {
-            // Convert relative path with '..' into absolute canonical target
             File canonicalFile = logFile.getCanonicalFile()
             File parentDir = canonicalFile.getParentFile()
 
@@ -31,7 +25,6 @@ class BaseFileSystemUtils {
             }
 
             def pathKey = canonicalFile.getCanonicalPath()
-            // Retrieve or create a synchronized lock handle per unique file path
             Object fileSyncObject = FILE_LOCKS.computeIfAbsent(pathKey, { new Object() })
 
             synchronized(fileSyncObject) {
@@ -39,42 +32,52 @@ class BaseFileSystemUtils {
                 def formattedMessage = "[${timestamp}] ${textMessage}\n"
                 byte[] bytes = formattedMessage.getBytes("UTF-8")
 
+                File lockFile = new File("${pathKey}.lock")
+                def lockPath = lockFile.toPath()
+                
+                FileChannel lockChannel = FileChannel.open(
+                    lockPath,
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.WRITE
+                )
+
+                FileLock lock = null
+                int retries = 0
+                int maxRetries = 100
+
+                while (retries < maxRetries) {
+                    try {
+                        lock = lockChannel.tryLock()
+                        if (lock != null) break
+                    } catch (OverlappingFileLockException e) {
+                        // Expected during heavy parallel race conditions; backoff retry
+                    }
+                    retries++
+                    Thread.sleep(25)
+                }
+
                 def path = canonicalFile.toPath()
-                FileChannel channel = FileChannel.open(
+                FileChannel dataChannel = FileChannel.open(
                     path,
                     StandardOpenOption.CREATE,
                     StandardOpenOption.WRITE,
                     StandardOpenOption.APPEND
                 )
 
-                FileLock lock = null
-                int retries = 0
-                int maxRetries = 50
-
-                // Attempt to acquire OS file lock cleanly, retrying on transient overlap
-                while (retries < maxRetries) {
-                    try {
-                        lock = channel.tryLock()
-                        if (lock != null) break
-                    } catch (OverlappingFileLockException e) {
-                        // Expected if another thread just released or is racing; brief sleep retry
-                    }
-                    retries++
-                    Thread.sleep(20)
-                }
-
                 try {
-                    if (lock != null) {
-                        channel.write(ByteBuffer.wrap(bytes))
-                    } else {
-                        // Fallback write if lock acquisition timed out (ensures log doesn't drop)
-                        channel.write(ByteBuffer.wrap(bytes))
-                    }
+                    dataChannel.write(ByteBuffer.wrap(bytes))
+                    dataChannel.force(false)
                 } finally {
+                    try {
+                        dataChannel.close()
+                    } catch (Throwable ignored) {}
+
                     if (lock != null && lock.isValid()) {
                         lock.release()
                     }
-                    channel.close()
+                    try {
+                        lockChannel.close()
+                    } catch (Throwable ignored) {}
                 }
             }
 

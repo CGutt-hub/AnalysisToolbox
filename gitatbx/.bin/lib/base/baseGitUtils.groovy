@@ -1,6 +1,10 @@
 package lib.base
 
 import java.io.File
+import java.nio.channels.FileChannel
+import java.nio.channels.FileLock
+import java.nio.channels.OverlappingFileLockException
+import java.nio.file.StandardOpenOption
 import java.util.concurrent.locks.ReentrantLock
 
 abstract class BaseGitUtils {
@@ -41,11 +45,64 @@ abstract class BaseGitUtils {
         new File(gitRoot, ".git/rebase-apply").deleteDir()
     }
 
+    /**
+     * Cross-process lock wrapper ensuring both intra-JVM thread safety and inter-process OS locking
+     * so concurrent participant finalizations wait for each other cleanly.
+     */
+    private static <T> T withCrossProcessGitLock(File gitRoot, Closure<T> action) {
+        if (!gitRoot) throw new RuntimeException("CRITICAL: Git root is null.")
+
+        GIT_LOCK.lock()
+        File lockFile = new File(gitRoot, ".git/nextflow_git_sync.lock")
+        FileChannel channel = null
+        FileLock lock = null
+
+        try {
+            File parentDir = lockFile.parentFile
+            if (parentDir != null && !parentDir.exists()) {
+                parentDir.mkdirs()
+            }
+
+            channel = FileChannel.open(
+                lockFile.toPath(),
+                StandardOpenOption.CREATE,
+                StandardOpenOption.WRITE
+            )
+
+            int retries = 0
+            int maxRetries = 1200 // Wait up to 5 minutes for competing processes
+
+            while (retries < maxRetries) {
+                try {
+                    lock = channel.tryLock()
+                    if (lock != null) break
+                } catch (OverlappingFileLockException e) {
+                    // Lock held by another thread or JVM
+                }
+                retries++
+                Thread.sleep(250)
+            }
+
+            if (lock == null) {
+                throw new RuntimeException("CRITICAL: Timed out waiting for cross-process Git sync lock on ${lockFile.path}")
+            }
+
+            cleanupLocks(gitRoot)
+            return action.call()
+        } finally {
+            if (lock != null && lock.isValid()) {
+                try { lock.release() } catch (Throwable ignored) {}
+            }
+            if (channel != null) {
+                try { channel.close() } catch (Throwable ignored) {}
+            }
+            GIT_LOCK.unlock()
+        }
+    }
+
     static void syncBootstrap(File gitRoot, String outputRel, String binRel, List<String> inheritedEnv) {
         if (!gitRoot) throw new RuntimeException("CRITICAL: Git root is null during bootstrap sync.")
-        GIT_LOCK.withLock {
-            cleanupLocks(gitRoot)
-
+        withCrossProcessGitLock(gitRoot) {
             executeGit(["git", "rm", "-r", "--cached", "--ignore-unmatch", "--", binRel], inheritedEnv, gitRoot)
 
             def addAll = executeGit(["git", "add", "-A", outputRel], inheritedEnv, gitRoot)
@@ -78,8 +135,7 @@ abstract class BaseGitUtils {
 
     static void syncPath(File gitRoot, String relativePath, String commitMessage) {
         if (!gitRoot) throw new RuntimeException("CRITICAL: Git root is null during targeted sync for path: ${relativePath}")
-        GIT_LOCK.withLock {
-            cleanupLocks(gitRoot)
+        withCrossProcessGitLock(gitRoot) {
             def inheritedEnv = System.getenv().collect { k, v -> "${k}=${v}" } + ["GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=echo", "SSH_ASKPASS=echo"]
             
             def addCmd = executeGit(["git", "add", "-A", relativePath], inheritedEnv, gitRoot)
@@ -111,8 +167,7 @@ abstract class BaseGitUtils {
 
     static void syncRepository(File gitRoot, String commitMessage) {
         if (!gitRoot) throw new RuntimeException("CRITICAL: Git root is null during repository-wide sync.")
-        GIT_LOCK.withLock {
-            cleanupLocks(gitRoot)
+        withCrossProcessGitLock(gitRoot) {
             def inheritedEnv = System.getenv().collect { k, v -> "${k}=${v}" } + ["GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=echo", "SSH_ASKPASS=echo"]
             
             def addAll = executeGit(["git", "add", "-A"], inheritedEnv, gitRoot)

@@ -1,37 +1,34 @@
-workflow data_discovery_l1 {
+workflow data_discovery {
     take:
         input_dir
         output_dir
         participant_pattern
 
     main:
-        if (!input_dir) error "[data_discovery_l1] CRITICAL: 'input_dir' parameter is required."
-        if (!output_dir) error "[data_discovery_l1] CRITICAL: 'output_dir' parameter is required."
-        if (!participant_pattern) error "[data_discovery_l1] CRITICAL: 'participant_pattern' parameter is required."
-        if (!params.project_name) error "[data_discovery_l1] CRITICAL: 'params.project_name' must be specified in configuration."
+        if (!input_dir) error "[data_discovery] CRITICAL: 'input_dir' parameter is required."
+        if (!output_dir) error "[data_discovery] CRITICAL: 'output_dir' parameter is required."
+        if (!participant_pattern) error "[data_discovery] CRITICAL: 'participant_pattern' parameter is required."
+        if (!params.project_name) error "[data_discovery] CRITICAL: 'params.project_name' must be specified in configuration."
 
         def gcl = new GroovyClassLoader(Thread.currentThread().contextClassLoader)
         
         def pathUtilsFile = moduleDir.resolve("../lib/PathUtils.groovy").toFile()
         def baseFsFile    = moduleDir.resolve("../lib/base/BaseFileSystemUtils.groovy").toFile()
-        def baseGitFile   = moduleDir.resolve("../lib/base/BaseGitUtils.groovy").toFile()
 
-        if (!pathUtilsFile.exists()) error "[data_discovery_l1] Missing library: ${pathUtilsFile.absolutePath}"
-        if (!baseFsFile.exists())    error "[data_discovery_l1] Missing library: ${baseFsFile.absolutePath}"
-        if (!baseGitFile.exists())   error "[data_discovery_l1] Missing library: ${baseGitFile.absolutePath}"
+        if (!pathUtilsFile.exists()) error "[data_discovery] Missing library: ${pathUtilsFile.absolutePath}"
+        if (!baseFsFile.exists())    error "[data_discovery] Missing library: ${baseFsFile.absolutePath}"
 
         gcl.addClasspath(moduleDir.resolve('../').toFile().absolutePath)
 
         def PathUtils           = gcl.parseClass(pathUtilsFile)
         def BaseFileSystemUtils = gcl.parseClass(baseFsFile)
-        def BaseGitUtils        = gcl.parseClass(baseGitFile)
 
         def regex_pattern   = PathUtils.globToRegex(participant_pattern)
         def input_path      = new File("${workflow.launchDir}/${input_dir}")
         def output_path     = new File("${workflow.launchDir}/${output_dir}")
 
         if (!input_path.exists()) {
-            error "[data_discovery_l1] CRITICAL: Input directory does not exist: ${input_path.absolutePath}"
+            error "[data_discovery] CRITICAL: Input directory does not exist: ${input_path.absolutePath}"
         }
 
         def l1_path       = new File(output_path, "${params.project_name}_l1")
@@ -49,7 +46,7 @@ workflow data_discovery_l1 {
         bin_dir_infra.mkdirs()
         def pipeline_log  = new File(bin_dir_infra, "${params.project_name}.log")
 
-        BaseFileSystemUtils.appendLog(pipeline_log, "[data_discovery_l1] Procedure Initialized. Scanning ${input_path}...")
+        BaseFileSystemUtils.appendLog(pipeline_log, "[data_discovery] Procedure Initialized. Scanning ${input_path}...")
 
         if (params.l2_analyses) {
             new File("${workflow.launchDir}/${params.output_dir}", "${params.project_name}_l2/.bin").mkdirs()
@@ -60,16 +57,6 @@ workflow data_discovery_l1 {
 
         // Purge markers
         BaseFileSystemUtils.removeMarkers(output_path, ".finalized")
-
-        // Git Bootstrap (Fail-First)
-        def git_root = BaseGitUtils.findGitRoot(new File(workflow.launchDir.toString()))
-        if (git_root) {
-            def inheritedEnv = System.getenv().collect { String envKey, String envVal -> "${envKey}=${envVal}" } + ["GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=echo", "SSH_ASKPASS=echo"]
-            def binRel    = git_root.toPath().relativize(bin_dir_infra.toPath().toAbsolutePath()).toString().replace('\\', '/')
-            def outputRel = git_root.toPath().relativize(output_path.getAbsoluteFile().toPath()).toString().replace('\\', '/')
-            
-            BaseGitUtils.syncBootstrap(git_root, outputRel, binRel, inheritedEnv)
-        }
 
         def all_participants
         if (params.watch) {
@@ -90,7 +77,7 @@ workflow data_discovery_l1 {
             all_participants = channel.fromList(new_participants)
         }
 
-        BaseFileSystemUtils.appendLog(pipeline_log, "[data_discovery_l1] Discovery pass completed.")
+        BaseFileSystemUtils.appendLog(pipeline_log, "[data_discovery] Discovery pass completed.")
 
     emit:
         all_participants.map { String pid ->
