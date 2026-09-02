@@ -61,5 +61,5 @@ workflow finalize {
         }
 
     emit:
-        finalized_path = (lvlUpper == "L1") ? FINALIZE.out.finalized_path.collect() : FINALIZE.out.finalized_path
+        signal = (lvlUpper == "L1") ? FINALIZE.out.signal.collect().map { paths -> paths[0] } : FINALIZE.out.signal
 }

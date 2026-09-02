@@ -1,4 +1,4 @@
-"""ANOVA Analyzer Module - Generic One-way ANOVA execution (Strict fail-fast implementation)."""
+"""ANOVA Analyzer Module - Generic One-way ANOVA execution (Framework-aligned flexible implementation)."""
 import polars as pl, sys, os, pandas as pd, numpy as np
 from scipy.stats import f_oneway
 from statsmodels.stats.multitest import fdrcorrection
@@ -116,18 +116,20 @@ def anova_analyze(ip: str, dv: list[str], between: str, apply_fdr: bool) -> str:
     return out_file
 
 if __name__ == '__main__':
-    if len(sys.argv) != 5:
-        log_error("CRITICAL: Exact parameters required: <input.parquet> <dv_comma_str> <between_col> <apply_fdr_boolean>")
+    if len(sys.argv) < 4:
+        log_error("CRITICAL: Minimum parameters required: <input.parquet> <dv_comma_str> <between_col> [apply_fdr_boolean]")
         sys.exit(1)
 
     ip = sys.argv[1]
     dv_list = [c.strip(" '\"\\") for c in sys.argv[2].split(',') if c.strip(" '\"\\")]
     between_col = sys.argv[3].strip(" '\"\\")
-    fdr_str = sys.argv[4].strip(" '\"\\").lower()
     
-    if fdr_str not in ('true', 'false', '1', '0'):
-        log_error(f"apply_fdr parameter must be explicit boolean ('true' or 'false'). Received: '{fdr_str}'")
-        sys.exit(1)
-    apply_fdr = fdr_str in ('true', '1')
+    apply_fdr = False
+    if len(sys.argv) >= 5:
+        fdr_str = sys.argv[4].strip(" '\"\\").lower()
+        if fdr_str not in ('true', 'false', '1', '0'):
+            log_error(f"apply_fdr parameter must be explicit boolean ('true' or 'false'). Received: '{fdr_str}'")
+            sys.exit(1)
+        apply_fdr = fdr_str in ('true', '1')
 
     anova_analyze(ip, dv=dv_list, between=between_col, apply_fdr=apply_fdr)

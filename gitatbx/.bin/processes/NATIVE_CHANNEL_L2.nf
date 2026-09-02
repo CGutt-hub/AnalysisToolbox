@@ -1,3 +1,5 @@
+nextflow.enable.dsl=2
+
 process NATIVE_CHANNEL_L2 {
 
     maxForks 1
@@ -13,7 +15,7 @@ process NATIVE_CHANNEL_L2 {
         val target_signal_name
 
     output:
-        tuple val(signal_suffix), path("*.parquet"), emit: cohort_matrix
+        path("*.parquet"), emit: signal
         path("*.parquet"), emit: cohort_file
 
     exec:
@@ -53,53 +55,58 @@ process NATIVE_CHANNEL_L2 {
 
         BaseFileSystemUtils.appendLog(mainLog, "[L2] [INFO] [NATIVE_CHANNEL_L2] [${tag}] === Cohort Channel ${signal_suffix} Initialized ===")
 
-        // Handle both single String/Path and List/Collection natively
-        def rawPath    = (participant_path instanceof List || participant_path.getClass().isArray()) ? participant_path.first() : participant_path
-        def sampleFile = new java.io.File(rawPath.toString().trim())
-        if (!sampleFile.isAbsolute()) {
-            sampleFile = new java.io.File(launchDir, rawPath.toString().trim())
+        def rawPath   = (participant_path instanceof List || participant_path.getClass().isArray()) ? participant_path.first() : participant_path
+        def parentDir = new java.io.File(rawPath.toString().trim())
+        if (!parentDir.isAbsolute()) {
+            parentDir = new java.io.File(launchDir, rawPath.toString().trim())
         }
 
-        def parentDir = sampleFile.parentFile
-        if (!parentDir || !parentDir.exists()) {
-            def errMsg = "Step 1 Failed: Parent directory '${parentDir}' does not exist for participant path '${rawPath}'."
+        if (!parentDir.exists()) {
+            def errMsg = "Step 1 Failed: Parent L1 directory '${parentDir.absolutePath}' does not exist."
             BaseFileSystemUtils.appendLog(mainLog, "[L2] [ERROR] [NATIVE_CHANNEL_L2] [${tag}] ${errMsg}")
             throw new IllegalStateException("[NATIVE_CHANNEL_L2] ${errMsg}")
         }
 
-        def sampleName    = sampleFile.name
-        def prefixMatcher = sampleName =~ /^([a-zA-Z0-9]+)_/
-        def prefix        = prefixMatcher.find() ? prefixMatcher.group(1) : sampleName.replaceAll(/_\d+.*$/, '')
-
-        List<java.io.File> participantDirs = parentDir.listFiles({ java.io.File dir, String name ->
-            new java.io.File(dir, name).isDirectory() && (name.startsWith("${prefix}_") || name == sampleName)
+        List<java.io.File> participantDirs = parentDir.listFiles({ dir, name ->
+            new java.io.File(dir, name).isDirectory() && name.startsWith("${projectNameVal}_")
         } as java.io.FilenameFilter) as List<java.io.File>
 
         if (!participantDirs || participantDirs.isEmpty()) {
-            def errMsg = "Step 1 Failed: No participant directories matching pattern '${prefix}_*' found in '${parentDir.absolutePath}'."
+            def errMsg = "Step 1 Failed: No participant directories matching pattern '${projectNameVal}_*' found in '${parentDir.absolutePath}'."
             BaseFileSystemUtils.appendLog(mainLog, "[L2] [ERROR] [NATIVE_CHANNEL_L2] [${tag}] ${errMsg}")
             throw new IllegalStateException("[NATIVE_CHANNEL_L2] ${errMsg}")
         }
 
-        List<String> participantPathStrings = participantDirs.collect { java.io.File pDir -> pDir.absolutePath }
-        List<String> resolvedFiles          = TM.resolveCohortSignalFiles(participantPathStrings, signal_suffix, launchDir)
-        List<String> cleanFiles             = TM.validateInputs(resolvedFiles)
+        List<String> resolvedFiles = []
+        participantDirs.each { pDir ->
+            def binSubDir = new java.io.File(pDir, ".bin")
+            if (binSubDir.exists() && binSubDir.isDirectory()) {
+                def matchingFiles = binSubDir.listFiles({ _dir, name ->
+                    name.contains(signal_suffix) && name.endsWith(".parquet")
+                } as java.io.FilenameFilter)
+
+                if (matchingFiles != null && matchingFiles.length > 0) {
+                    resolvedFiles.add(matchingFiles[0].absolutePath)
+                }
+            }
+        }
+
+        List<String> cleanFiles = TM.validateInputs(resolvedFiles)
 
         if (cleanFiles != null && !cleanFiles.isEmpty()) {
             BaseFileSystemUtils.appendLog(mainLog, "[L2] [INFO] [NATIVE_CHANNEL_L2] [${tag}] Step 1/2 Complete: Validation probe succeeded (${cleanFiles.size()} files resolved and validated).")
         } else {
-            def errMsg = "Step 1 Failed: Validation probe reported missing or invalid participant files for signal pattern '${signal_suffix}'."
+            def errMsg = "Step 1 Failed: Validation probe reported missing or invalid participant files for signal pattern '*${signal_suffix}'."
             BaseFileSystemUtils.appendLog(mainLog, "[L2] [ERROR] [NATIVE_CHANNEL_L2] [${tag}] ${errMsg}")
             throw new IllegalStateException("[NATIVE_CHANNEL_L2] ${errMsg}")
         }
 
-        // STEP 2: Execute Cohort Concatenation
         BaseFileSystemUtils.appendLog(mainLog, "[L2] [INFO] [NATIVE_CHANNEL_L2] [${tag}] Step 2/2: Probing DuckDB cohort concatenation...")
 
         def outputFileName = "${projectNameVal}_binned_${signal_suffix}.parquet"
         def localDest      = new java.io.File(task.workDir.toFile(), outputFileName)
 
-        String execError = TM.executeCohortConcatenation(cleanFiles, localDest.absolutePath, "participant_id")
+        String execError = TM.executeCohortConcatenation(cleanFiles, localDest.absolutePath, "id")
 
         if (execError == null) {
             def cohortBinDest = new java.io.File(l2BinDir, outputFileName)

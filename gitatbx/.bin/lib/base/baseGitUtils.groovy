@@ -19,6 +19,30 @@ abstract class BaseGitUtils {
         return findGitRoot(currentDir.getParentFile())
     }
 
+    /**
+     * Normalizes relative execution paths (e.g. '../../EV_results') into canonical
+     * repository-relative paths so Git commands do not escape the working tree.
+     */
+    private static String resolveRepoRelativePath(File gitRoot, String rawPathStr) {
+        if (!rawPathStr || rawPathStr == "." || rawPathStr == "./") return "."
+        try {
+            File targetFile = new File(rawPathStr).getCanonicalFile()
+            File canonicalRoot = gitRoot.getCanonicalFile()
+            
+            String rootPath = canonicalRoot.getAbsolutePath()
+            String targetPath = targetFile.getAbsolutePath()
+
+            if (targetPath.startsWith(rootPath)) {
+                String rel = targetPath.substring(rootPath.length()).replace('\\', '/')
+                if (rel.startsWith('/')) rel = rel.substring(1)
+                return rel.isEmpty() ? "." : rel
+            }
+            return canonicalRoot.toPath().relativize(targetFile.toPath()).toString()
+        } catch (Exception e) {
+            return rawPathStr
+        }
+    }
+
     static Map executeGit(List<String> cmd, List<String> inheritedEnv, File gitRoot, long timeoutMs = 10000L) {
         try {
             def proc = cmd.execute(inheritedEnv, gitRoot)
@@ -103,9 +127,12 @@ abstract class BaseGitUtils {
     static void syncBootstrap(File gitRoot, String outputRel, String binRel, List<String> inheritedEnv) {
         if (!gitRoot) throw new RuntimeException("CRITICAL: Git root is null during bootstrap sync.")
         withCrossProcessGitLock(gitRoot) {
-            executeGit(["git", "rm", "-r", "--cached", "--ignore-unmatch", "--", binRel], inheritedEnv, gitRoot)
+            String cleanBin = resolveRepoRelativePath(gitRoot, binRel)
+            String cleanOutput = resolveRepoRelativePath(gitRoot, outputRel)
 
-            def addAll = executeGit(["git", "add", "-A", outputRel], inheritedEnv, gitRoot)
+            executeGit(["git", "rm", "-r", "--cached", "--ignore-unmatch", "--", cleanBin], inheritedEnv, gitRoot)
+
+            def addAll = executeGit(["git", "add", "-A", cleanOutput], inheritedEnv, gitRoot)
             if (addAll.exit != 0) {
                 throw new RuntimeException("Git bootstrap add failed: ${addAll.out}")
             }
@@ -138,9 +165,11 @@ abstract class BaseGitUtils {
         withCrossProcessGitLock(gitRoot) {
             def inheritedEnv = System.getenv().collect { k, v -> "${k}=${v}" } + ["GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=echo", "SSH_ASKPASS=echo"]
             
-            def addCmd = executeGit(["git", "add", "-A", relativePath], inheritedEnv, gitRoot)
+            String cleanPath = resolveRepoRelativePath(gitRoot, relativePath)
+
+            def addCmd = executeGit(["git", "add", "-A", cleanPath], inheritedEnv, gitRoot)
             if (addCmd.exit != 0) {
-                throw new RuntimeException("Git add failed for path '${relativePath}': ${addCmd.out}")
+                throw new RuntimeException("Git add failed for path '${cleanPath}' (raw: '${relativePath}'): ${addCmd.out}")
             }
 
             def st = executeGit(["git", "status", "--porcelain", "--cached"], inheritedEnv, gitRoot)

@@ -1,4 +1,4 @@
-"""Correlation Analyzer Module - Generic feature matrix correlation (Strict fail-fast implementation)."""
+"""Correlation Analyzer Module - Generic feature matrix correlation (Robust implementation)."""
 import numpy as np, pandas as pd, sys, os, polars as pl
 
 def log_error(msg: str): print(f"[correlation] ERROR: {msg}")
@@ -29,19 +29,24 @@ def compute_correlation_matrix(ip: str, target_cols: list[str], method: str) -> 
         log_error("At least 2 target feature columns must be explicitly declared for correlation analysis.")
         sys.exit(1)
 
+    # Robust handling: filter target_cols to only those present in df, log missing ones as info
+    valid_target_cols = [c for c in target_cols if c in df.columns]
     missing_cols = [c for c in target_cols if c not in df.columns]
     if missing_cols:
-        log_error(f"Declared feature columns missing from dataset: {missing_cols}")
+        log_info(f"Declared feature columns missing from dataset (ignored): {missing_cols}")
+
+    if len(valid_target_cols) < 2:
+        log_error(f"Less than 2 valid target columns found in dataset. Available: {list(df.columns)}, Requested: {target_cols}")
         sys.exit(1)
 
-    for col in target_cols:
+    for col in valid_target_cols:
         if df[col].isna().any():
             log_error(f"NaN or missing values detected in feature column '{col}'. Imputation disabled.")
             sys.exit(1)
 
-    numeric_df = df[target_cols].select_dtypes(include=[np.number])
-    if numeric_df.shape[1] < len(target_cols):
-        log_error("One or more target feature columns are non-numeric.")
+    numeric_df = df[valid_target_cols].select_dtypes(include=[np.number])
+    if numeric_df.shape[1] < 2:
+        log_error("One or more target feature columns are non-numeric or insufficient numeric columns available.")
         sys.exit(1)
 
     corr_matrix = numeric_df.corr(method=method)

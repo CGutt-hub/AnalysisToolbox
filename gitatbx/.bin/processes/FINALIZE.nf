@@ -8,11 +8,7 @@ process FINALIZE {
         val level
 
     output:
-        val(
-            level.toString().trim().toUpperCase() == "L1"
-                ? "${params.output_dir}/${params.project_name}_l1/${(root_signals[0] instanceof List ? root_signals[0][-1] : root_signals[0]).toString().with { fp -> def fn = new java.io.File(fp).name; def p = params.project_name + '_'; fn.startsWith(p) ? p + fn.substring(p.length()).split('[_\\.-]')[0] : fn.split('[_\\.-]')[0] }}"
-                : true
-        ), emit: finalized_path
+        val finalized_path_val, emit: signal
 
     exec:
         def gcl = new GroovyClassLoader(Thread.currentThread().contextClassLoader)
@@ -109,7 +105,7 @@ process FINALIZE {
 
         def promotedFiles = promoteRes.promotedFiles
         promotedFiles.each { fname ->
-            BaseFileSystemUtils.appendLog(targetLogFile, "[${lvl}] [INFO] [${processTag}] [FINALIZATION] Promoted signal file: ${fname}")
+            BaseFileSystemUtils.appendLog(targetLogFile, "[${lvl}] [INFO] [${processTag}] Promoted signal file: ${fname}")
         }
         BaseFileSystemUtils.appendLog(targetLogFile, "[${lvl}] [INFO] [${processTag}] [FINALIZATION] Step 2/3 Complete: Promotion probe succeeded (${promotedFiles.size()} files promoted).")
 
@@ -141,4 +137,7 @@ process FINALIZE {
         } else {
             BaseFileSystemUtils.appendLog(globalLog, "[${lvl}] [INFO] [${processTag}] Git repository root not found. Skipping optional git auto-sync for ${pidStr}")
         }
+
+        // Output parent L1 directory path for L1 batch coordination
+        finalized_path_val = (lvlUpper == "L1") ? "${outputDirVal}/${projectNameVal}_l1" : true
 }

@@ -32,5 +32,5 @@ workflow join {
         NATIVE_JOIN( files_only, join_tag, level_tag, key_column, scale_tag )
 
     emit:
-        mixed_matrix = NATIVE_JOIN.out[0]
+        signal = NATIVE_JOIN.out.signal
 }

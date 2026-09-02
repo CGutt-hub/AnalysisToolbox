@@ -9,7 +9,7 @@ process NATIVE_CHANNEL_L1 {
         val plot_type       
 
     output:
-        path("${id}_*.parquet"), emit: staged_channel
+        path("${id}_*.parquet"), emit: signal
 
     exec:
         // Fail-fast input validation

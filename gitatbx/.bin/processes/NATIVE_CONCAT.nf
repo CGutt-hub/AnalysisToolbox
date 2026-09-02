@@ -20,7 +20,7 @@ process NATIVE_CONCAT {
         val level_tag
 
     output:
-        tuple val(participant_id), path("*.parquet"), emit: mixed_matrix
+        path("*.parquet"), emit: signal
 
     exec:
         def gcl = new GroovyClassLoader(Thread.currentThread().contextClassLoader)
@@ -28,12 +28,12 @@ process NATIVE_CONCAT {
         def managerFile = [
             moduleDir.resolve('../lib/TableManager.groovy').toFile(),
             moduleDir.resolve('../../lib/TableManager.groovy').toFile()
-        ].find { java.io.File f -> f.exists() }
+        ].find { java.io.File candidateFile -> candidateFile && candidateFile.exists() }
 
         def baseFsFile = [
             moduleDir.resolve('../lib/base/BaseFileSystemUtils.groovy').toFile(),
             moduleDir.resolve('../../lib/base/BaseFileSystemUtils.groovy').toFile()
-        ].find { java.io.File f -> f.exists() }
+        ].find { java.io.File candidateFile -> candidateFile && candidateFile.exists() }
 
         if (!managerFile || !baseFsFile) {
             throw new java.io.FileNotFoundException("[NATIVE_CONCAT] CRITICAL: Required utility classes missing from classpath.")
@@ -52,11 +52,11 @@ process NATIVE_CONCAT {
         def isL2           = (lvl == "L2")
         def tag            = name_appendage ? name_appendage.toString().trim().toUpperCase() : "CONCAT"
 
-        // Dynamic target ID: L2 resolves to project cohort name, L1 extracts participant ID
+        // Identifier derivation: L2 targets project cohort name; L1 derives participant ID
         def derivedId  = isL2 ? projectNameVal : TM.deriveIdentifier(parquet_files)
         participant_id = derivedId ?: "UNKNOWN_IDENTIFIER"
 
-        // Dynamic log & directory routing
+        // Context folder & log path branching based on level_tag
         def contextFolderName = isL2 ? l2FolderVal : "${projectNameVal}_l1/${participant_id}"
         def logFileName       = isL2 ? "${projectNameVal}_l2.log" : "${participant_id}.log"
 
@@ -69,7 +69,7 @@ process NATIVE_CONCAT {
             throw new IllegalStateException("[NATIVE_CONCAT] Probe failed: Identifier derivation failed.")
         }
 
-        BaseFileSystemUtils.appendLog(mainLog, "[${lvl}] [INFO] [NATIVE_CONCAT] [${tag}] Probe succeeded: derived target ID '${participant_id}'.")
+        BaseFileSystemUtils.appendLog(mainLog, "[${lvl}] [INFO] [NATIVE_CONCAT] [${tag}] Probe succeeded: target ID '${participant_id}'.")
         BaseFileSystemUtils.appendLog(mainLog, "[${lvl}] [INFO] [NATIVE_CONCAT] [${tag}] === Target ${participant_id} Concat Initialized (${lvl}) ===")
 
         BaseFileSystemUtils.appendLog(mainLog, "[${lvl}] [INFO] [NATIVE_CONCAT] [${tag}] Step 1/2: Probing input signals validation...")
@@ -83,10 +83,11 @@ process NATIVE_CONCAT {
         }
 
         BaseFileSystemUtils.appendLog(mainLog, "[${lvl}] [INFO] [NATIVE_CONCAT] [${tag}] Step 2/2: Probing DuckDB vertical concat operation...")
-        def outputFileName = "${participant_id}_${name_appendage}.parquet"
+        
+        def outputFileName = "${participant_id}_${name_appendage}_concat.parquet"
         def localDest      = new java.io.File(task.workDir.toFile(), outputFileName)
 
-        String execError = TM.executeConcat(cleanFiles, localDest.absolutePath, true)
+        String execError = TM.executeConcat(cleanFiles, localDest.absolutePath, false)
         if (execError == null) {
             BaseFileSystemUtils.appendLog(mainLog, "[${lvl}] [INFO] [NATIVE_CONCAT] [${tag}] Step 2/2 Complete: Execution probe succeeded (concat matrix generated).")
         } else {

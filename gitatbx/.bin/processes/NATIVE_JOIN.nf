@@ -22,7 +22,7 @@ process NATIVE_JOIN {
         val scale_tag
 
     output:
-        tuple val(participant_id), path("*.parquet"), emit: mixed_matrix
+        path("*.parquet"), emit: signal
 
     exec:
         def gcl = new GroovyClassLoader(Thread.currentThread().contextClassLoader)

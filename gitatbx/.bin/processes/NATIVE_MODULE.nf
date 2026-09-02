@@ -215,5 +215,14 @@ conn.execute('''
         OUTPUT_FILENAME=\$(basename "\$GENERATED_FILE")
         cp "\$GENERATED_FILE" "\$CONTEXT_DIR/\$OUTPUT_FILENAME"
         log_entry "INFO" "Procedure output stored in: \$CONTEXT_DIR/\$OUTPUT_FILENAME"
+
+        # RELOCATE SUMMARY FILES TO PARTICIPANT ROOT DIRECTORY
+        PARTICIPANT_ROOT=\$(dirname "\$CONTEXT_DIR")
+        for summary_file in *_summary.parquet; do
+            if [ -f "\$summary_file" ]; then
+                mv "\$summary_file" "\$PARTICIPANT_ROOT/"
+                log_entry "INFO" "Moved summary file to participant root: \$PARTICIPANT_ROOT/\$(basename "\$summary_file")"
+            fi
+        done
         """
 }
